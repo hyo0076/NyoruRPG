@@ -1,7 +1,7 @@
 //@name universal-rpg-engine
-//@display-name NyoruRPG 0.18.4 · 자동 진행
+//@display-name NyoruRPG 0.18.6 · 자동 진행
 //@api 3.0
-//@version 0.18.4
+//@version 0.18.6
 //@update-url https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js
 (async()=>{
 "use strict";
@@ -266,6 +266,9 @@ function apply(w,plan,args,authority,rng=globalThis.crypto) {
   w.meta.adventure||={version:1,activeId:null,places:{}};const store=w.meta.adventure;
   if(plan.create&&!store.places[plan.placeId])store.places[plan.placeId]=clone(plan.create);
   const p=store.places[plan.placeId];assert(p,'NO_EXPLORATION','저장된 탐험이 없습니다.');store.activeId=p.id;
+  // Preserve a stray legacy session produced by an older direct-tool call, but
+  // do not let it become a second invisible active dungeon after this one ends.
+  if(w.exploration){(w.meta.archivedExplorations||={})[w.exploration.id]=clone(w.exploration);w.exploration=null;}
   if(!isErencha(w)&&w.combat)require('./engine.js').execute(w,'rpg_combat',{op:'end',actionId:args.actionId},authority);
   if(plan.action==='end'){store.activeId=null;return output(w,plan,[],null,'탐험 기록을 보관했습니다.');}
   p.current=plan.nodeId;const r=roomAt(w),a=w.actors[plan.actorId],changes=[],claim=args.eventId||args.actionId;
@@ -494,7 +497,9 @@ class App {
     this.parts = [];
     this.queue = Promise.resolve();
     this.toolSequence = 0;
-    this.requestSequence = 0;
+    this.pendingTools = new Set();
+    this.toolBooks = new Map();
+    this.lastResolvedTransaction = null;
     this.lastScopeKey = null;
     this.data = null;
     this.outputHookRegistered = false;
@@ -682,6 +687,7 @@ class App {
   async discard() {
     assert(this.tx, 'TRANSACTION_MISSING', '폐기할 임시 저장이 없습니다.');
     await this.repo.discard(this.tx.scope, this.tx.id);
+    if(this.lastResolvedTransaction?.transaction.id===this.tx.id)this.lastResolvedTransaction=null;
     this.tx = null;
   }
   async status() {
@@ -714,12 +720,34 @@ class App {
   async call(name, args, trace) {
     return require('./tool-runtime.js').call(this,name,args,trace);
   }
+  async listTools() {
+    // Listing tools must not verify an in-progress answer or switch rulebooks
+    // when that verification/storage read fails.
+    let scope,book;
+    try {
+      scope=await this.currentScope();
+      const current=await this.repo.current(scope);
+      const state=current?.state||(this.tx&&scopeKey(this.tx.scope)===scopeKey(scope)?this.tx.state:null);
+      if(state) {
+        book={meta:{rulebook:{id:Rulebooks.select(state).id}}};
+        this.toolBooks.set(scopeKey(scope),book);
+      } else this.toolBooks.delete(scopeKey(scope));
+    } catch(e) {
+      book=scope&&this.toolBooks.get(scopeKey(scope));
+      this.host.record('toolListDeferred',{code:e.code||'STORAGE_UNAVAILABLE',cached:!!book});
+    }
+    const schemas=book?Rulebooks.tools(book):require('./common-tools.js').catalog.tools((tool,op)=>tool==='rpg_bootstrap'&&op==='status');
+    this.host.record('toolsListed',{count:schemas.length,rulebook:book?.meta.rulebook.id||null});
+    return schemas;
+  }
   callSerialized(name, args) {
     const callId=++this.toolSequence,receivedAt=Date.now();
-    const expectedRequestId=this.requestSequence;
+    const boundary=this.tx&&!this.tx.awaitingUser?{scope:clone(this.tx.scope),userMessageId:this.tx.userMessageId,anchor:clone(this.tx.anchor)}:null;
     this.host.record('toolReceived',{callId,tool:name,op:args?.op,actionId:args?.actionId});
-    const p = this.queue.then(() => this.call(name, args,{callId,queueMs:Date.now()-receivedAt,expectedRequestId}));
-    this.queue = p.catch(() => {});
+    const pending={boundary,promise:null};
+    const p = this.queue.then(() => this.call(name, args,{callId,queueMs:Date.now()-receivedAt,boundary}));
+    pending.promise=p;this.pendingTools.add(pending);
+    this.queue = p.then(()=>{this.pendingTools.delete(pending);},()=>{this.pendingTools.delete(pending);});
     return p;
   }
   async beforeRequest(messages, type) {
@@ -768,10 +796,7 @@ class App {
   async install(ui) {
     await this.load();
     this.ui = ui;
-    this.before = (messages, type) => {
-      if(!type||['main','model'].includes(type))this.requestSequence++;
-      return this.serialized(() => this.beforeRequest(messages, type));
-    };
+    this.before = (messages, type) => this.serialized(() => this.beforeRequest(messages, type));
     this.after = (text, type) => {
       this.host.record('afterRequest', {
         type: String(type || ''),
@@ -786,7 +811,8 @@ class App {
         this.host.record('output', { messageId:receipt.messageId,transactionId:receipt.transactionId });
         try { await lifecycle.commitOutput(this, receipt); }
         catch (e) { this.host.record('commitBlocked', { code: e.code || 'INTERNAL_ERROR' }); this.ui?.notify?.('RPG 자동 저장 실패: ' + (e.code ? e.message : '저장·복구 진단을 확인하세요.'), true); }
-        await this.host.flushDiagnostics();
+        // Journal persistence is independent of gameplay/output completion.
+        void this.host.flushDiagnostics();
       });
     };
     await this.api.registerMCP({
@@ -794,13 +820,7 @@ class App {
       name: MCP_NAME,
       version: VERSION,
       description: 'NyoruRPG · 저장한 규칙으로 판정·턴·연계·숙련·자원을 처리하고 답변을 자동 저장합니다.'
-    }, async () => {
-      let state;
-      try {state=(await this.inspect()).state;}catch{}
-      const schemas=Rulebooks.tools(state);
-      this.host.record('toolsListed', { count: schemas.length });
-      return schemas;
-    }, async (name, args) => [{
+    }, () => this.listTools(), async (name, args) => [{
       type: 'text',
       text: JSON.stringify(await this.callSerialized(name, args))
     }]);
@@ -820,9 +840,21 @@ class App {
       this.display = async text => {
         let context;
         try {
-          const scope=await this.currentScope();let messages;
-          context={scope,activeTxId:this.tx&&scopeKey(this.tx.scope)===scopeKey(scope)?this.tx.id:null,
-            messages:async ()=>messages||=(await this.host.locate(scope)).chat.message};
+          const scope=await this.currentScope(),initial=await this.host.locate(scope);
+          const user=initial.chat.message.findLast(m=>m.role==='user');
+          const isCurrentReply=initial.chat.message.at(-1)?.role==='char'&&initial.chat.message.at(-1)?.data===text;
+          // An early display pass used to finish before the pending tool saved
+          // its result. Wait for that tool, never for the output listener (which
+          // the host may dispatch only after display). No chat text is rewritten.
+          if(isCurrentReply) {
+            const pending=[...this.pendingTools].filter(p=>!p.boundary||scopeKey(p.boundary.scope)===scopeKey(scope)&&p.boundary.userMessageId===user?.chatId);
+            await Promise.allSettled(pending.map(p=>p.promise));
+          }
+          const {chat}=await this.host.locate(scope),saved=this.lastResolvedTransaction;
+          const transaction=saved&&scopeKey(saved.scope)===scopeKey(scope)?saved.transaction:null;
+          context={scope,transaction,isStreaming:!!chat.isStreaming,
+            activeTxId:this.tx&&scopeKey(this.tx.scope)===scopeKey(scope)?this.tx.id:transaction?.id,
+            messages:async ()=>chat.message};
         } catch {}
         return require('./render.js').renderStoredText(text,this.settings.display,this.repo,this.displayCache,context);
       };
@@ -851,6 +883,13 @@ class App {
           this.host.record('scopeChanged');
         }
         this.lastScopeKey = key;
+        const receipt=this.deferredOutput;
+        if(receipt&&!this.outputRetrying&&!this.pendingTools.size&&receipt.characterId===s.characterId&&receipt.chatId===s.chatId) {
+          this.deferredOutput=null;this.outputRetrying=true;
+          void this.serialized(()=>require('./lifecycle.js').commitOutput(this,receipt))
+            .catch(e=>this.host.record('commitBlocked',{code:e.code||'INTERNAL_ERROR'}))
+            .finally(()=>{this.outputRetrying=false;});
+        }
       } catch {} finally {
         this.polling = false;
       }
@@ -3284,7 +3323,17 @@ function requirements(w,a,s){
   const names=present.filter(x=>typeof x==='string'&&x.trim()),sameSkill=require('./native-rpg.js').sameSkill;
   return s.mechanics.requires.filter(name=>!names.some(active=>norm(active)===norm(name)||sameSkill(active,name)));
 }
-function sceneTick(w,source,rng,events=w.meta.effectEvents||=[]){for(const a of scene(w,source)){tick(w,a,'turn_end',rng,events);for(const c of a.conditions||[])if(!c.component){if(c.remaining!==undefined)c.remaining--;else c.duration--;}a.conditions=(a.conditions||[]).filter(c=>(c.duration??c.remaining)>0);}}
+function sceneTick(w,source,rng,events=w.meta.effectEvents||=[]){
+  // Outside combat an action spends this actor's turn, not every companion's.
+  // Objects have no independent turn and follow the actor assigned on impact.
+  const participants=[source,...Object.values(w.meta.effectObjects||{}).filter(o=>o.effectTickOwner===source.id)];
+  for(const a of participants){
+    tick(w,a,'turn_end',rng,events);
+    // Erencha's legacy remaining counter is already advanced by its own tick().
+    if(w.meta.rulebook?.id!=='erencha')for(const c of a.conditions||[])if(!c.component){if(c.remaining!==undefined)c.remaining--;else c.duration--;}
+    a.conditions=(a.conditions||[]).filter(c=>(c.duration??c.remaining)>0);
+  }
+}
 module.exports={requirements,sceneTick,entity,isObject,enemy,kind,relation,scene,eligible,targets,object,resource,matches,scaled,activeRows,modifiers,numeric,has,immune,emit,sync,heal,changeResource,damage,apply,attachments,takeEvents,incapacitated,silence,restricted,restrictions,legacyCondition,beforeAction,tick,outgoing,damageType,afterAction,counter,initiativeBase,reorder,alive};
 
 },
@@ -6856,7 +6905,7 @@ class DiagnosticJournal {
   add(event) {
     const entry={...event,sessionId:this.sessionId,sequence:++this.sequence};
     this.pending.push(entry);
-    if(!this.timer)this.timer=setTimeout(()=>{this.timer=null;void this.flush();},250);
+    if(!this.timer)this.timer=setTimeout(()=>{this.timer=null;void this.flush();},1000);
     return entry;
   }
   flush() {
@@ -7163,7 +7212,7 @@ class RisuHost {
     return Array.isArray(prefix) && prefix.length <= history.length && prefix.every((m, i) => m.id === history[i].id && m.hash === history[i].hash && m.role === history[i].role);
   }
   async verifyTransaction(tx) {
-    assert(await this.isCurrent(tx.scope), 'SCOPE_MISMATCH', '임시 저장을 시작한 대화가 아닙니다.');
+    // history() locates and checks both stable scope IDs already.
     const history = await this.history(tx.scope);
     assert(this.matches(tx.anchor, history), 'HISTORY_CHANGED', '이전 메시지·분기가 바뀌었습니다. 상태 화면에서 부모 버전을 선택하세요.');
     if (tx.awaitingUser) return;
@@ -14327,8 +14376,8 @@ async function selectHistory(app, scope, history) {
   return app.repo.current(scope);
 }
 
-// Capture completion at event arrival, before it waits behind a slow MCP call.
-// Store immutable identity/text, never a live chat array plus a mutable index.
+// Capture identity at arrival. Read the saved body when committing: later host
+// output formatters may still update this same message, without a new input.
 function captureOutput(app,arg) {
   const message=arg?.chat?.message?.[arg.messageIndex];
   if(message?.role!=='char'||typeof message.data!=='string'||!message.chatId)return null;
@@ -14338,9 +14387,6 @@ function captureOutput(app,arg) {
   const tx=app.tx;
   if(tx?.automatic&&tx.scope.characterId===receipt.characterId&&tx.scope.chatId===receipt.chatId&&tx.userMessageId===receipt.userMessageId) {
     receipt.transactionId=tx.id;
-    app.completedResponseTransactions||=new Set();
-    app.completedResponseTransactions.add(tx.id);
-    if(app.completedResponseTransactions.size>64)app.completedResponseTransactions.delete(app.completedResponseTransactions.values().next().value);
   }
   app.host.record('outputReceived',{characterId:receipt.characterId,chatId:receipt.chatId,messageId:receipt.messageId,userMessageId:receipt.userMessageId,transactionId:receipt.transactionId});
   return receipt;
@@ -14356,11 +14402,11 @@ async function commitOutput(app, arg) {
   if (!tx?.automatic || tx.awaitingUser) return false;
   if(receipt&&(receipt.userMessageId!==tx.userMessageId||receipt.transactionId&&receipt.transactionId!==tx.id))return false;
   const { chat } = await app.host.locate(scope);
-  if (chat.isStreaming) return false;
+  if (chat.isStreaming) {if(receipt)app.deferredOutput=receipt;return false;}
   let history = await app.host.history(scope);
   if (arg) {
     const index = history.findIndex(m => m.id === receipt.messageId);
-    if (index < 0 || history[index].role!=='char'||history[index].hash !== await hash(receipt.text)) return false;
+    if (index < 0 || history[index].role!=='char') return false;
     history = history.slice(0, index + 1);
   } else {
     // Fallback for hosts without output listeners: only an answer preceding a
@@ -14385,6 +14431,10 @@ async function commitOutput(app, arg) {
   assert(app.host.matches(tx.anchor, history), 'HISTORY_CHANGED', '이전 대화가 바뀌어 이번 결과를 확정하지 않았습니다.');
   const revision = await app.repo.commit(scope, tx.id, history);
   app.tx = null;
+  if(app.lastResolvedTransaction?.transaction.id===tx.id) {
+    app.lastResolvedTransaction.transaction.status='committed';
+    app.lastResolvedTransaction.transaction.completedResponses=responses.map(({id,hash})=>({id,hash}));
+  }
   try {await bindResponseDisplay(app.repo,scope,tx.id,responses);app.displayCache?.clear();}
   catch {app.host.record('displayBindingDeferred',{transactionId:tx.id});}
   app.host.record('generationCommitted', { transactionId: tx.id, revision: revision.id });
@@ -14421,6 +14471,7 @@ async function ensure(app, messages = null) {
     // An abandoned answer must not leak its costs/rewards into the next input.
     const abandoned = app.tx.id;
     await app.repo.discard(scope, abandoned);
+    if(app.lastResolvedTransaction?.transaction.id===abandoned)app.lastResolvedTransaction=null;
     app.tx = null;
     app.host.record('generationAbandoned', { transactionId: abandoned });
   }
@@ -14432,7 +14483,7 @@ async function ensure(app, messages = null) {
   const shortMarkers=current?.origin?.transactionId&&history.at(-1)?.role==='char'
     ?(await storedDisplayForTransaction(app.repo,scope,current.origin.transactionId)).markers.map(m=>m.shortMarker):[];
   const continuation = current?.anchor && history.at(-1)?.role === 'char' && app.host.matches(current.anchor, history)
-    && messages?.some(m => typeof m.content === 'string' && (m.role === 'assistant' && (marker && m.content.includes(marker)||shortMarkers.some(token=>m.content.includes(token))) || m.role === 'system' && m.content.includes('[Continue the last response]')));
+    && (messages===null||messages.some(m => typeof m.content === 'string' && (m.role === 'assistant' && (marker && m.content.includes(marker)||shortMarkers.some(token=>m.content.includes(token))) || m.role === 'system' && m.content.includes('[Continue the last response]'))));
   const parent = continuation ? current : await selectHistory(app, scope, anchor);
   assert(parent, 'SETUP_MISSING', 'RPG 상태 → 시스템 구축에서 최초 규칙·인물을 생성하고 적용하세요. 이후 판정·턴·저장은 자동입니다.');
   const status = await app.status();
@@ -14465,6 +14516,7 @@ async function synchronize(app) {
     if (!app.outputHookRegistered) await commitOutput(app, null);
     if (!app.tx) return selectHistory(app, scope, history);
     await app.repo.discard(scope, app.tx.id);
+    if(app.lastResolvedTransaction?.transaction.id===app.tx.id)app.lastResolvedTransaction=null;
     app.tx = null;
   }
   if (!app.tx) await selectHistory(app, scope, await app.host.history(scope));
@@ -16527,7 +16579,11 @@ function transactionDisplay(tx) {
       groups.get(key).push(part);
     }
   }
-  const status = { key: 'status', html: tx.status === 'restored' ? '' : statusHTML(tx.state) };
+  // The action cards are durable receipts; an optional footer cannot suppress
+  // all of them when a state-window formatter rejects one field.
+  let statusBody='';
+  if(tx.status!=='restored')try{statusBody=statusHTML(tx.state);}catch{}
+  const status = { key: 'status', html: statusBody };
   groups.set('status', [status]);
   groups.set('all', [...leaves, status]);
   return { groups, leaves };
@@ -16537,6 +16593,9 @@ async function displayForTransaction(repo, scope, txId, actionId = null) {
   const scopeHash = await hash(scopeKey(scope));
   const tx = await loadTransaction(repo, scopeHash, txId);
   if (!tx) return { markers: [], instruction: inlineInstruction };
+  return displayFromTransaction(tx,actionId);
+}
+function displayFromTransaction(tx,actionId=null) {
   const { leaves } = transactionDisplay(tx);
   return {
     markers: leaves.filter(part => actionId === null || part.actionId === actionId).map(part => ({ marker: '[NyoruRPG:' + part.ordinal + ']', actionId: part.actionId, tool: part.tool, op: part.op, label: part.label })),
@@ -16634,20 +16693,20 @@ async function displayResponseText(text,repo,context,cache) {
       if(matching.length===1){sourceText=matching[0].data;records=await repo.read(prefix+'/display/'+await hash(sourceText));}
     }
   }
-  let binding;
+  let binding,bindingTransaction;
   if(records?.length) {
     const messages=await context.messages(),ids=new Set(messages.filter(m=>m.role==='char'&&m.data===sourceText).map(m=>m.chatId));
     const matching=[],sourceHash=await hash(sourceText);
     for(const record of records)if(ids.has(record.messageId)) {
       const tx=await loadTransaction(repo,scopeHash,record.transactionId);
-      if(tx&&ownsResponse(tx,{id:record.messageId,hash:sourceHash},messages))matching.push(record);
+      if(tx&&ownsResponse(tx,{id:record.messageId,hash:sourceHash},messages))matching.push({record,tx});
     }
     // A text-only host display hook cannot disambiguate identical responses in
     // different transactions. Keep the source rather than show another roll.
-    if(matching.length===1)binding=matching[0];
+    if(matching.length===1){binding=matching[0].record;bindingTransaction=matching[0].tx;}
   }
   if(binding) {
-    const tx=await loadTransaction(repo,scopeHash,binding.transactionId);
+    const tx=bindingTransaction;
     if(!tx)return text;
     const key=scopeHash+':'+tx.id,rendered=cache.get(key)||transactionDisplay(tx);
     if(tx.status!=='open'&&tx.status!=='restored') {
@@ -16657,14 +16716,17 @@ async function displayResponseText(text,repo,context,cache) {
     text=binding.final?completeInlineText(text,display,binding.earlierMarkers.join('\n'))
       :placeInline(resolveShortMarkers(text,display),display,'',false);
     if(binding.final&&tx.status!=='restored'&&tx.state.meta.rulebook?.id==='erencha')text=require('./erencha-status.js').synchronize(text,tx.state);
-  } else if(!records?.length&&context.activeTxId&&shortPattern().test(text)) {
-    const tx=await loadTransaction(repo,scopeHash,context.activeTxId),messages=await context.messages();
+  } else if(!records?.length&&context.activeTxId) {
+    const tx=context.transaction?.id===context.activeTxId?context.transaction:await loadTransaction(repo,scopeHash,context.activeTxId),messages=await context.messages();
     const last=messages.at(-1),user=messages.findLast(m=>m.role==='user');
-    // Preview only references actually issued during this active response.
-    // Missing cards and final status are added after a saved-output binding.
-    if(tx?.status==='open'&&last?.role==='char'&&last.data===sourceText&&user?.chatId===tx.userMessageId) {
+    // The host can render before the queued output commit/binding completes.
+    // Use only this response's stored actions, including omitted short markers.
+    const sourceHash=await hash(sourceText);
+    const belongs=tx?.status==='open'||tx?.status==='committed'&&tx.completedResponses?.some(r=>r.id===last?.chatId&&r.hash===sourceHash);
+    if(belongs&&last?.role==='char'&&last.data===sourceText&&user?.chatId===tx.userMessageId&&ownsResponse(tx,{id:last.chatId,hash:sourceHash},messages)) {
       const display=displayReferences(tx,scopeHash);
-      text=placeInline(resolveShortMarkers(text,display),display,'',false);
+      text=context.isStreaming?placeInline(resolveShortMarkers(text,display),display,'',false):completeInlineText(text,display);
+      if(!context.isStreaming&&tx.state.meta.rulebook?.id==='erencha')text=require('./erencha-status.js').synchronize(text,tx.state);
     }
   }
   return text;
@@ -16717,7 +16779,7 @@ async function renderStoredText(text, enabled, repo, cache = new Map(), context 
   return renderText(text, enabled).replace(shortPattern(),'');
 }
 function stripMarkers(text) { return text.replace(referencePattern(), '').replace(shortPattern(), '').replace(/\[URPG1:[A-Za-z0-9+/=]{1,64000}\]/g, ''); }
-module.exports = { renderText, renderStoredText, stripMarkers, presentation, displayForAction, displayForTransaction, storedDisplayForTransaction, bindResponseDisplay, exportDisplayBindings, restoreDisplayBindings, resolveShortMarkers, completeInlineText, CSS };
+module.exports = { renderText, renderStoredText, stripMarkers, presentation, displayForAction, displayForTransaction, displayFromTransaction, storedDisplayForTransaction, bindResponseDisplay, exportDisplayBindings, restoreDisplayBindings, resolveShortMarkers, completeInlineText, CSS };
 
 },
 "./repository.js":function(module,exports,require){
@@ -16927,7 +16989,7 @@ class Repository {
       return tx;
     });
   }
-  async execute(scope, txId, logicalActionId, args, resolve) {
+  async execute(scope, txId, logicalActionId, args, resolve, stored = null) {
     return this.exclusive(async () => {
       await this.requireWriter(scope);
       const tx = await this.transaction(scope, txId);
@@ -16939,6 +17001,7 @@ class Repository {
       if (old) {
         assert(old.input === input, 'ACTION_ID_CONFLICT', '같은 행동 ID에 다른 인수가 전달되었습니다.');
         assert(old.status !== 'pending', 'ACTION_UNCERTAIN', '이 행동의 저장 결과가 불확실합니다. 임시 저장을 내보내고 복구하거나 부모 상태에서 새 답변을 시작하세요. 자동 재실행하지 않습니다.');
+        if(stored)stored.transaction=tx;
         return clone(old.result);
       }
       // A durable intent prevents an ambiguous result write from causing a reroll.
@@ -16985,6 +17048,7 @@ class Repository {
       });
       assert(tx.state.ledger.length <= 10000, 'STATE_LIMIT', '기록 한도입니다. 백업 후 새 분기를 시작하세요.');
       await this.write((await this.key(scope)) + '/tx/' + txId, tx);
+      if(stored)stored.transaction=tx;
       return result;
     });
   }
@@ -17377,6 +17441,31 @@ function isReadOnly(world,tool,op) {
   return catalog(world).isReadOnly(tool,op);
 }
 
+// Older provider tool lists may still contain rpg_explore. Keep the invocation
+// identity, but prepare/apply it through the same native exploration as rpg_play.
+function nativeRoute(world,tool,args) {
+  if(!world.meta.native||tool!=='rpg_explore'||args.op==='inspect')return {tool,args};
+  const active=require('./adventure.js').current(world);
+  if(args.op==='resolve_event'&&!active)return {tool,args};
+  const actor=world.actors[args.actorId];
+  assert(actor,'ACTOR_MISSING','등록된 탐험 인물을 지정하세요.');
+  const mapped={op:'explore',actionId:args.actionId,actor:actor.id,action:args.op};
+  if(args.op==='start')mapped.name=args.name;
+  if(args.op==='move')mapped.destination=args.nodeId;
+  if(args.op==='resume') {
+    assert(!active&&!world.exploration,'EXPLORATION_ACTIVE','현재 탐험을 끝낸 뒤 저장된 장소를 다시 여세요.');
+    const place=world.meta.adventure?.places?.[args.dungeonId]||world.meta.archivedExplorations?.[args.dungeonId];
+    assert(place,'NO_EXPLORATION','저장된 탐험 ID가 없습니다.');
+    mapped.action='start';mapped.name=place.name;
+  }
+  if(args.op==='resolve_event') {
+    const room=active.rooms.find(r=>r.id===active.current);
+    assert(!require('./adventure.js').encounter(world)&&(!room.mechanism||room.solved),'EVENT_PENDING','현재 조우·장치를 실제 행동으로 먼저 해결하세요.');
+    mapped.action='inspect';
+  }
+  return {tool:'rpg_play',args:mapped};
+}
+
 // Preparation may call the auxiliary model; application may not. Preparation
 // happens before Repository.execute and mutates no live world. Only the finished
 // plan is applied to the repository's candidate world, with its saved authority.
@@ -17384,8 +17473,9 @@ async function prepare(app,scope,tx,tool,args) {
   const book=select(tx.state);
   if(book.family==='social')return {kind:'social',data:await require('./social-assistant.js').prepare(app,scope,tx,args,tool)};
   if(book.family==='erencha')return {kind:'erencha',data:await require('./erencha-assistant.js').prepare(app,scope,tx,args,tool)};
-  if(tx.state.meta.native && (tool==='rpg_play'||tool==='rpg_registry'&&['ensure_actor','ensure_actors'].includes(args.op))) {
-    return {kind:'native',data:await app.native.prepare(scope,tx,tool,args)};
+  const call=nativeRoute(tx.state,tool,args);
+  if(tx.state.meta.native && (call.tool==='rpg_play'||call.tool==='rpg_registry'&&['ensure_actor','ensure_actors'].includes(call.args.op))) {
+    return {kind:'native',call,data:await app.native.prepare(scope,tx,call.tool,call.args)};
   }
   if(!tx.state.meta.native&&tool==='rpg_registry'&&args.op==='ensure_actor') {
     assert(tx.authority.narrator||tx.authority.admin,'AUTHORING_REQUIRED','장면 진행 권한이 필요합니다.');
@@ -17398,7 +17488,7 @@ function apply(app,world,prepared,tool,args,authority) {
   switch(prepared?.kind) {
     case 'social': return require('./social-engine.js').action(world,prepared.data,args,authority);
     case 'erencha': return require('./erencha-engine.js').action(world,prepared.data,tool,args,authority);
-    case 'native': return app.native.apply(world,prepared.data,tool,args,authority);
+    case 'native': return app.native.apply(world,prepared.data,prepared.call?.tool||tool,prepared.call?.args||args,authority);
     case 'encounter': return require('./encounter-builder.js').install(world,prepared.data,authority);
     default: return require('./engine.js').execute(world,tool,args,authority);
   }
@@ -21816,7 +21906,7 @@ module.exports = {createCatalog, IDENTITY_GUIDE};
 "./tool-runtime.js":function(module,exports,require){
 'use strict';
 
-const {assert,clone,errorResult,scopeKey}=require('./util.js');
+const {assert,clone,errorResult,scopeKey,canonical}=require('./util.js');
 const Books=require('./rulebook-runtime.js');
 const Records=require('./result-record.js');
 const Engine=require('./engine.js');
@@ -21830,22 +21920,24 @@ async function read(app,scope,name,args) {
   if(args.op==='action_result') {
     const id=app.tx?.id||info.current?.origin?.transactionId;
     assert(id,'TRANSACTION_MISSING','조회할 판정 기록이 없습니다.');
-    return {result:await app.repo.lookup(scope,id,args.actionId),...Books.statusPackets(info.state),persistence:app.tx?'staged':'committed'};
+    return {result:await app.repo.lookup(scope,id,args.actionId),...statusPackets(app,info.state),persistence:app.tx?'staged':'committed'};
   }
   await app.reconcile();
   const lastTx=info.state?.ledger.at(-1)?.transactionId;
   const display=args.op==='last_results'&&lastTx&&app.tx?.id===lastTx
     ?await require('./render.js').displayForTransaction(app.repo,scope,lastTx):null;
-  return {ok:true,result:Engine.query(info.state,name,args),...Books.statusPackets(info.state),
+  return {ok:true,result:Engine.query(info.state,name,args),...statusPackets(app,info.state),
     narrationRule:'저장된 상태 조회입니다. 새 행동·기술 사용·회복·보상은 실행하지 않았습니다. 이후 실제 행동은 해당 도구로 처리하세요.',
     ...(display?{display}:{}),persistence:info.staged?'staged':'committed',revision:info.current?.id};
 }
-async function present(app,scope,txId,name,args,result,state,prepared) {
+function statusPackets(app,state) {
+  try{return Books.statusPackets(state);}
+  catch(e){app.host.record('presentationDeferred',{part:'status',code:e.code||'INTERNAL_ERROR'});return {};}
+}
+function present(app,scope,txId,name,args,result,state,prepared,transaction) {
   const cacheKey=prepared?.data?.cacheKey;
-  if(cacheKey)try {
-    if(typeof app.repo.storage.removeItem==='function')await app.repo.storage.removeItem(cacheKey);
-    else await app.repo.write(cacheKey,null);
-  }catch{app.host.record('prepareCacheCleanupDeferred');}
+  if(cacheKey)void Promise.resolve().then(()=>typeof app.repo.storage.removeItem==='function'?app.repo.storage.removeItem(cacheKey):app.repo.write(cacheKey,null))
+    .catch(()=>app.host.record('prepareCacheCleanupDeferred'));
   if(prepared?.kind==='encounter'&&result.ok)app.ui?.notify?.(args.name+' 준비 완료 · '+(result.result.created?'능력치·기술을 새로 등록했습니다.':'저장된 인물 상태를 사용합니다.'));
   try {
     if(prepared?.kind==='social'&&app.ui?.info&&scopeKey(app.ui.info.scope)===scopeKey(scope)&&['overview','stats','socialRelations','socialSchedule','socialInventory','socialPlans'].includes(app.ui.tab)) {
@@ -21853,42 +21945,45 @@ async function present(app,scope,txId,name,args,result,state,prepared) {
     }
   }catch{app.host.record('socialViewDeferred');}
   app.host.record('toolResult',{tool:name,op:args.op,actionId:args.actionId,status:result.status,roll:result.roll});
-  if(Books.select(state).id==='romance'&&result.outcome==='offered'&&app.ui)try {
-    await app.ui.showSchemeOffer(scope,result.result?.scheme?.id);
-  }catch{app.host.record('schemeWindowDeferred');}
+  if(Books.select(state).id==='romance'&&result.outcome==='offered'&&app.ui)void Promise.resolve()
+    .then(()=>app.ui.showSchemeOffer(scope,result.result?.scheme?.id)).catch(()=>app.host.record('schemeWindowDeferred'));
   let display={markers:[]};
-  try{display=await require('./render.js').displayForAction(app.repo,scope,txId,args.actionId);}
+  try{display=require('./render.js').displayFromTransaction(transaction,args.actionId);}
   catch{app.host.record('displayReferenceDeferred',{actionId:args.actionId});}
-  const live=Engine.liveSummary(state,Records.actorIds(args,result));
+  let live;
+  try{live=Engine.liveSummary(state,Records.actorIds(args,result));}
+  catch(e){app.host.record('presentationDeferred',{part:'summary',actionId:args.actionId,code:e.code||'INTERNAL_ERROR'});}
   const spentTurn=result.ok&&['d100','hunters'].includes(Books.select(state).id)
     &&(name==='rpg_inventory'&&['use','reload'].includes(args.op)||name==='rpg_lifecycle'&&args.op==='summon')
-    &&live.combat?.currentActorId===args.actorId&&state.actors[args.actorId]?.budgets.action===0;
+    &&live?.combat?.currentActorId===args.actorId&&state.actors[args.actorId]?.budgets.action===0;
   const continuation=spentTurn?{...live.combat,instruction:live.combat.pending.length
     ?'대기 중인 공격의 반응을 먼저 처리하세요. 이번 호출의 결과는 이미 기록됐으니 같은 행동을 반복하지 마세요.'
     :'이번 호출로 행동을 소모했습니다. 같은 인물로 rpg_play act의 action:"계속"을 호출해 턴 종료와 뒤따르는 아군·적 턴을 이어가세요. 이미 기록된 행동을 다시 호출하지 마세요.'}:null;
   return {...result,
     ...(continuation?{result:{...result.result,next:continuation},narrationRule:continuation.instruction}:{}),
     ...(name==='rpg_registry'&&['ensure_actor','ensure_actors'].includes(args.op)?{narrationRule:'인물 등록·조회만 처리했습니다. 기술·공격·회복을 실행한 결과가 아닙니다. 이어지는 실제 행동은 rpg_play act 등 해당 도구로 처리하세요.'}:{}),
-    ...(state.meta.campaignDeath?{narrationRule:state.meta.campaignDeath.message}:{}),display,...Books.statusPackets(state),state:live};
+    ...(state.meta.campaignDeath?{narrationRule:state.meta.campaignDeath.message}:{}),display,...statusPackets(app,state),...(live?{state:live}:{stateSummaryUnavailable:true})};
 }
 
 // Every MCP mutation uses the same lifecycle. There is no model router here:
 // the saved rulebook selects a preparer and the repository owns all persistence.
 async function call(app,name,args,trace={}) {
-  const startedAt=Date.now(),timings={},details={...trace,tool:name,op:args?.op,actionId:args?.actionId};
-  let phase=null,phaseAt=startedAt,response;
+  const {boundary,...callTrace}=trace;
+  const startedAt=Date.now(),timings={},details={...callTrace,tool:name,op:args?.op,actionId:args?.actionId};
+  let phase=null,phaseAt=startedAt,response,storedResult;
   const enter=next=>{
     const now=Date.now();
     if(phase)timings[phase]=(timings[phase]||0)+now-phaseAt;
     phase=next;phaseAt=now;
     app.host.record('toolStage',{...details,phase});
   };
-  const assertRequestCurrent=()=>assert(trace.expectedRequestId===undefined||trace.expectedRequestId===app.requestSequence,'GENERATION_BOUNDARY','대기 중에 새로운 답변 요청이 시작됐습니다. 이전 호출을 다른 답변에 적용하지 않습니다.');
+  const assertInputCurrent=tx=>assert(!boundary||scopeKey(boundary.scope)===scopeKey(tx.scope)&&boundary.userMessageId===tx.userMessageId&&app.host.matches(boundary.anchor,tx.anchor)&&boundary.anchor.length===tx.anchor.length,
+    'GENERATION_BOUNDARY','호출을 받은 채팅 또는 사용자 입력이 바뀌었습니다. 이전 행동을 다른 입력에 적용하지 않습니다.');
   try {
     enter('scope');
-    assertRequestCurrent();
     assert(!app.unloaded,'UNLOADED','플러그인이 종료되었습니다.');
     const scope=await app.currentScope();
+    if(boundary)await app.host.verifyTransaction(boundary);
     const validationState=app.tx&&scopeKey(app.tx.scope)===scopeKey(scope)
       ?(await app.repo.transaction(scope,app.tx.id)).state:(await app.repo.current(scope))?.state;
     if(app.tx&&scopeKey(app.tx.scope)===scopeKey(scope))details.transactionId=app.tx.id;
@@ -21904,14 +21999,11 @@ async function call(app,name,args,trace={}) {
       return response=await read(app,scope,name,args);
     }
 
-    const assertResponseOpen=txId=>assert(!txId||!app.completedResponseTransactions?.has(txId),'RESPONSE_FINISHED','이 호출을 기다리던 답변이 이미 끝났습니다. 늦게 준비된 행동을 이전 답변이나 다음 답변에 적용하지 않았습니다.');
     enter('synchronize');
     await app.ensureGameplay();
     await app.bindPending();
-    assertRequestCurrent();
-    assertResponseOpen(app.tx.id);
+    assertInputCurrent(app.tx);
     assert(!app.tx.awaitingUser,'USER_MESSAGE_REQUIRED','새 사용자 입력을 보내세요.');
-    await app.host.verifyTransaction(app.tx);
     const source=await app.host.sources(scope);
     assert(!source.legacy,'LEGACY_CONFLICT','기존 서사 다이스 모듈을 끈 뒤 진행하세요.');
     const txId=app.tx.id,tx=await app.repo.transaction(scope,txId);
@@ -21920,23 +22012,43 @@ async function call(app,name,args,trace={}) {
     enter('validate');
     Books.validateCall(tx.state,name,args);
     const input={tool:name,...clone(args)};
+    // The host may finish an output before requesting/retrying another tool for
+    // the same user input. Continuing that answer must not reroll an old receipt.
+    if(!tx.actions[args.actionId]) {
+      const old=tx.state.ledger.findLast(row=>row.logicalActionId===args.actionId&&row.transactionId!==tx.id);
+      if(old) {
+        let previous;try{previous=await app.repo.transaction(scope,old.transactionId);}catch{}
+        const receipt=previous?.actions?.[args.actionId];
+        if(previous?.userMessageId===tx.userMessageId&&previous.status==='committed'&&receipt&&app.host.matches(previous.anchor,tx.anchor)&&previous.anchor.length===tx.anchor.length) {
+          assert(receipt.input===canonical(input),'ACTION_ID_CONFLICT','같은 행동 ID에 다른 인수가 전달되었습니다.');
+          enter('replay');storedResult=receipt.result;
+          return response={...present(app,scope,previous.id,name,args,receipt.result,tx.state,null,previous),persistence:'committed',replayed:true};
+        }
+      }
+    }
     // Existing invocation receipts are returned by Repository.execute. Do not
     // repeat auxiliary preparation for a retry, blocked result, or pending write.
     enter('prepare');
     if(!tx.actions[args.actionId]&&tx.state?.meta.native)require('./combat-options.js').guard(tx.state,tx.authority);
     const prepared=tx.actions[args.actionId]?null:await Books.prepare(app,scope,tx,name,args);
     enter('verify');
-    assertRequestCurrent();
-    assertResponseOpen(txId);
+    assertInputCurrent(tx);
     await app.host.verifyTransaction(tx);
-    assert(!app.unloaded&&await app.host.isCurrent(scope),'SCOPE_MISMATCH','채팅이 바뀌어 준비 결과를 적용하지 않습니다.');
+    assert(!app.unloaded,'UNLOADED','플러그인이 종료되었습니다.');
     enter('execute');
+    const stored={};
     const result=await app.repo.execute(scope,txId,args.actionId,input,
-      (world,authority)=>{assertRequestCurrent();assertResponseOpen(txId);return Books.apply(app,world,prepared,name,args,authority);});
-    const state=(await app.repo.transaction(scope,txId)).state;
+      async (world,authority)=>{await app.host.verifyTransaction(tx);return Books.apply(app,world,prepared,name,args,authority);},stored);
+    storedResult=result;
+    const state=stored.transaction.state;
+    app.lastResolvedTransaction={scope,transaction:stored.transaction};
     enter('present');
-    return response=await present(app,scope,txId,name,args,result,state,prepared);
+    return response=present(app,scope,txId,name,args,result,state,prepared,stored.transaction);
   }catch(error) {
+    if(storedResult) {
+      app.host.record('presentationDeferred',{...details,phase,code:error.code||'INTERNAL_ERROR'});
+      return response={...storedResult,stateSummaryUnavailable:true};
+    }
     app.host.record('toolBlocked',{...details,phase,code:error.code||'INTERNAL_ERROR',message:redact(error.message,app.secrets)});
     return response=errorResult(error);
   }finally {
@@ -22683,7 +22795,7 @@ module.exports = {
 },
 "./version.js":function(module,exports,require){
 'use strict';
-module.exports={VERSION:'0.18.4'};
+module.exports={VERSION:'0.18.6'};
 
 }};const __cache={};function require(id){if(__cache[id])return __cache[id].exports;if(!__modules[id])throw new Error("Unknown local module "+id);const m={exports:{}};__cache[id]=m;__modules[id](m,m.exports,require);return m.exports;}
 const {App}=require("./app.js"),{UI}=require("./ui.js");const app=new App(Risuai),ui=new UI(app,"/* LongMemory 0.24.0 visual signature. No embedded documents or remote assets. */\n:root{\n  color-scheme:dark;font:14px/1.65 Inter,'Pretendard','Noto Sans KR',system-ui,'Malgun Gothic',sans-serif;\n  --bg:#252422;--sidebar:#211f1d;--surface:#302e2b;--panel:#34312e;--field:#282624;--inset:#292725;\n  --text:#fffcf2;--muted:#ccc5b9;--border:#554f48;--border-strong:#797168;\n  --button:#403d39;--hover:#504a43;--primary:#eb5e28;--primary-text:#252422;--primary-hover:#f47d51;\n  --accent:#ffb28e;--accent-bg:#49352d;--accent-border:#a77862;--focus:#f6b896;\n  --good:#bcd9bc;--good-bg:#293a2e;--good-border:#57705b;\n  --danger:#ffb6b2;--danger-bg:#4b2d2c;--danger-border:#ab6c66;--shadow:#0004;\n  --line:var(--border);background:var(--bg);color:var(--text)\n}\n:root[data-theme=\"light\"]{\n  color-scheme:light;--bg:#faf7ef;--sidebar:#f4eddf;--surface:#fffdf7;--panel:#fffaf0;--field:#fffdf8;--inset:#f5f0e6;\n  --text:#403d39;--muted:#71695f;--border:#d8cebf;--border-strong:#aca08f;\n  --button:#f3ecdf;--hover:#eadfcd;--primary:#f4bfbf;--primary-text:#403d39;--primary-hover:#f6b896;\n  --accent:#3b627d;--accent-bg:#e2edf2;--accent-border:#8caebf;--focus:#3b627d;\n  --good:#3e6249;--good-bg:#e6efdf;--good-border:#a3b795;\n  --danger:#9d3839;--danger-bg:#f9e5e1;--danger-border:#ce9890;--shadow:#403d391a\n}\n*{box-sizing:border-box}body{margin:0;min-width:0}button,input,textarea,select{font:inherit}\nbutton{border:1px solid var(--border);border-radius:8px;color:var(--text);background:var(--button);padding:9px 13px;cursor:pointer;line-height:1.5}\nbutton:hover{background:var(--hover)}button:disabled{opacity:.42;cursor:default}\nbutton.primary{background:var(--primary);color:var(--primary-text);border-color:transparent;font-weight:700}button.primary:hover:not(:disabled){background:var(--primary-hover)}button.subtle{background:transparent}\nbutton.danger{color:var(--danger);border-color:var(--danger-border);background:var(--danger-bg)}\nbutton:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--focus);outline-offset:3px}\ninput,textarea,select{width:100%;max-width:100%;min-width:0;background:var(--field);border:1px solid var(--border-strong);border-radius:8px;padding:11px;color:var(--text)}\ninput::placeholder,textarea::placeholder{color:var(--muted);opacity:1}input[type=checkbox]{width:20px;height:20px;accent-color:var(--accent);vertical-align:middle;flex-shrink:0}\ntextarea{min-height:110px;resize:vertical;line-height:1.7}label{display:block;font-size:13px;color:var(--text)}label input,label select,label textarea{margin-top:7px}label+label{margin-top:14px}.fields>label+label{margin-top:0}\nh1,h2,h3,p{overflow-wrap:anywhere}h2{font-size:19px;line-height:1.5;margin:0 0 18px;font-weight:700}h3{font-size:16px;line-height:1.6;margin:0 0 10px}p{margin:10px 0 16px}\n.muted,small{color:var(--muted)}small{font-size:12px}.spaced{margin-top:18px}.hidden,[hidden]{display:none!important}\n.shell{display:grid;grid-template-columns:244px minmax(0,1fr);height:100vh;height:100dvh;overflow:hidden}\n.sidebar{position:sticky;top:0;height:100vh;height:100dvh;min-width:0;padding:28px 14px 22px;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;gap:22px}\n.sidebar-brand{padding:0 10px}.brand{display:flex;align-items:flex-start;gap:10px}.brand-mark{font-size:25px;line-height:1.25;color:var(--accent)}.brand h1{font-size:20px;line-height:1.35;letter-spacing:-.5px;font-weight:750;margin:0}\n.nav{display:flex;flex-direction:column;gap:16px;overflow-y:auto;min-height:0;scrollbar-width:thin}.nav-group{display:grid;gap:4px}.nav-label{color:var(--muted);font-size:11px;letter-spacing:.06em;padding:0 12px 4px}\n.nav button{width:100%;text-align:left;border:0;background:transparent;color:var(--muted);padding:11px 12px}.nav button:hover{background:var(--button)}.nav button.selected{background:var(--accent-bg);color:var(--accent);font-weight:650}\n.theme-picker{display:flex;gap:3px;border:1px solid var(--border);border-radius:10px;padding:3px;margin-top:auto;background:var(--field)}.theme-picker button{flex:1;border:0;background:transparent;color:var(--muted);padding:8px 6px;font-size:12px;white-space:nowrap}\n.theme-picker button[aria-pressed=\"true\"]{background:var(--button);color:var(--text);box-shadow:0 1px 3px var(--shadow)}.theme-picker button span{margin-right:5px}\n.content{height:100%;overflow-y:auto;min-height:0;width:100%;min-width:0;max-width:1450px;margin:0 auto;padding:28px 30px 90px}.top{position:sticky;top:0;z-index:30;background:var(--bg);padding-top:16px;display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:24px;padding-bottom:20px;border-bottom:1px solid var(--border)}\n.context-block{min-width:0;flex:1}.chat-context{font-size:22px;line-height:1.4;font-weight:700;letter-spacing:-.4px;margin:0 0 8px}.context-status{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;font-size:13px;color:var(--muted)}.context-status span+span:before{content:'·';margin-right:10px;color:var(--border-strong)}\n.top-actions{flex-shrink:0}.top-actions button{padding:8px 11px;font-size:12px}.row,.toolbar{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.toolbar{margin-bottom:14px}.row>*{min-width:0}\n.panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:22px;margin:0 0 18px;min-width:0}.card{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:20px;min-width:0}\n.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;margin-bottom:20px}.grid,.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.wide{grid-column:1/-1}.split{display:grid;grid-template-columns:1.15fr 1fr;gap:20px;align-items:start}.split>.panel{min-width:0}\n.badge,.tag{display:inline-block;border:1px solid var(--border-strong);background:var(--button);border-radius:5px;padding:3px 7px;font-size:11px;color:var(--muted)}.badge{font-size:12px}.number,.stat strong,td{font-variant-numeric:tabular-nums}\n.stat{display:flex;justify-content:space-between;gap:12px;margin-top:10px}.bar{height:5px;background:var(--border);border-radius:5px;margin:7px 0 14px;overflow:hidden}.bar span{display:block;height:100%;background:var(--accent)}.metric{font-size:28px;line-height:1.2;color:var(--accent);margin:5px 0}\n.notice{border-left:3px solid var(--accent);background:var(--accent-bg);padding:14px 17px;border-radius:4px;line-height:1.7;margin:0 0 18px;overflow-wrap:anywhere}.success{border-color:var(--good-border);background:var(--good-bg);color:var(--good)}.error{border-color:var(--danger-border);background:var(--danger-bg);color:var(--danger)}\n#feedback{position:fixed;right:24px;bottom:20px;z-index:80;width:max-content;max-width:min(670px,calc(100vw - 32px));max-height:32vh;overflow:auto;border:1px solid var(--accent-border);border-radius:10px;padding:13px 20px;margin:0;box-shadow:0 6px 24px var(--shadow);white-space:pre-wrap}\n#feedback.error{border-color:var(--danger-border)}#feedback.success{border-color:var(--good-border)}#feedback:empty{display:none}\n.empty{padding:60px 24px;text-align:center;border:1px dashed var(--border-strong);border-radius:13px;color:var(--muted);margin-bottom:18px}details>summary{cursor:pointer;color:var(--text);line-height:1.7;padding:7px 0}details[open]>summary{margin-bottom:10px}\npre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--inset);border:1px solid var(--border);border-radius:8px;padding:15px;max-height:420px;overflow:auto;font:12px/1.7 ui-monospace,Consolas,monospace}.scroll{overflow:auto;max-width:100%;scrollbar-width:thin}table{width:100%;border-collapse:collapse;font-size:13px}\nth,td{text-align:left;padding:12px 10px;border-bottom:1px solid var(--border);vertical-align:top;overflow-wrap:anywhere}th{font-weight:550;color:var(--muted);background:var(--inset)}tbody tr:hover{background:var(--inset)}\n.sourcelist{max-height:520px;overflow:auto;border:1px solid var(--border);border-radius:9px;background:var(--surface);margin:0 0 14px;scrollbar-width:thin}.source{position:relative;border-bottom:1px solid var(--border)}.source:last-child{border-bottom:0}\n.source input[type=checkbox]{position:absolute;left:12px;top:13px;z-index:1;width:26px;height:26px;margin:0;cursor:pointer}.source details{min-width:0}.source summary{display:flex;align-items:center;justify-content:space-between;gap:12px;list-style:none;min-height:54px;padding:12px 12px 12px 50px;margin:0;overflow-wrap:anywhere}\n.source summary::-webkit-details-marker{display:none}.source summary:hover{background:var(--inset)}.source summary:focus-visible{outline-offset:-3px}.source-name{min-width:0;color:var(--text);font-size:13px}.source-hint{flex-shrink:0;font-size:12px;color:var(--muted)}.source-hint:before{content:'▸ ';color:var(--accent)}.source details[open] .source-hint:before{content:'▾ '}.source pre{max-height:260px;margin:0 12px 14px 50px}\n.choice,.partial-catalog{display:flex;gap:10px;align-items:flex-start}.choice{padding:10px 0;cursor:pointer;overflow-wrap:anywhere}.choice input[type=checkbox],.partial-catalog input[type=checkbox]{width:22px;height:22px;margin:0;flex-shrink:0}\n.draft-editor{border:1px solid var(--border);border-radius:9px;padding:16px;margin-bottom:18px}.draft-editor>summary{font-weight:650}.draft-json{min-height:360px;font:12px/1.65 ui-monospace,Consolas,monospace;tab-size:2;white-space:pre;overflow:auto}.design-brief{min-height:260px;line-height:1.8}.draft-error{overflow-wrap:anywhere}.draft-error pre{white-space:pre-wrap}.draft-error p{margin:8px 0}\n.initial-actors{border:1px solid var(--border);border-radius:8px;padding:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;max-height:320px;overflow:auto}.initial-actors legend{color:var(--muted);padding:0 6px}.initial-actors label{display:flex;align-items:flex-start;gap:10px;background:var(--inset);padding:10px;border-radius:6px;cursor:pointer;margin:0}.initial-actors input[type=checkbox]{width:22px;height:22px;flex-shrink:0;margin:0}.initial-actors span{min-width:0;overflow-wrap:anywhere}.initial-actors small{display:block;font-size:11px}\n.issue-choice{padding:16px;margin:14px 0;background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:8px;overflow-wrap:anywhere}.issue-choice p{margin:8px 0}.issue-choice small{display:block;margin-top:8px}\n.item-editor-row>td{padding:12px 0 20px}.item-editor{padding:18px;background:var(--surface);border:1px solid var(--accent-border);border-radius:10px}.item-editor-body{margin:0;padding:0;border:0;min-width:0}.item-editor-body>legend{font-size:16px;font-weight:650;margin-bottom:18px;padding:0}.item-editor h4{font-size:14px;margin:20px 0 12px}.item-editor textarea{min-height:80px}.item-editor-actions{margin-top:22px}.item-editor .fields+.fields{margin-top:16px}\n.item-slots{display:flex;flex-wrap:wrap;gap:12px 18px;margin:22px 0 0;padding:14px;border:1px solid var(--border);border-radius:8px}.item-slots legend{padding:0 6px;color:var(--muted)}.item-slots label{display:flex;gap:8px;align-items:center;margin:0;cursor:pointer}.item-slots input{margin:0}\n.item-effect{border:1px solid var(--border);border-radius:8px;margin:0 0 12px;padding:12px;min-width:0}.item-effect legend{color:var(--muted);padding:0 6px}.item-effect-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px}.item-effect-fields>label+label{margin-top:0}.item-effect-footer{justify-content:flex-end;margin-top:12px}.item-effect-footer small{margin-right:auto}.item-ammo>.fields{margin:14px 0}\n/* Editors retain the app theme and navigation, while showing one task at a time. */\n.editor-workspace{max-width:960px;margin:18px auto;scroll-margin-top:145px}.editor-workspace .item-editor-body>legend{margin-bottom:4px}.editor-brief{color:var(--muted);font-size:12px;margin:0 0 18px}.editor-tabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--border);padding-bottom:8px;margin:0 0 18px}.editor-tabs button{background:transparent;border-color:transparent;color:var(--muted);padding:8px 14px}.editor-tabs button[aria-selected=\"true\"]{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent);font-weight:650}.editor-page{min-height:190px}.editor-page>section+section{border-top:1px solid var(--border);margin-top:18px;padding-top:14px}.editor-page .fields{gap:12px 18px}.editor-page .fields+.fields{margin-top:14px}.editor-page section>h4:first-child{margin-top:0}.editor-workspace .item-editor-actions{position:sticky;bottom:0;z-index:4;background:var(--surface);border-top:1px solid var(--border);padding:14px 0 4px;margin-top:20px}.editor-delete{margin-left:auto;color:var(--muted)}\n.fx-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0 10px}.fx-heading h4{margin:0;font-size:14px}.fx-heading h4 small{margin-left:5px;font-weight:400}.fx-heading button{padding:7px 12px;font-size:13px}.fx-targets{border-bottom:1px solid var(--border);padding-bottom:10px}.fx-targets>summary{font-weight:650;display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}.fx-targets>summary:before{content:'▸';color:var(--muted)}.fx-targets[open]>summary:before{content:'▾'}.fx-targets>summary span{font-size:12px;color:var(--muted);font-weight:400}.fx-targets .fx-chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.fx-chips .choice{padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:var(--field);margin:0;align-items:center;gap:7px}.fx-chips .choice:has(input:checked){background:var(--accent-bg);border-color:var(--accent-border)}.fx-chips input[type=checkbox]{width:18px;height:18px}.fx-activation{max-width:330px;margin:12px 0}.fx-targets .choice{align-items:center}\n.fx-list{display:grid;gap:8px}.fx-entry{border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--field);min-width:0}.fx-entry.is-open{border-color:var(--accent-border)}.fx-summary{width:100%;display:flex;align-items:center;justify-content:space-between;gap:14px;text-align:left;border:0;border-radius:0;background:transparent;padding:12px 14px}.fx-summary>span:first-child{min-width:0}.fx-summary strong{font-size:14px;display:block}.fx-summary small{font-size:12px;display:block;line-height:1.7;margin-top:2px;overflow-wrap:anywhere}.fx-summary .fx-edit-label{font-size:12px;color:var(--accent);white-space:nowrap;flex-shrink:0}.fx-entry.is-open>.fx-summary{background:var(--accent-bg)}.fx-detail{padding:16px;border-top:1px solid var(--border)}.fx-detail .item-effect{border:0;padding:0;margin:0}.fx-detail .item-effect>legend{display:none}.fx-detail .item-effect-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 18px}.fx-detail button[data-skill-effect-remove],.fx-detail button[data-item-effect-remove],.fx-detail button[data-erencha-effect-remove],.fx-detail button[data-fx-remove]{padding:6px 10px;font-size:12px;margin-top:14px;color:var(--muted)}.fx-advanced{margin:14px 0 10px;border-top:1px solid var(--border);padding-top:6px}.fx-advanced>summary{font-size:12px;color:var(--muted)}.fx-empty{font-size:13px;color:var(--muted);text-align:center;padding:22px 12px;border:1px dashed var(--border);border-radius:8px;margin:0}.fx-save-preset{margin-top:14px}.fx-save-preset>summary{font-size:12px;color:var(--muted)}.fx-save-preset .toolbar{align-items:flex-end}.fx-save-preset label{flex:1;max-width:420px}\n.fx-library{border:1px solid var(--accent-border);background:var(--surface);border-radius:9px;padding:14px;margin:10px 0 16px}.fx-library>.fx-heading{margin:0 0 8px}.fx-library .fx-search{font-size:12px}.fx-search input{padding:9px 11px}.fx-groups{display:flex;flex-wrap:wrap;gap:5px;margin:12px 0}.fx-groups button{font-size:12px;padding:5px 10px;background:transparent}.fx-groups button[aria-pressed=\"true\"]{background:var(--accent-bg);color:var(--accent);border-color:var(--accent-border)}.fx-library-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;max-height:290px;overflow-y:auto;scrollbar-width:thin}.fx-pick{text-align:left;background:var(--field);padding:10px 12px}.fx-pick strong{font-size:13px}.fx-pick small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:11px;line-height:1.6;margin-top:4px}.fx-library p{font-size:12px;margin:12px 0 0}\n@media(max-width:620px){.editor-workspace{padding:14px;margin:12px 0}.editor-tabs{gap:0}.editor-tabs button{padding:8px 10px;font-size:12px}.fx-detail{padding:12px}.fx-detail .item-effect-fields,.editor-workspace .fields{grid-template-columns:1fr}.fx-library-grid{grid-template-columns:1fr}.fx-targets>summary span{flex-basis:100%;padding-left:22px}.editor-workspace .item-editor-actions{gap:6px}.editor-workspace .item-editor-actions button{padding:8px 11px}.fx-summary{padding:11px}}\nfooter{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);color:var(--muted);font-size:11px;letter-spacing:.04em}\n@media(max-width:1150px){.split{grid-template-columns:minmax(0,1fr)}}\n@media(max-width:900px){\n  .shell{display:flex;flex-direction:column}.sidebar{flex-shrink:0;position:static;top:0;z-index:40;height:auto;padding:14px 18px 10px;border-right:0;border-bottom:1px solid var(--border);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px}\n  .sidebar-brand{grid-column:1;grid-row:1;padding:0}.brand h1{font-size:18px}.brand-mark{font-size:24px}.theme-picker{grid-column:2;grid-row:1;align-self:start;margin:0}.theme-picker button{padding:7px}\n  .nav{grid-column:1/-1;grid-row:2;display:flex;flex-direction:row;gap:4px;overflow-x:auto;overflow-y:hidden;max-width:100%}.nav-group{display:contents}.nav-label{display:none}.nav button{width:auto;flex-shrink:0;white-space:nowrap;padding:9px 11px}\n  .content{flex:1;min-height:0;height:auto;padding:22px 18px 90px}.top{gap:12px}.cards{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}\n}\n@media(max-width:600px){\n  .sidebar{padding:12px 12px 8px;gap:10px}.brand{gap:7px}.brand h1{font-size:17px}.brand-mark{font-size:22px}.theme-picker button{font-size:11px;padding:7px 5px}.theme-picker button span{margin-right:3px}\n  .content{padding:20px 12px 85px}.top{flex-wrap:wrap;margin-bottom:20px;padding-bottom:16px}.chat-context{font-size:20px}.context-status{font-size:12px}.grid,.fields,.cards{grid-template-columns:minmax(0,1fr)}.wide{grid-column:auto}.panel,.card{padding:17px}.toolbar button{flex:1 1 120px}.source summary{gap:8px}.source pre{margin-left:12px}.source-hint{font-size:11px}\n  th,td{padding:10px 8px}.scroll table{min-width:440px}#feedback{right:12px;bottom:12px;max-width:calc(100vw - 24px);padding:12px 15px}\n}\n@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}\n\n.source-choice{display:flex;align-items:center;gap:12px;min-height:54px;padding:12px 12px 12px 50px;cursor:pointer}.source-choice .source-name{flex:1}.source-preview-button{font-size:12px;flex-shrink:0}.source-choice:has(input:checked){background:var(--accent-bg)}\n\n/* Inner play pages only. The existing shell, navigation and themes stay intact. */\n.play-name{margin:22px 0 18px;font-size:22px;letter-spacing:-.4px}\n.play-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:18px;margin:18px 0}\n.play-facts>div{min-width:0}.play-facts dt{color:var(--muted);font-size:12px;margin-bottom:5px}.play-facts dd{margin:0;font-size:19px;font-weight:650;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}\n.play-wallet{padding:16px 18px;background:var(--inset);border:1px solid var(--border);border-radius:10px}.play-wallet dd{color:var(--accent);font-size:24px}\n.play-traits{padding:18px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}\n.play-traits-three{grid-template-columns:repeat(3,minmax(0,1fr))}.play-traits-three>div:nth-child(2){text-align:center}.play-traits-three>div:nth-child(3){text-align:right}\n.play-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:20px 0}\n.play-stat{display:flex;flex-direction:column;gap:7px;min-width:0;padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:10px}\n.play-stat>span{font-size:13px;color:var(--muted)}.play-stat>strong{font-size:30px;line-height:1.3;font-variant-numeric:tabular-nums}.play-stat>small{line-height:1.6}.play-growth{margin-top:auto;padding-top:10px}\n.play-meter{height:5px;border-radius:5px;background:var(--border);overflow:hidden;margin:8px 0 14px}.play-meter>span{height:100%;display:block;background:var(--accent)}.play-growth .play-meter{margin-bottom:0}\n.play-relations{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:22px}\n.play-relation{padding:20px;border:1px solid var(--border);border-radius:11px;background:var(--surface)}.play-relation h3{margin:0 0 20px}\n.play-person-link{font-size:16px;font-weight:650;text-align:left;background:none;border:0;padding:0;color:var(--text)}.play-person-link:hover{color:var(--accent);background:none;text-decoration:underline;text-underline-offset:4px}\n.play-relation .play-facts{grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);grid-template-columns:none;margin:0}.play-relation .play-facts dd{font-size:25px}.play-relation .play-facts>div+div{border-left:1px solid var(--border);padding-left:14px}\n.play-card-head,.play-list-row{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.play-card-head>*,.play-list-row>*{min-width:0}.play-card-head h3{margin:0}.play-card-head>button,.play-card-head>.tag,.play-card-head>.row{flex-shrink:0}.play-card-head .row{justify-content:flex-end}\n.play-list-row{align-items:center;padding:16px 0;border-bottom:1px solid var(--border)}.play-list-row:last-child{border-bottom:0}.play-list-row small{display:block;margin-top:5px}.play-list-row>button,.play-list-row>.tag{flex-shrink:0}\n.play-stakes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.play-stakes p{padding:16px;background:var(--inset);border-radius:8px}.play-stakes small{display:block;margin-bottom:7px}\n.play-skills,.play-items{display:grid;gap:14px}.play-skill,.play-item{padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:10px;min-width:0}.play-skill .play-card-head h3{line-height:1.8}.play-skill h3 small{font-weight:400}.play-skill .play-facts dd{font-size:14px}.play-skill-growth{font-size:12px;color:var(--muted);border-top:1px solid var(--border);padding-top:13px}.play-item>p:last-child{margin-bottom:0}.play-item .item-editor{margin-top:18px}.play-inline-editor{min-width:0}.play-inline-editor .item-editor{border-color:var(--accent-border)}\n.play-equipment{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.play-gear{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:14px;row-gap:6px;padding:16px;border:1px solid var(--border);border-radius:9px;background:var(--surface)}.play-gear small,.play-gear b{grid-column:1;overflow-wrap:anywhere}.play-gear button{grid-column:2;grid-row:1/3;align-self:center}\n.play-turns{display:flex;gap:10px;flex-wrap:wrap;list-style:none;margin:0;padding:0}.play-turns li{display:flex;align-items:center;gap:12px;padding:13px 17px;border:1px solid var(--border);border-radius:9px;min-width:150px}.play-turns li[aria-current=\"step\"]{background:var(--accent-bg);border-color:var(--accent-border)}.play-turns small{display:block}.play-turn-number{font-size:20px;font-weight:650;color:var(--accent)}.play-budget{font-size:12px;margin-bottom:0}\n.play-paths{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.play-paths>div{padding:14px;border:1px solid var(--border);border-radius:9px;background:var(--surface)}.play-paths small{display:block;margin-top:4px}\n[data-scheme-card]{scroll-margin-top:130px}\n@media(max-width:650px){.play-relations,.play-equipment,.play-stakes{grid-template-columns:minmax(0,1fr)}.play-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.play-stat,.play-relation,.play-skill,.play-item{padding:15px}.play-card-head{flex-wrap:wrap}.play-card-head>.row{margin-left:auto}.play-traits-three{gap:10px}.play-traits-three dd{font-size:16px}.play-facts dd{overflow-wrap:anywhere}.play-list-row{flex-wrap:wrap}.play-turns li{flex:1}}\n/* Mobile uses one scroll surface: branding leaves, navigation and context remain. */\n.mini-shell{max-width:640px;margin:auto;padding:12px 16px 40px}.mini-shell .top{top:0}.mini-shell .play-facts{gap:10px}.mini-shell .play-facts dd{font-size:16px}\n.download-dialog{color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:calc(100vw - 24px)}.download-link{padding:10px 14px;background:var(--primary);color:var(--primary-text);border-radius:8px;text-decoration:none}\nbody.editing .page-body{padding-bottom:90px}body.editing #feedback{bottom:calc(90px + env(safe-area-inset-bottom));max-height:25vh}\nbody.editing .item-editor-actions{position:fixed;bottom:0;left:244px;right:0;z-index:65;margin:0;padding:12px 24px calc(12px + env(safe-area-inset-bottom));background:var(--surface);border-top:1px solid var(--border);box-shadow:0 -4px 18px var(--shadow)}\n@media(max-width:900px){\n .shell{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto auto 1fr;align-content:start;overflow-y:auto;overflow-x:hidden}\n .sidebar,.content{display:contents}.sidebar-brand{grid-column:1;grid-row:1;padding:16px 12px;background:var(--sidebar)}.theme-picker{grid-column:2;grid-row:1;margin:0;padding:10px 12px;background:var(--sidebar)}\n .nav{grid-column:1/-1;grid-row:2;position:sticky;top:0;z-index:50;background:var(--sidebar);padding:8px 12px;border-bottom:1px solid var(--border)}\n .top{grid-column:1/-1;grid-row:3;position:sticky;top:var(--mobile-nav-height,58px);z-index:45;margin:0;padding:10px 12px;gap:8px;flex-wrap:nowrap}.chat-context{font-size:19px;margin:0 0 4px}.context-status{font-size:11px}.top-actions{gap:5px}.top-actions button{padding:7px 8px}\n .page-body{grid-column:1/-1;grid-row:4;min-width:0;padding:16px 12px 60px}.mini-shell .top{top:0}\n body.editing .item-editor-actions{left:0;padding-left:12px;padding-right:12px}.editor-workspace{scroll-margin-top:155px}\n}\n@media(max-width:600px){.chat-context{font-size:17px}}\r\n\n.mini-shell{height:100vh;height:100dvh;overflow-y:auto}.mini-shell .panel{padding:14px;margin-bottom:12px}.mini-shell details{padding:8px 0;border-bottom:1px solid var(--border)}\nbody.editing .page-body{padding-bottom:calc(var(--editor-actions-height,90px) + 24px)}body.editing #feedback{bottom:calc(var(--editor-actions-height,90px) + 12px)}\n");try{await app.install(ui);}catch(error){await app.dispose();document.body.textContent="NyoruRPG 초기화 실패: "+(error.code?error.message:"호스트 기능·권한을 확인하세요.");try{await Risuai.showContainer("fullscreen");}catch{}}
