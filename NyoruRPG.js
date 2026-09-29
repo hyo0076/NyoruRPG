@@ -1,7 +1,7 @@
 //@name universal-rpg-engine
-//@display-name NyoruRPG 0.18.8 · 자동 진행
+//@display-name NyoruRPG 0.19.0 · 자동 진행
 //@api 3.0
-//@version 0.18.8
+//@version 0.19.0
 //@update-url https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js
 (async()=>{
 "use strict";
@@ -960,9 +960,9 @@ const resourceState = obj({
   ...schemas.resource.properties,
   baseMax: num(1)
 }, [...schemas.resource.required, 'baseMax']);
-const condition = {oneOf:[schemas.skill.properties.condition,obj({id:str(),name:str(),kind:en('effect'),duration:int(1,1000),effectKey:str(1000),sourceId:str(),sourceSkillId:str(),skipFirstEnd:{type:"boolean"},referenceId:str(),effect:arr(schemas.effect,80),component:require('./effect-model.js').rowSchema,shield:num(0),actions:int(),accumulated:num(0),lastTrigger:str()},['id','name','kind','duration','effectKey','sourceId','effect','component'])]};
+const condition = {oneOf:[schemas.skill.properties.condition,obj({id:str(),name:str(),kind:en('effect'),duration:int(1,1000),permanent:{type:'boolean'},resourceLease:obj({key:str(),delta:num()}),effectKey:str(1000),sourceId:str(),sourceSkillId:str(),skipFirstEnd:{type:"boolean"},referenceId:str(),effect:arr(schemas.effect,80),component:require('./effect-model.js').rowSchema,shield:num(0),actions:int(),accumulated:num(0),lastTrigger:str()},['id','name','kind','duration','effectKey','sourceId','effect','component'])]};
 const actorState = obj({
-  freeTurnSpent:{type:"boolean"},effectState:{type:"object"},effectExtraActions:int(0,100),effectQueuedActions:int(0,10),effectExtraRunning:{type:"boolean"},
+  retired:{type:'boolean'},freeTurnSpent:{type:"boolean"},effectState:{type:"object"},effectExtraActions:int(0,100),effectQueuedActions:int(0,10),effectExtraRunning:{type:"boolean"},
   id,
   definitionId: id,
   name: str(),
@@ -989,15 +989,16 @@ const actorState = obj({
   })),
   budgets: budget
 });
-actorState.required=actorState.required.filter(k=>!["freeTurnSpent","effectState","effectExtraActions","effectQueuedActions","effectExtraRunning"].includes(k));
+actorState.required=actorState.required.filter(k=>!["retired","freeTurnSpent","effectState","effectExtraActions","effectQueuedActions","effectExtraRunning"].includes(k));
 const itemState = obj({
   instanceId: id,
   definitionId: id,
   ownerId: id,
   quantity: int(0, 1000000),
   loaded: int(0, 10000),
-  spent: int(0, 1000000000)
+  spent: int(0, 1000000000),durabilityCurrent:num(0,1000000)
 });
+itemState.required=itemState.required.filter(k=>k!=='durabilityCurrent');
 const quote = obj({
   id,
   ownerId: id,
@@ -1053,7 +1054,7 @@ const combat = optional(obj({
   effectApplications:{type:'object'},
   finishTurnActorId: id,
   opening: obj({actorId:id,actionId:id,executed:{type:'boolean'}}),
-  pendingLinks: map(optional(obj({id,actorId:id,skillId:id,targetIds:arr(id,50),originThreatIds:arr(id,50),status:en('waiting','executed','skipped'),reason:str(300)}),'reason'))
+  pendingLinks: map(optional(obj({id,actorId:id,skillId:id,targetIds:arr(id,50),originThreatIds:arr(id,50),status:en('waiting','executed','skipped'),reason:str(300),parent:nullable(id),landed:arr(id,50),threatIds:arr(id,50)}),'reason','parent','landed','threatIds'))
 }), 'finishTurnActorId','opening','pendingLinks','effectApplications','teams','turnTable','ownTurns','rescueUsed','rescuePending','freeQueue','ended');
 const env = obj({
   id,
@@ -1329,6 +1330,52 @@ module.exports = {
 module.exports = "/* Scoped cut-paper graphics. No gradients, blur, shadows or looping effects. */\n.urpgdice-card {\n  --urpgdice-text: #f7f7f2; --urpgdice-muted: #e0e5df; --urpgdice-label: #abb9af; --urpgdice-detail: #111713; --urpgdice-detail-text: #e0e6df; --urpgdice-badge: var(--urpgdice-ink); --urpgdice-badge-text: #151b18; --urpgdice-result: var(--urpgdice-ink);\n  --urpgdice-ink: #98e4be; --urpgdice-surface: #182e25; --urpgdice-burst: #244c39; --urpgdice-edge: #43745b;\n  container-type: inline-size; display: block; box-sizing: border-box; width: 100%; max-width: 720px;\n  margin: 16px 0; overflow: hidden; border: 1px solid var(--urpgdice-edge); border-radius: 3px;\n  background: var(--urpgdice-surface); color: var(--urpgdice-text); font: 13px/1.6 'Segoe UI','Malgun Gothic',sans-serif;\n  text-align: left; text-shadow: none; box-shadow: none;\n}\n.urpgdice-card.urpgdice-unfavorable { --urpgdice-ink: #ffa99e; --urpgdice-surface: #361c24; --urpgdice-burst: #62303d; --urpgdice-edge: #94505c; }\n.urpgdice-card.urpgdice-critical { --urpgdice-result: #fff6df; --urpgdice-ink: #17130b; --urpgdice-surface: #f2c431; --urpgdice-burst: #ffe477; --urpgdice-edge: #b98b14; }\n.urpgdice-card.urpgdice-critical.urpgdice-unfavorable { --urpgdice-ink: #fff1d9; --urpgdice-surface: #720e29; --urpgdice-burst: #b82443; --urpgdice-edge: #f77c84; }\n.urpgdice-card > .urpgdice-summary { display: block; position: relative; padding: 8px 20px 10px; list-style: none; cursor: pointer; color: inherit; }\n.urpgdice-card > .urpgdice-summary::-webkit-details-marker { display: none; }\n.urpgdice-card > .urpgdice-summary:focus-visible { outline: 2px solid var(--urpgdice-ink); outline-offset: -4px; }\n.urpgdice-card .urpgdice-top { display: flex; position: relative; z-index: 1; justify-content: space-between; align-items: center; gap: 12px; }\n.urpgdice-card .urpgdice-identity { display: flex; min-width: 0; align-items: center; gap: 9px; }\n.urpgdice-card .urpgdice-side { flex-shrink: 0; padding: 0 7px; background: var(--urpgdice-badge); color: var(--urpgdice-badge-text); font-size: 12px; font-weight: 800; }\n.urpgdice-card .urpgdice-actor { overflow-wrap: anywhere; font-size: 13px; color: var(--urpgdice-muted); }\n.urpgdice-card .urpgdice-more { display: none; }\n.urpgdice-card .urpgdice-chevron { display: inline-block; }\n.urpgdice-card[open] .urpgdice-chevron { transform: rotate(180deg); }\n.urpgdice-card .urpgdice-banner { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 5px; isolation: isolate; }\n.urpgdice-card .urpgdice-banner::before { content: ''; position: absolute; z-index: -1; inset: 0 -3% 0 30%; background: var(--urpgdice-burst); clip-path: polygon(12% 12%,100% 0,89% 88%,0 100%); }\n.urpgdice-card .urpgdice-score { display: flex; align-items: center; flex-shrink: 0; gap: clamp(7px,2cqi,15px); color: var(--urpgdice-ink); font-family: Impact,'Arial Black',sans-serif; font-weight: 900; line-height: 1; font-variant-numeric: tabular-nums; }\n.urpgdice-card .urpgdice-number { font-size: clamp(34px,10cqi,76px); letter-spacing: -1px; }\n.urpgdice-card .urpgdice-vs { font: italic 900 clamp(12px,2.7cqi,18px)/1 'Segoe UI',sans-serif; color: var(--urpgdice-text); }\n.urpgdice-card .urpgdice-target { font-size: clamp(27px,7cqi,48px); color: var(--urpgdice-text); }\n.urpgdice-card .urpgdice-result { position: relative; display: block; padding-right: 4px; color: var(--urpgdice-result); font: italic 900 clamp(31px,10cqi,72px)/1 Impact,'Arial Black',sans-serif; letter-spacing: -.6px; transform: rotate(-4deg); }\n.urpgdice-card.urpgdice-critical .urpgdice-banner::before { inset: 0 -3% 0 21%; clip-path: polygon(0 40%,19% 32%,12% 8%,35% 22%,42% 0,54% 20%,79% 0,74% 24%,100% 20%,89% 45%,100% 67%,79% 70%,89% 100%,63% 81%,45% 100%,37% 79%,9% 95%,19% 65%,0 68%,10% 52%); }\n.urpgdice-card.urpgdice-critical .urpgdice-result { transform: rotate(-7deg); }\n.urpgdice-card > .urpgdice-detail { display: block; padding: 12px 20px 3px; border-top: 1px solid var(--urpgdice-edge); background: var(--urpgdice-detail); color: var(--urpgdice-detail-text); }\n.urpgdice-card .urpgdice-detail-row { display: grid; grid-template-columns: 105px minmax(0,1fr); gap: 12px; margin-bottom: 12px; font-size: 12px; overflow-wrap: anywhere; }\n.urpgdice-card .urpgdice-label { color: var(--urpgdice-label); font-size: 11px; }\n.urpgdice-card .urpgdice-action { font-weight: 600; }\n.urpgdice-card .urpgdice-critical-note { border-top: 1px solid #384139; padding: 10px 0; color: var(--urpgdice-ink); font-size: 11px; }\n.urpgdice-card.urpgdice-critical.urpgdice-favorable { --urpgdice-text: #17130b; --urpgdice-muted: #17130b; --urpgdice-label: #17130b; --urpgdice-result: #17130b; --urpgdice-detail: #ffe99d; --urpgdice-detail-text: #17130b; --urpgdice-badge: #ffe99d; --urpgdice-badge-text: #17130b; }\n@container (max-width: 420px) {\n  .urpgdice-card > .urpgdice-summary { padding: 7px 12px 9px; }\n  .urpgdice-card .urpgdice-banner { padding-top: 4px; gap: 8px; }\n  .urpgdice-card > .urpgdice-detail { padding: 11px 12px 2px; }\n  .urpgdice-card .urpgdice-detail-row { grid-template-columns: 1fr; gap: 3px; }\n}\r\n\n.urpgdice-impact{display:block;margin-top:8px;padding:9px 11px;border:1px solid var(--urpgdice-edge);font-size:14px;line-height:1.6}\n.urpgdice-impact b{font-size:18px;font-weight:800}\n.urpgdice-hp{display:block;font-size:13px;color:var(--urpgdice-muted)}\n.urpgdice-card .urpgdice-title{display:block;margin-top:5px;font-size:13px;color:var(--urpgdice-muted);overflow-wrap:anywhere}\n.urpgdice-card .urpgdice-value{overflow-wrap:anywhere}\n.urpgdice-card.urpgdice-auto .urpgdice-result{font-size:clamp(26px,7cqi,44px)}\n.urpgdice-card.urpgdice-auto .urpgdice-banner{min-height:64px}\n.urpgdice-turns{padding:14px 18px}\n.urpgdice-turns table{width:100%;border-collapse:collapse;color:var(--urpgdice-text);margin-top:8px}\n.urpgdice-turns th,.urpgdice-turns td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--urpgdice-edge);font-size:12px}\n.urpgdice-turns th{color:var(--urpgdice-muted);font-weight:500}\n.urpgdice-turns .urpgdice-current{color:var(--urpgdice-ink);font-weight:700}\n.urpgdice-unavailable{display:block;margin:8px 0;font-size:12px;opacity:.8}\n";
 
 },
+"./combat-feature-ui.js":function(module,exports,require){
+'use strict';
+const {escapeHTML:e}=require('./util.js');
+const M=require('./effect-model.js');
+const field=(key,label,value,type='text')=>'<label>'+e(label)+'<input data-feature="'+key+'" type="'+type+'" value="'+e(value)+'" '+(type==='number'?'min="1" max="'+(key==='summon.duration'?1000:20)+'"':'maxlength="300"')+'></label>';
+function render(m){const n=M.normalize(m);Object.assign(m,n);return '<div data-feature-editor><section><h4>연속 공격</h4>'+field('hits','한 번 사용할 때 타격 횟수',m.hits,'number')+'<small>각 타격의 명중·피해·효과를 따로 계산합니다. 원래 기술 비용은 한 번 지불합니다.</small></section><section><div class="fx-heading"><h4>명중 후 연계</h4><button type="button" data-feature-add>+ 연계 추가</button></div>'+m.followUps.map((r,i)=>'<div class="card"><div class="fields">'+field('followUps.'+i+'.actor','사용자 · self는 자신',r.actor)+field('followUps.'+i+'.skill','후속 기술 · self는 같은 기술',r.skill)+field('followUps.'+i+'.count','연속 사용 횟수',r.count,'number')+'</div><button type="button" data-feature-remove="'+i+'">이 연계 삭제</button></div>').join('')+'<small>명중한 대상에게 목록 순서로 발동합니다. 각 후속 기술의 비용·명중을 계산하며 동료의 일반 행동은 쓰지 않습니다. 후속 공격이 빗나가거나 대상이 쓰러지면 그 연속 연계가 끝납니다. 후속 기술에 등록된 연계는 다시 확장하지 않습니다.</small></section><section><h4>소환수</h4>'+field('summon.actor','소환수 이름 · 사용하지 않으면 비움',m.summon.actor)+'<div class="fields"><label>소환 방식<select data-feature="summon.mode"><option value="cast" '+(m.summon.mode==='cast'?'selected':'')+'>이 기술을 사용해서 소환</option><option value="permanent" '+(m.summon.mode==='permanent'?'selected':'')+'>상시 동행</option></select></label>'+field('summon.duration','일시 소환 · 소환수 자신의 턴 수',m.summon.duration,'number')+'</div><small>첫 등장 때 수치를 준비하고 이후에는 같은 소환수를 사용합니다. 상시 동행은 지속 턴을 세지 않습니다. 재소환으로 HP를 회복시키지 않습니다.</small></section></div>';}
+function capture(m,root=document){for(const el of root.querySelectorAll('[data-feature]')){const path=el.dataset.feature.split('.'),last=path.pop();let dest=m;for(const k of path)dest=dest[k]||={};dest[last]=el.type==='number'?Number(el.value):el.value;}}
+function bind(ui,m,collect){for(const el of document.querySelectorAll('[data-feature]'))el.onchange=()=>collect();document.querySelector('[data-feature-add]')?.addEventListener('click',()=>{collect();if(m.followUps.length<10)m.followUps.push({actor:'self',skill:'self',count:1});ui.render();});for(const b of document.querySelectorAll('[data-feature-remove]'))b.onclick=()=>{collect();m.followUps.splice(Number(b.dataset.featureRemove),1);ui.render();};}
+function durability(config,current){return '<section><h4>장비 내구도</h4><div class="fields">'+[['max','최대 내구도'],['weaponRate','가한 피해 1당 무기 마모'],['armorRate','받은 피해 1당 방어구 마모'],['repairRatio','내구도 1 수리 · 가격 배율'],['restoreRatio','파괴 복구 · 가격 배율']].map(([k,label])=>'<label>'+label+'<input data-durability="'+k+'" type="number" min="'+(k==='max'?100:0)+'" step="any" value="'+e(config[k])+'"></label>').join('')+'<label>현재 내구도<input data-durability="current" type="number" min="0" step="any" value="'+e(current??config.max)+'"></label><label>파괴 복구 재료 · 없으면 비움<input data-durability="material" maxlength="300" value="'+e(config.material||'')+'"></label></div><small>내구도 0이면 장비 보너스가 멈춥니다. 파괴 복구는 내구도 1까지만 회복합니다.</small></section>';}
+function captureDurability(config,root=document){let current;for(const el of root.querySelectorAll('[data-durability]')){const k=el.dataset.durability,v=el.type==='number'?Number(el.value):el.value;if(k==='current')current=v;else config[k]=v;}return current;}
+module.exports={render,capture,bind,durability,captureDurability};
+
+},
+"./combat-features.js":function(module,exports,require){
+'use strict';
+const {clone,assert,uid}=require('./util.js');
+const FX=()=>require('./effect-system.js');
+const ids=a=>Array.isArray(a.skills)?a.skills:Object.keys(a.skills||{});
+const norm=x=>String(x||'').normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]/gu,'');
+function find(w,name){return w.actors[name]||Object.values(w.actors).find(a=>norm(a.name)===norm(name));}
+function followUps(s){return [...(s.link?[{actor:s.link.actor,skill:s.link.skill,count:1,mode:s.link.mode||s.link.trigger}]:[]),...(s.mechanics?.followUps||[])];}
+function companion(w,a,name){return !name||['self','자신',a.id,a.name].includes(name)?a:find(w,name);}
+function skill(w,a,name,origin){return ['self','같은 기술',''].includes(name)?origin:ids(a).map(id=>w.definitions.skills[id]).find(s=>s&&(s.id===name||norm(s.name)===norm(name)));}
+function summon(w,owner,s,events=[]){const spec=s.mechanics?.summon;if(!spec?.actor)return null;const a=find(w,spec.actor);assert(a&&a.id!==owner.id,'SUMMON_MISSING','소환수 '+spec.actor+'의 수치 준비가 필요합니다.');assert(FX().resource(a,'hp')?.current>0,'SUMMON_DEFEATED','쓰러진 소환수는 소환으로 부활하지 않습니다.');assert(!a.ownerId||a.ownerId===owner.id,'SUMMON_OWNER','다른 인물의 소환수입니다.');a.kind='summon';a.ownerId=owner.id;a.active=true;a.summon={...(a.summon||{}),lifecycle:spec.mode==='permanent'?'persistent':'fresh',remaining:spec.mode==='permanent'?0:spec.duration};const c=w.combat;if(c&&!c.order.some(x=>x.actorId===a.id)){c.order.push({actorId:a.id,initiative:0,effectInitiativeBase:0,eligibleRound:c.round+1});(c.teams||={})[a.id]=c.teams[owner.id]??0;if(a.budgets)a.budgets={...w.profile.budgets,action:0,bonus:0,movement:0};}w.meta.effectScene=[...new Set([...(w.meta.effectScene||[]),a.id])];FX().emit(events,a,'소환',spec.mode==='permanent'?'상시 동행':spec.duration+'턴');return a;}
+function maintainSummons(w){for(const a of Object.values(w.actors).filter(a=>a.active!==false))for(const id of ids(a)){const s=w.definitions.skills[id];if(s?.mechanics?.summon?.mode==='permanent'){const target=find(w,s.mechanics.summon.actor);if(target&&FX().alive(target)&&!target.summon)summon(w,a,s,w.meta.effectEvents||=[]);}}}
+function companionIds(w,owners){return Object.values(w.actors).filter(a=>a.kind==='summon'&&a.active!==false&&FX().alive(a)&&owners.includes(a.ownerId)).map(a=>a.id);}
+// Archived actors remain addressable by past receipts; they no longer populate the registry.
+function retire(w){for(const a of Object.values(w.actors))if(a.kind==='enemy'&&FX().resource(a,'hp')?.current<=0){a.active=false;a.retired=true;}}
+function clearEmpty(w){for(const [id,i] of Object.entries(w.inventory||{}))if(i.quantity<=0){for(const a of Object.values(w.actors))for(const [slot,value] of Object.entries(a.equipment||{}))if(value===id)a.equipment[slot]=null;delete w.inventory[id];}}
+const running=new WeakSet();
+function automatic(w,a,rng,events=w.meta.effectEvents||=[]){if(!a||running.has(a))return;running.add(a);try{for(const id of ids(a)){const s=w.definitions.skills[id],m=s?.mechanics;if(m?.activation!=='automatic')continue;const spec=m.automatic||{},hp=FX().resource(a,'hp'),sp=FX().resource(a,'sp'),mp=FX().resource(a,'mp'),met=spec.trigger==='incapacitated'?hp?.current<=0:spec.trigger==='sp_empty'?sp?.current===0:spec.trigger==='mp_empty'?mp?.current===0:!!hp&&hp.current/hp.max*100<=spec.threshold;
+const key='automatic:'+id,state=(a.effectState||={})[key]||={used:0,latched:false};if(!met){state.latched=false;continue;}if(state.latched||state.used>=(spec.limit||1))continue;state.latched=true;
+const costs=w.meta.rulebook?.id==='erencha'?[{resource:'mp',value:require('./erencha-rules.js').resourceCost(w,a,s.mpCost||0,s.name),mode:'flat'}]:s.costs||[],amounts=costs.map(c=>{const r=FX().resource(a,c.resource);return {r,n:c.mode==='percentMax'?(r?.max||0)*c.value/100:c.mode==='percentCurrent'?(r?.current||0)*c.value/100:c.value};});if(amounts.some(x=>!x.r&&x.n||x.r&&x.r.current<x.n)){FX().emit(events,a,s.name,'자동 발동 자원 부족');continue;}
+if(FX().requirements(w,a,s).length||(a.cooldowns?.[id]||0)>0)continue;const st=a.skills?.[id];if(s.charges&&st?.spent>=s.charges.limit)continue;if(s.uses!=null&&(a.uses?.[id]||0)>=s.uses)continue;
+state.used++;for(const x of amounts)if(x.r)x.r.current-=x.n;if(st&&s.charges)st.spent++;if(Array.isArray(a.skills))(a.uses||={})[id]=(a.uses[id]||0)+1;
+if(Array.isArray(a.skills)&&s.cooldown)(a.cooldowns||={})[id]=s.cooldown+1;
+if(s.kind==='heal'||s.type==='heal'){a.automaticRecovery=true;try{FX().heal(w,a,w.meta.rulebook?.id==='erencha'?s.power:require('./engine.js').skillPower(w,a.id,id),'hp',events);}finally{delete a.automaticRecovery;}}
+if(s.condition){const condition=clone(s.condition);a.conditions=(a.conditions||[]).filter(c=>c.id!==condition.id);a.conditions.push(condition);FX().sync(w,a);}
+if(Array.isArray(a.skills)&&s.effects?.length){a.conditions=(a.conditions||[]).filter(c=>c.name!==s.name);a.conditions.push({name:s.name,remaining:s.duration||3,effects:clone(s.effects)});FX().sync(w,a);}
+FX().emit(events,a,s.name,'자동 발동 · '+state.used+'/'+(spec.limit||1));const effects=m.effects.map(r=>r.recipient==='selected'?{...r,recipient:'self'}:r);FX().apply(w,a,[a],{...s,mechanics:{...m,effects}},{rng,events,automatic:true});
+}}finally{running.delete(a);}}
+function reset(w){for(const a of Object.values(w.actors))for(const [key,state] of Object.entries(a.effectState||{}))if(key.startsWith('automatic:')){state.used=0;state.latched=false;}}
+function thrown(w,a,t,d,rng){if(d.mechanics?.itemDelivery!=='throw'||t.id===a.id)return {roll:null,success:true};const base=d.mechanics.throwTarget??30;let threshold=base;if(w.meta.rulebook?.id==='erencha'){const R=require('./erencha-rules.js');threshold+=R.modifiers(w,t).evasion-R.modifiers(w,a).accuracy;}else{const R=require('./rules.js');threshold+=(FX().isObject(t)?0:R.viewActor(w,t.id).derived.defense||0)-(R.viewActor(w,a.id).derived.accuracy||0);}const r=require('./rules.js');return w.meta.rulebook?.id==='erencha'?(()=>{const roll=r.d100(rng),target=Math.max(5,Math.min(95,threshold));return {roll,target,success:roll>target};})():r.check(threshold,w.profile,rng);}
+module.exports={ids,find,followUps,companion,skill,summon,maintainSummons,companionIds,retire,clearEmpty,automatic,reset,thrown};
+
+},
 "./combat-options.js":function(module,exports,require){
 'use strict';
 const {assert,escapeHTML:e,scopeKey,uid}=require('./util.js');
@@ -1343,7 +1390,7 @@ function bind(ui){document.getElementById('combat-options-save')?.addEventListen
 function controlled(w,a){const s=get(w);return !!a&&(a.kind==='player'||s.commander&&!require('./effect-system.js').enemy(w,a));}
 function guard(w,ctx={}){assert(ctx.admin||!w.meta.campaignDeath,'CHARACTER_DEAD',w.meta.campaignDeath?.message||'이 게임의 사용자 인물은 사망했습니다. 서술이나 새 구조자 등록으로 되돌릴 수 없습니다.');}
 function clinic(w,party,{wipe=false}={}){
-  const records=[];for(const a of party){const hp=Object.values(a.resources).find(r=>r.role==='vital');if(!hp||hp.current>0)continue;hp.current=Math.max(1,Math.ceil(hp.max*.4));a.conditions=[];
+  const records=[];for(const a of party){const hp=Object.values(a.resources).find(r=>r.role==='vital');if(!hp||hp.current>0)continue;hp.current=Math.max(1,Math.ceil(hp.max*.4));a.conditions=(a.conditions||[]).filter(c=>c.permanent);
     const record={actorId:a.id,hp:hp.current};const n=w.meta.native?.actors?.[a.id];if(wipe&&n){record.lostXP=n.xp;n.xp=0;}
     if(!wipe){const currency=w.profile.currencies?.[0]?.id,wallet=w.economy.wallets[a.id]||={};if(currency){const fee=Math.max((a.level||1)*100,Math.ceil((wallet[currency]||0)*.5)),paid=Math.min(wallet[currency]||0,fee);wallet[currency]=(wallet[currency]||0)-paid;(w.meta.medicalDebt||={})[a.id]=(w.meta.medicalDebt[a.id]||0)+fee-paid;Object.assign(record,{currency,medicalFee:fee,paid,debt:fee-paid});}}
     records.push(record);
@@ -1468,9 +1515,10 @@ const operations = {
     end: def()
   },
   rpg_inventory: {
+    repair:optional(def({actorId:id,itemId:id,amount:num(0,1000000),restore:{type:'boolean'}}),'amount','restore'),
     edit:def({actorId:id,itemId:id,expected:str(50000),patch:obj({
       name:str(),description:{type:'string',maxLength:2000},category:en('equipment','consumable','material','ammo','quest'),quantity:int(1,1000000),
-      mechanics:require('./effect-model.js').schema,price:int(0,1000000000),currencyId:id,slots:arr(en('right_hand','left_hand','head','armor','waist','shoes','gloves','accessory_1','accessory_2'),9),effects:arr(schemas.effect,20),
+      durability:require('./durability.js').schema,durabilityCurrent:num(0,1000000),mechanics:require('./effect-model.js').schema,price:int(0,1000000000),currencyId:id,slots:arr(en('right_hand','left_hand','head','armor','waist','shoes','gloves','accessory_1','accessory_2'),9),effects:arr(schemas.effect,20),
       ammoType:{type:'string',maxLength:256},capacity:int(0,10000),loaded:int(0,10000),useResource:{type:'string',maxLength:100},useAmount:str(500)
     },[])}),
     inspect: def({
@@ -1605,6 +1653,8 @@ const operations = {
     })
   },
   rpg_registry: {
+    summon:optional(def({name:str(),owner:str(),description:str(4000),mode:en('permanent','cast'),duration:int(1,1000)}),'description','mode','duration'),
+    dismiss_summon:def({name:str(),owner:str()}),
     ensure_actor: {...actorRequest,properties:{...actorRequest.properties,actor:str()}},
     ensure_actors: optional(def({actors:arr(actorRequest,50),actor:str()}),'actor'),
     register: def({
@@ -1647,11 +1697,11 @@ const descriptions = {
   rpg_state: '저장된 상태 조회만 합니다. 공격·기술·회복·보상은 실행되지 않습니다. 이미 상태를 받았다면 조회를 반복하지 말고 실제 행동을 호출하세요. last_results/action_result는 기록된 결과 복구입니다.',
   rpg_combat: '개별 선공·행동·반응·턴 처리. action의 reactions와 finishTurn으로 연속 처리할 수 있습니다. 회피 수식으로 먼저 판정하고 실패하면 방어로 경감합니다. 두 비용과 하나의 반응 횟수를 기록합니다. 광역에는 광역 회피 기술이 필요합니다. 반응은 재굴림하지 않습니다. pending.options 중 실제 위임된 선택만 처리하고 원래 공격을 다시 호출하지 마세요.',
   rpg_skill: '사용자 화면에서 개인 기술을 편집합니다.',
-  rpg_inventory: '저장된 소지품·장비·소모품·재장전을 처리합니다. inspect로 ID를 확인하며 use는 actorId,itemId,targetId입니다. 전투 중 사용·재장전으로 행동을 소모했다면 반환된 next대로 계속하여 턴을 마칩니다. 장비는 기술 사용을 제한하지 않습니다.',
+  rpg_inventory: '저장된 소지품·장비·소모품·재장전을 처리합니다. repair(actorId,itemId,amount,restore)는 저장된 가격의 유료 수리이며 파괴 장비는 restore:true로 내구도1 복구합니다. 수리 도구는 use로 효과를 적용합니다. 투척 소모품은 저장된 명중 판정을 하며 빗나가도 소모합니다. inspect로 ID를 확인하며 use는 actorId,itemId,targetId입니다. 전투 중 사용·재장전으로 행동을 소모했다면 반환된 next대로 계속하여 턴을 마칩니다. 장비는 기술 사용을 제한하지 않습니다.',
   rpg_economy: '정상 거래는 무굴림. 더 좋은 조건은 견적·흥정·수락 순서입니다. 실제 소지품과 해당 화폐로 정산합니다.',
   rpg_explore: '저장된 탐험과 사건을 처리합니다. 이미 받은 전리품은 반복 지급하지 않습니다.',
   rpg_lifecycle: '등록된 시간 사건·휴식·소환을 처리합니다. 직접 수치 보정은 사용자 화면 전용입니다.',
-  rpg_registry: '실제로 등장한 새 인물은 ensure_actor(name), 여러 명은 ensure_actors(actors). 능력치·기술·장비를 준비하고 기존 인물은 현재 상태를 재사용합니다. 같은 종류의 적 개체는 고유 instanceKey, 원형 재사용은 templateId입니다. 등록만으로 전투·회복·부활하지 않습니다. train은 저장된 훈련 성장 정책의 기술 숙련을 기록합니다. 사용으로 성장하는 기술은 act로 실제 사용하며 train으로 추가 지급하지 않습니다.',
+  rpg_registry: '소환은 summon(name,owner,mode:permanent|cast,duration), 소환 해제는 dismiss_summon(name,owner)입니다. 같은 소환수를 재사용하고 쓰러진 소환수는 부활시키지 않습니다. 실제로 등장한 새 인물은 ensure_actor(name), 여러 명은 ensure_actors(actors). 능력치·기술·장비를 준비하고 기존 인물은 현재 상태를 재사용합니다. 같은 종류의 적 개체는 고유 instanceKey, 원형 재사용은 templateId입니다. 등록만으로 전투·회복·부활하지 않습니다. train은 저장된 훈련 성장 정책의 기술 숙련을 기록합니다. 사용으로 성장하는 기술은 act로 실제 사용하며 train으로 추가 지급하지 않습니다.',
   rpg_check: '등록된 비전투 판정. 같은 사건을 다시 굴려 결과를 바꾸지 않습니다.'
 };
 const READ_ONLY = new Set(['rpg_bootstrap.status','rpg_bootstrap.refresh','rpg_bootstrap.get_context',...Object.keys(operations.rpg_state).map(op=>'rpg_state.'+op),'rpg_inventory.inspect','rpg_explore.inspect']);
@@ -1666,7 +1716,7 @@ function tools({admin=false,native=false,hunters=false}={}) {
     if(!native)return true;
     if(!nativeTools.has(tool))return false;
     if(tool==='rpg_play')return ['act','check','explore','obtain','refresh'].includes(op);
-    if(tool==='rpg_registry')return ['ensure_actor','ensure_actors','train'].includes(op);
+    if(tool==='rpg_registry')return ['ensure_actor','ensure_actors','summon','dismiss_summon','train'].includes(op);
     return true;
   });
 }
@@ -2728,7 +2778,7 @@ function edit(job,args) {
     } else if(item.definitionId!==oldId)bundle.itemDrafts.push(after);
     else bundle.itemDrafts[bundle.itemDrafts.findIndex(i=>i.id===oldId)]=after;
     const initial=bundle.initialStateDraft.items.find(i=>i.instanceId===item.instanceId);
-    Object.assign(initial,{definitionId:item.definitionId,quantity:item.quantity,loaded:item.loaded,equip:Object.values(a.equipment).includes(item.instanceId)});
+    Object.assign(initial,{definitionId:item.definitionId,quantity:item.quantity,loaded:item.loaded,equip:Object.values(a.equipment).includes(item.instanceId),...(item.durabilityCurrent!==undefined?{durabilityCurrent:item.durabilityCurrent}:{})});
     // The initial draft only stores an equip flag. Keep its deterministic
     // slot allocation aligned with the edited slot order at application.
     if(initial.equip) {
@@ -2746,6 +2796,22 @@ function edit(job,args) {
 module.exports={snapshot,editable,world,ownerForSkill,itemContext,definitionItem,edit};
 
 },
+"./durability.js":function(module,exports,require){
+'use strict';
+const {assert}=require('./util.js');
+const equipment=d=>d?.category==='equipment'||['weapon','armor','accessory'].includes(d?.type);
+const definition=(w,i)=>i?.definitionId?w.definitions.items[i.definitionId]:i;
+function config(d){const raw=String(d.rarity||d.rank||'normal').toLowerCase(),rank=({노말:'normal',일반:'normal',레어:'rare',유니크:'unique',에픽:'epic',전설:'legendary',레전더리:'legendary'})[raw]||raw,base=({normal:100,common:100,rare:150,unique:200,epic:d.type?400:300,legendary:d.type?300:400})[rank]||100;return {max:Math.max(100,Number(d.durability?.max)||base),weaponRate:Math.max(0,Number(d.durability?.weaponRate??.02)),armorRate:Math.max(0,Number(d.durability?.armorRate??.1)),repairRatio:Math.max(0,Number(d.durability?.repairRatio??1/300)),restoreRatio:Math.max(0,Number(d.durability?.restoreRatio??.1)),material:String(d.durability?.material||'')};}
+function info(w,i){const d=definition(w,i);if(!equipment(d))return null;const c=config(d),current=Math.max(0,Math.min(c.max,Number(i.durabilityCurrent??c.max)));return {...c,current,broken:current<=0};}
+function working(w,i){return !!i&&i.quantity>0&&!info(w,i)?.broken;}
+function equipped(w,a){return [...new Set([...Object.values(a.equipment||{}),...Object.values(w.inventory||{}).filter(i=>i.ownerId===a.id&&i.equipped).map(i=>i.instanceId||i.id)])].map(id=>w.inventory[id]).filter(i=>i&&i.quantity>0);}
+function label(w,i){const d=info(w,i);return d?'내구도 '+Math.round(d.current*100)/100+' / '+d.max+(d.broken?' · 파괴 · 효과 정지':''):'';}
+function wear(w,a,amount,kind,events=[]){if(!a||amount<=0)return;for(const i of equipped(w,a)){const d=definition(w,i),slots=Object.entries(a.equipment||{}).filter(([,id])=>id===(i.instanceId||i.id)).map(([s])=>s),weapon=d.type==='weapon'||slots.some(s=>['right_hand','left_hand'].includes(s)),armor=d.type==='armor'||slots.some(s=>['head','armor','waist','shoes','gloves'].includes(s));if(kind==='weapon'?!weapon:!armor)continue;const c=info(w,i);if(!c||c.broken)continue;i.durabilityCurrent=Math.max(0,Math.round((c.current-amount*(kind==='weapon'?c.weaponRate:c.armorRate))*10000)/10000);events.push({targetId:a.id,label:d.name+' · 내구도',value:Math.round(c.current*100)/100+' → '+Math.round(i.durabilityCurrent*100)/100+(i.durabilityCurrent===0?' · 효과 정지':'')});}}
+function repair(w,a,i,{amount=1e6,paid=false,restore=false}={},events=[]){assert(i?.ownerId===a.id&&i.quantity>0,'NOT_OWNED','수리할 보유 장비를 지정하세요.');const d=definition(w,i),c=info(w,i);assert(c,'NOT_EQUIPMENT','수리할 장비를 지정하세요.');assert(!c.broken||restore,'BROKEN_EQUIPMENT','파괴된 장비는 먼저 복구해야 합니다.');let n=c.broken?1:Math.min(c.max-c.current,Math.max(0,amount));assert(n>0,'NO_REPAIR','이미 최대 내구도입니다.');const currency=d.currencyId||'gold',cost=paid?Math.ceil((d.value??d.price??0)*(c.broken?c.restoreRatio:n*c.repairRatio)):0,wallet=w.economy.wallets[a.id]||{};assert(!paid||(wallet[currency]||0)>=cost,'INSUFFICIENT_MONEY','수리 비용이 부족합니다.');const material=c.broken&&c.material?Object.values(w.inventory).find(x=>x.ownerId===a.id&&x.quantity>0&&[x.instanceId,x.id,definition(w,x)?.name].includes(c.material)):null;assert(!c.broken||!c.material||material,'REPAIR_MATERIAL','복구 재료가 필요합니다: '+c.material);if(paid&&cost)wallet[currency]-=cost;if(material)material.quantity--;i.durabilityCurrent=c.current+n;events.push({targetId:a.id,label:d.name+' · '+(c.broken?'복구':'수리'),value:'+'+n+' · '+i.durabilityCurrent+'/'+c.max+(paid?' · 비용 '+cost+' '+currency:'')});return {itemId:i.instanceId||i.id,current:i.durabilityCurrent,max:c.max,cost,currencyId:currency,restored:c.broken};}
+const schema={type:'object',additionalProperties:false,required:[],properties:{max:{type:'number',minimum:100,maximum:1e6},weaponRate:{type:'number',minimum:0,maximum:100},armorRate:{type:'number',minimum:0,maximum:100},repairRatio:{type:'number',minimum:0,maximum:100},restoreRatio:{type:'number',minimum:0,maximum:100},material:{type:'string',maxLength:300}}};
+module.exports={equipment,definition,config,info,working,equipped,label,wear,repair,schema};
+
+},
 "./effect-editor-ui.js":function(module,exports,require){
 'use strict';
 // One list for all saved formats; adapters preserve execution semantics.
@@ -2758,16 +2824,16 @@ const select=(key,label,v,values)=>'<label>'+e(label)+'<select data-fx-field="'+
 const input=(key,label,v,type='number',extra='')=>'<label>'+e(label)+'<input data-fx-field="'+key+'" type="'+type+'" value="'+e(v??'')+'" '+(type==='number'?'step="any" ':'maxlength="300" ')+extra+'></label>';
 const bool=(key,label,v)=>'<label class="choice"><input data-fx-field="'+key+'" type="checkbox" '+(v?'checked':'')+'>'+e(label)+'</label>';
 const NO_VALUE=new Set(['incapacitated','silence','fear','awe','taunt','healBlock','defenseBlock','immunity','damageImmune','enchant','skip','confusion','objectState','deathImmune']);
-const IMMEDIATE=new Set(['applyDamage','applyResource','objectState']);
+const IMMEDIATE=new Set(['applyDamage','repair','objectState']);
 const DAMAGE_TYPES=new Set(['damage','resistance','damageImmune','reflect','lifesteal','enchant']);
 const recipients={selected:'선택 대상',self:'자신',allies:'장면의 아군',enemies:'장면의 적',party:'자신과 아군'};
-function numberText(r){return r.mode==='multiply'?'×'+r.value:(Number(r.value)>0?'+':'')+r.value;}
+function numberText(r){return r.type==='applyResource'&&r.mode==='multiply'?'최대치의 '+(r.value>0?'+':'')+r.value+'%':r.mode==='multiply'?'×'+r.value:(Number(r.value)>0?'+':'')+r.value;}
 function summary(r,{passive=false}={}){
   const parts=[M.TYPES[r.type]||r.type];if(r.delivery==='on_hit')parts.push('자신에게 유지 → 명중한 상대에게 전달');
   if(r.target&&r.target!=='*')parts.push(M.DAMAGE[r.target]||M.STATUS[r.target]||({hp:'HP',mp:'MP',sp:'SP'})[r.target]||r.target);
   if(!NO_VALUE.has(r.type))parts.push(numberText(r));
   if(r.chance!==undefined&&r.chance!==100)parts.push(r.chance+'% 확률');
-  if(!passive&&r.duration&&!IMMEDIATE.has(r.type))parts.push(r.duration+'턴');
+  if(!passive&&!IMMEDIATE.has(r.type))parts.push(r.lifetime==='permanent'?'영구':r.duration+'턴');
   if(r.recipient&&r.recipient!=='selected')parts.push(recipients[r.recipient]);
   if(r.trigger&&['tickDamage','tickResource'].includes(r.type))parts.push(M.TRIGGERS[r.trigger]);
   return parts.join(' · ');
@@ -2775,9 +2841,9 @@ function summary(r,{passive=false}={}){
 function choiceOptions(ui,current,{legacy=M.LEGACY,hasStats=true,extra={}}={}){
   return options({...Object.fromEntries(Object.entries(legacy).filter(([key])=>hasStats||!['raw','checkStat','regen','uses'].includes(key))),...extra},current);
 }
-function init(definition,{item=false}={}){const kind=definition.kind||definition.type;return clone(definition.mechanics||{activation:item?(kind==='consumable'||definition.category==='consumable'?'on_use':'passive'):definition.activationBlocked||kind==='passive'?'passive':'on_use',targeting:M.targeting({relations:item||kind==='heal'||kind==='buff'?['self','ally']:['attack','command'].includes(kind)?['enemy']:Object.keys(M.RELATIONS),count:definition.area?0:1}),effects:[]});}
+function init(definition,{item=false}={}){const kind=definition.kind||definition.type;return M.normalize(definition.mechanics||{activation:item?(kind==='consumable'||definition.category==='consumable'?'on_use':'passive'):definition.activationBlocked||kind==='passive'?'passive':'on_use',targeting:M.targeting({relations:item||kind==='heal'||kind==='buff'?['self','ally']:['attack','command'].includes(kind)?['enemy']:Object.keys(M.RELATIONS),count:definition.area?0:1}),effects:[]});}
 function addSelection(ui,value,key,index=null){
-  const selected=key.startsWith(PRESET)?Presets.list(ui.app.effectPresets).find(p=>PRESET+p.id===key):{effects:[M.row({type:key,value:1,...(['tickResource','applyResource','resourceMax','regen'].includes(key)?{target:'hp'}:key==='cost'?{target:'mp'}:{})})]};
+  const selected=key.startsWith(PRESET)?Presets.list(ui.app.effectPresets).find(p=>PRESET+p.id===key):{effects:[M.row({type:key,value:1,...(['tickResource','applyResource','resourceMax','regen'].includes(key)?{target:'hp',...(key==='applyResource'?{lifetime:'permanent'}:{})}:key==='cost'?{target:'mp'}:{})})]};
   assert(selected,'EFFECT_TYPE','선택한 효과를 찾지 못했습니다.');
   const s=view(value),replacing=Number.isInteger(index),whole=key.startsWith(PRESET)&&!selected.id.startsWith('builtin.'),start=whole?0:replacing?index:value.effects.length;
   assert((whole?0:value.effects.length)+selected.effects.length-(replacing&&!whole?1:0)<=80,'EFFECT_LIMIT','효과는 80개 이내로 구성하세요.');
@@ -2810,10 +2876,12 @@ function modernEditor(ui,m,a,r,i){
   if(r.type==='incapacitated')specific+=bool('wakeOnHit','피격 시 해제',r.wakeOnHit);
   if(r.type==='buildup')specific+=input('threshold','발동 임계치',r.threshold)+select('thresholdEffect','임계치 효과',r.thresholdEffect,{damage:'일시 피해',freeze:'동결'})+input('burst',r.thresholdEffect==='freeze'?'동결 지속 턴':'발병 피해',r.burst);
   if(r.type==='objectState')specific+=input('stateKey','물체 상태',r.stateKey,'text')+input('stateValue','변경할 값',r.stateValue,'text');
-  const magnitude=NO_VALUE.has(r.type)||r.type==='checkStat'?'':select('mode','계산',r.mode,{add:'더하기 / 고정값',multiply:'곱하기'})+input('value',r.mode==='multiply'?'배율':['lifesteal','reflect','counter','penetration','protect','share'].includes(r.type)?'비율 (%)':'수치',r.value);
+  if(r.type==='repair')specific+=input('target','수리할 장비 이름 · *는 착용 중인 장비',r.target,'text');
+  if(['raw','resourceMax','applyResource'].includes(r.type))specific+=select('lifetime','변화 유지',r.lifetime||'temporary',{temporary:'일시적 · 지속 턴 후 종료',permanent:'영구 · 명시적으로 해제할 때까지'});
+  const magnitude=NO_VALUE.has(r.type)||r.type==='checkStat'?'':select('mode','계산',r.mode,{add:'더하기 / 고정값',multiply:r.type==='applyResource'?'최대치의 비율 (%)':'곱하기'})+input('value',r.mode==='multiply'?(r.type==='applyResource'?'최대 자원의 비율 (%)':'배율'):['lifesteal','reflect','counter','penetration','protect','share'].includes(r.type)?'비율 (%)':'수치',r.value);
   const scale=select('scale.basis','성장 기준',r.scale.basis,{none:'고정 수치',...(hasStats?{stat:'능력치'}:{}),proficiency:'숙련도',level:'레벨',sourceMax:'시전자 최대 자원',targetMax:'대상 최대 자원'})+(r.scale.basis!=='none'?(r.scale.basis==='stat'?select('scale.key','능력치',r.scale.key,stats):['sourceMax','targetMax'].includes(r.scale.basis)?select('scale.key','자원',r.scale.key,resources):input('scale.key','숙련도 이름 (현재 기술은 비움)',r.scale.key,'text'))+input('scale.coefficient','성장 계수',r.scale.coefficient):'');
   const details=select('when','적용 조건',r.when,{hit:'명중 / 자동 적용 성공',damage:'실제 HP 피해 발생',always:'명중 여부와 무관'})+select('stacking','재적용',r.stacking,{refresh:'지속 갱신',replace:'수치 교체',stack:'중첩'})+(r.stacking==='stack'?input('maxStacks','최대 중첩',r.maxStacks,'number','min="1" max="1000"'):'')+scale+input('perAlly','아군 1명당 추가량',r.perAlly)+select('status','상태 분류',r.status,{'':'없음',...M.STATUS})+select('category','상태이상 계열',r.category,{none:'없음',physical:'물리',mental:'정신',magic:'마법'})+input('healthBelow','HP가 이 비율 이하일 때 (%) · 100은 항상',r.healthBelow??100,'number','min="0" max="100"')+bool('harmful','해로운 상태 · 면역 적용',r.harmful)+(!specific?input('target','적용 범위 · *는 전체',r.target,'text'):'');
-  return '<div data-fx-row="'+i+'"><div class="fields">'+input('name','효과 이름',r.name,'text')+select('delivery','전달 방식',r.delivery||'direct',{direct:'지금 대상에게 적용',on_hit:'자신에게 유지 · 공격 명중 시 상대에게 전달'})+(r.delivery==='on_hit'?input('hitDuration','상대에게 남는 지속 턴',r.hitDuration||3,'number','min="1" max="1000"'):select('recipient','받는 대상',r.recipient,recipients))+specific+magnitude+(!passive&&(!IMMEDIATE.has(r.type)||r.delivery==='on_hit')?input('duration',r.delivery==='on_hit'?'인챈트 유지 턴':'지속 턴',r.duration,'number','min="0" max="1000"'):'')+input('chance','발동 확률 (%)',r.chance,'number','min="0" max="100"')+'</div><details class="fx-advanced"><summary>중첩·성장·상세 조건</summary><div class="fields">'+details+'</div></details><button type="button" class="subtle" data-fx-remove="'+i+'">이 효과 삭제</button></div>';
+  return '<div data-fx-row="'+i+'"><div class="fields">'+input('name','효과 이름',r.name,'text')+select('delivery','전달 방식',r.delivery||'direct',{direct:'지금 대상에게 적용',on_hit:'자신에게 유지 · 공격 명중 시 상대에게 전달'})+(r.delivery==='on_hit'?input('hitDuration','상대에게 남는 지속 턴',r.hitDuration||3,'number','min="1" max="1000"'):select('recipient','받는 대상',r.recipient,recipients))+specific+magnitude+(!passive&&r.lifetime!=='permanent'&&(!IMMEDIATE.has(r.type)||r.delivery==='on_hit')?input('duration',r.delivery==='on_hit'?'인챈트 유지 턴':'지속 턴',r.duration,'number','min="0" max="1000"'):'')+input('chance','발동 확률 (%)',r.chance,'number','min="0" max="100"')+'</div><details class="fx-advanced"><summary>중첩·성장·상세 조건</summary><div class="fields">'+details+'</div></details><button type="button" class="subtle" data-fx-remove="'+i+'">이 효과 삭제</button></div>';
 }
 function library(ui,m,hasStats,extra){
   const s=view(m),allowed=key=>hasStats||!['raw','checkStat','regen','uses'].includes(key);
@@ -2831,7 +2899,7 @@ function render(ui,value,a,{item=false,id='effects',entries=[],extraChoices={},a
   const checks=(field,labels)=>Object.entries(labels).map(([key,label])=>'<label class="choice"><input type="checkbox" data-fx-target="'+field+'" value="'+key+'" '+(p[field].includes(key)?'checked':'')+'>'+e(label)+'</label>').join('');
   const targetLabel=[p.relations.map(k=>M.RELATIONS[k]).join('·'),p.kinds.map(k=>M.KINDS[k]).join('·'),p.count?p.count+'명 / 개':'전체',...(p.ownSummon?['내 소환수']:[])].join(' · ');
   const targets='<details class="fx-targets"><summary>사용 대상 <span>'+e(targetLabel)+'</span></summary><div class="fx-chips">'+checks('relations',M.RELATIONS)+'</div><div class="fx-chips">'+checks('kinds',M.KINDS)+'</div><div class="fields">'+input('targeting.count','대상 수 · 0은 전체',p.count,'number','min="0" max="200" step="1"')+bool('targeting.ownSummon','자신의 소환수만',p.ownSummon)+'</div><details><summary>대상 태그 제한</summary>'+input('targeting.tags','필수 태그 · 쉼표로 구분',p.tags.join(', '),'text')+'</details></details>';
-  return '<section class="fx-editor" data-fx-editor="'+e(id)+'">'+(targetControl?targets:'')+(activationControl?'<div class="fx-activation">'+select('activation','효과 발동',m.activation,item?{passive:'착용 중 상시',on_hit:'공격 명중 시',on_use:'소모품 사용 시'}:{on_use:'기술 사용 시',passive:'배운 동안 상시'})+'</div>':'')+'<div class="fx-heading"><h4>효과 <small>'+all.length+'개</small></h4><button type="button" data-fx-add>+ 효과 추가</button></div>'+(s.adding?library(ui,m,hasStats,extraChoices):'')+'<div class="fx-list">'+all.map(row=>'<div class="fx-entry'+(s.active===row.id?' is-open':'')+'"><button type="button" class="fx-summary" data-fx-open="'+e(row.id)+'" aria-expanded="'+(s.active===row.id)+'"><span><strong>'+e(row.title)+'</strong><small>'+e(row.summary)+'</small></span><span class="fx-edit-label">'+(s.active===row.id?'접기':'편집')+'</span></button>'+(s.active===row.id?'<div class="fx-detail">'+row.editor()+'</div>':'')+'</div>').join('')+(all.length?'':'<p class="fx-empty">추가된 효과가 없습니다. 효과 추가에서 세팅이나 보정을 선택하세요.</p>')+'</div>'+(all.length?'<details class="fx-save-preset"><summary>이 조합을 내 세팅에 저장</summary><div class="toolbar"><label>조합 이름<input data-fx-name maxlength="300" value="'+e(s.name)+'" placeholder="예: 내가 최고야"></label><button type="button" data-fx-save>조합 저장</button></div></details>':'')+'</section>';
+  return '<section class="fx-editor" data-fx-editor="'+e(id)+'">'+(targetControl?targets:'')+(activationControl?'<div class="fx-activation">'+select('activation','효과 발동',m.activation,item?{passive:'착용 중 상시',on_hit:'공격 명중 시',on_use:'소모품 사용 시'}:{on_use:'기술 사용 시',passive:'배운 동안 상시',automatic:'조건 충족 시 자동 발동'})+(m.activation==='automatic'?select('automatic.trigger','자동 발동 조건',m.automatic.trigger,{incapacitated:'HP 0 · 전투불능 직전',sp_empty:'SP 모두 소진',mp_empty:'MP 모두 소진',hp_below:'HP가 지정 비율 이하'})+(m.automatic.trigger==='hp_below'?input('automatic.threshold','HP 비율 (%)',m.automatic.threshold):'')+input('automatic.limit','전투마다 발동 가능 횟수',m.automatic.limit,'number','min="1" max="100"')+'<small>조건에 진입할 때 한 번 발동합니다. 비용·사용 횟수는 적용하고 일반 행동은 소모하지 않습니다.</small>':'')+(item?select('itemDelivery','사용 방식',m.itemDelivery,{direct:'직접 적용',throw:'투척 · 명중 판정'})+(m.itemDelivery==='throw'?input('throwTarget','기본 투척 난이도 (d100 초과 시 명중)',m.throwTarget):''):'')+'</div>':'')+'<div class="fx-heading"><h4>효과 <small>'+all.length+'개</small></h4><button type="button" data-fx-add>+ 효과 추가</button></div>'+(s.adding?library(ui,m,hasStats,extraChoices):'')+'<div class="fx-list">'+all.map(row=>'<div class="fx-entry'+(s.active===row.id?' is-open':'')+'"><button type="button" class="fx-summary" data-fx-open="'+e(row.id)+'" aria-expanded="'+(s.active===row.id)+'"><span><strong>'+e(row.title)+'</strong><small>'+e(row.summary)+'</small></span><span class="fx-edit-label">'+(s.active===row.id?'접기':'편집')+'</span></button>'+(s.active===row.id?'<div class="fx-detail">'+row.editor()+'</div>':'')+'</div>').join('')+(all.length?'':'<p class="fx-empty">추가된 효과가 없습니다. 효과 추가에서 세팅이나 보정을 선택하세요.</p>')+'</div>'+(all.length?'<details class="fx-save-preset"><summary>이 조합을 내 세팅에 저장</summary><div class="toolbar"><label>조합 이름<input data-fx-name maxlength="300" value="'+e(s.name)+'" placeholder="예: 내가 최고야"></label><button type="button" data-fx-save>조합 저장</button></div></details>':'')+'</section>';
 }
 function capture(value,container=document.querySelector('[data-fx-editor]')){
   if(!container)return;
@@ -2846,7 +2914,7 @@ function capture(value,container=document.querySelector('[data-fx-editor]')){
 function bind(ui,value,{captureOuter=()=>{},render=()=>ui.render(),container=document.querySelector('[data-fx-editor]'),addExtra=null}={}){
   if(!container)return;const s=view(value),collect=()=>{captureOuter();capture(value,container);};
   container.addEventListener('input',()=>capture(value,container));
-  container.addEventListener('change',event=>{collect();if(['thresholdEffect','scale.basis','mode','stacking','activation','delivery'].includes(event.target.dataset.fxField))render();});
+  container.addEventListener('change',event=>{collect();if(['thresholdEffect','scale.basis','mode','stacking','activation','delivery','lifetime','itemDelivery','automatic.trigger'].includes(event.target.dataset.fxField))render();});
   const filter=()=>{let visible=0;const query=s.search.toLocaleLowerCase().trim();for(const b of container.querySelectorAll('[data-fx-pick]')){b.hidden=query?!b.dataset.search.includes(query):b.dataset.group!==s.group;if(!b.hidden)visible++;}const empty=container.querySelector('[data-fx-empty]');if(empty)empty.hidden=visible>0;for(const b of container.querySelectorAll('[data-fx-group]'))b.setAttribute('aria-pressed',String(b.dataset.fxGroup===s.group&&!query));};
   const search=container.querySelector('[data-fx-search]');if(search)search.oninput=()=>{s.search=search.value;filter();};filter();
   for(const b of container.querySelectorAll('[data-fx-group]'))b.onclick=()=>{s.group=b.dataset.fxGroup;s.search='';if(search)search.value='';filter();};
@@ -2870,7 +2938,7 @@ module.exports={init,render,capture,bind,choiceOptions,addSelection,summary,numb
 // Shared editable vocabulary. Presets are data, never additional execution paths.
 const {clone,assert}=require('./util.js');
 const LEGACY={raw:'능력치',accuracy:'명중 보정',damage:'주는 피해',defense:'적의 명중 난이도',resourceMax:'최대 자원',regen:'휴식 회복량',uses:'기술 사용 횟수',power:'기술 위력',initiative:'선공 보정',resistance:'받는 피해',ammoSave:'탄약 보존 확률',cost:'자원 소모량',sale:'판매 금액',xp:'획득 경험치',checkStat:'판정 능력치'};
-const TYPES={...LEGACY,tickDamage:'지속 피해',tickResource:'주기적 자원 증감',applyDamage:'즉시 피해',applyResource:'즉시 자원 증감',armor:'피해 경감량',evasion:'회피 보정',skip:'확률적 행동 스킵',incapacitated:'행동 불가',silence:'기술 사용 제한',confusion:'대상 혼란',fear:'특정 대상 공격·접근 금지',awe:'모든 대상 공격·접근 금지',taunt:'공격 대상 강제',healBlock:'HP 회복 금지',defenseBlock:'방어 불가',shield:'피해 흡수',immunity:'상태이상 면역',damageImmune:'피해 무효',lifesteal:'흡혈',reflect:'피해 반환',counter:'회피 후 일반 공격',penetration:'방어 관통',critical:'대성공 경계 감소',enchant:'공격 속성 부여',extraAction:'추가 행동',nextPower:'다음 행동 위력',protect:'대신 피해 받기',share:'피해 분산',buildup:'누적 임계치 발동',objectState:'물체 상태 변경',deathImmune:'죽음 면역',buildupRate:'상태 누적 속도'};
+const TYPES={...LEGACY,tickDamage:'지속 피해',tickResource:'주기적 자원 증감',applyDamage:'즉시 피해',applyResource:'현재 HP·MP·SP 증감',repair:'장비 내구도 수리',armor:'피해 경감량',evasion:'회피 보정',skip:'확률적 행동 스킵',incapacitated:'행동 불가',silence:'기술 사용 제한',confusion:'대상 혼란',fear:'특정 대상 공격·접근 금지',awe:'모든 대상 공격·접근 금지',taunt:'공격 대상 강제',healBlock:'HP 회복 금지',defenseBlock:'방어 불가',shield:'피해 흡수',immunity:'상태이상 면역',damageImmune:'피해 무효',lifesteal:'흡혈',reflect:'피해 반환',counter:'회피 후 일반 공격',penetration:'방어 관통',critical:'대성공 경계 감소',enchant:'공격 속성 부여',extraAction:'추가 행동',nextPower:'다음 행동 위력',protect:'대신 피해 받기',share:'피해 분산',buildup:'누적 임계치 발동',objectState:'물체 상태 변경',deathImmune:'죽음 면역',buildupRate:'상태 누적 속도'};
 const DAMAGE={'*':'모든 피해',physical:'물리',magic:'마법 전체',elemental:'속성 전체',fire:'화염',ice:'냉기',lightning:'번개',poison:'독',psychic:'정신',holy:'신성',dark:'어둠',hazard:'환경'};
 const STATUS={bleed:'출혈',poison:'독',burn:'화상',cold:'냉기',shock:'감전',corrosion:'부식',curse:'저주',disease:'질병',toxin:'중독 누적',stun:'기절',sleep:'수면',bind:'속박',silence:'침묵',blind:'실명',confusion:'혼란',fear:'공포',awe:'경외',taunt:'도발',physical:'물리 상태이상',mental:'정신계 상태이상',all:'모든 상태이상'};
 const RELATIONS={self:'자신',ally:'아군',enemy:'적',neutral:'중립'};
@@ -2882,6 +2950,7 @@ function row(input={}) {
   assert(input&&Object.hasOwn(TYPES,input.type),'EFFECT_TYPE','효과 종류를 해석할 수 없습니다: '+(input?.type||input?.preset||input?.name||'이름·종류 없음'));
   return {type:input.type,target:str(input.target,'*')||'*',mode:input.mode==='multiply'?'multiply':'add',value:num(input.value),
     name:str(input.name,TYPES[input.type]),recipient:['selected','self','allies','enemies','party'].includes(input.recipient)?input.recipient:'selected',
+    lifetime:input.lifetime==='permanent'||input.type==='applyResource'&&input.delivery!=='on_hit'&&input.lifetime!=='temporary'?'permanent':'temporary',
     delivery:input.delivery==='on_hit'?'on_hit':'direct',hitDuration:Math.round(num(input.hitDuration,3,1,1000)),
     duration:Math.round(num(input.duration,3,0,1000)),stacking:['stack','refresh','replace'].includes(input.stacking)?input.stacking:'refresh',maxStacks:Math.round(num(input.maxStacks,20,1,1000)),
     chance:num(input.chance,100,0,100),trigger:TRIGGERS[input.trigger]?input.trigger:'turn_end',when:['hit','damage','always'].includes(input.when)?input.when:'hit',
@@ -2902,7 +2971,11 @@ function normalize(input) {
   if(!input)return null;
   const values=Array.isArray(input)?input:input.effects||[];
   assert(Array.isArray(values)&&values.length<=80,'EFFECT_LIMIT','효과는 80개 이내로 구성하세요.');
-  return {activation:["passive","on_hit","on_use"].includes(input.activation)?input.activation:"on_use",targeting:targeting(input.targeting),effects:values.map(row),requires:(Array.isArray(input.requires)?input.requires:typeof input.requires==='string'?input.requires.split(/[,\n]/):[]).map(x=>str(x).trim()).filter(Boolean).slice(0,20)};
+  return {activation:["passive","automatic","on_hit","on_use"].includes(input.activation)?input.activation:"on_use",targeting:targeting(input.targeting),effects:values.map(row),requires:(Array.isArray(input.requires)?input.requires:typeof input.requires==='string'?input.requires.split(/[,\n]/):[]).map(x=>str(x).trim()).filter(Boolean).slice(0,20),
+    hits:Math.round(num(input.hits,1,1,20)),followUps:(Array.isArray(input.followUps)?input.followUps:[]).slice(0,10).map(x=>({actor:str(x.actor,'self')||'self',skill:str(x.skill,'self')||'self',count:Math.round(num(x.count,1,1,20))})),
+    summon:{actor:str(input.summon?.actor),mode:input.summon?.mode==='permanent'?'permanent':'cast',duration:Math.round(num(input.summon?.duration,5,1,1000))},
+    automatic:{trigger:['incapacitated','sp_empty','mp_empty','hp_below'].includes(input.automatic?.trigger)?input.automatic.trigger:'hp_below',threshold:num(input.automatic?.threshold,30,0,100),limit:Math.round(num(input.automatic?.limit,1,1,100))},
+    itemDelivery:input.itemDelivery==='throw'?'throw':'direct',throwTarget:Math.round(num(input.throwTarget,30,0,100))};
 }
 // Optional at the authoring boundary. Defaults are supplied once by normalize().
 const text={type:'string',maxLength:300},number={type:'number',minimum:-1e6,maximum:1e6},boolean={type:'boolean'};
@@ -2912,9 +2985,9 @@ const rowSchema=object(Object.fromEntries(Object.entries(row({type:'accuracy'}))
 rowSchema.properties.type=enumOf(Object.keys(TYPES));rowSchema.required=['type'];
 Object.assign(rowSchema.properties,{mode:enumOf(['add','multiply']),recipient:enumOf(['selected','self','allies','enemies','party']),duration:{type:'integer',minimum:0,maximum:1000},stacking:enumOf(['stack','refresh','replace']),maxStacks:{type:'integer',minimum:1,maximum:1000},chance:{type:'number',minimum:0,maximum:100},trigger:enumOf(Object.keys(TRIGGERS)),when:enumOf(['hit','damage','always']),category:enumOf(['none','physical','mental','magic']),threshold:{type:'number',minimum:1,maximum:1e6},ramp:{type:'number',minimum:0,maximum:1e6},burst:{type:'number',minimum:0,maximum:1e6},perAlly:{type:'number',minimum:0,maximum:1e6},thresholdEffect:enumOf(['damage','freeze']),condition:enumOf(['always','hit','kill','evade']),reference:enumOf(['source','selected'])});
 const targetSchema=object({relations:{type:'array',items:enumOf(Object.keys(RELATIONS)),maxItems:4},kinds:{type:'array',items:enumOf(Object.keys(KINDS)),maxItems:3},ownSummon:boolean,count:{type:'integer',minimum:0,maximum:200},tags:{type:'array',items:text,maxItems:20}});
-const schema=object({activation:enumOf(["passive","on_hit","on_use"]),targeting:targetSchema,effects:{type:'array',items:rowSchema,maxItems:80},requires:{type:'array',items:text,maxItems:20}});
+const schema=object({activation:enumOf(["passive","automatic","on_hit","on_use"]),targeting:targetSchema,effects:{type:'array',items:rowSchema,maxItems:80},requires:{type:'array',items:text,maxItems:20},hits:{type:'integer',minimum:1,maximum:20},followUps:{type:'array',maxItems:10,items:object({actor:text,skill:text,count:{type:'integer',minimum:1,maximum:20}})},summon:object({actor:text,mode:enumOf(['permanent','cast']),duration:{type:'integer',minimum:1,maximum:1000}}),automatic:object({trigger:enumOf(['incapacitated','sp_empty','mp_empty','hp_below']),threshold:{type:'number',minimum:0,maximum:100},limit:{type:'integer',minimum:1,maximum:100}}),itemDelivery:enumOf(['throw','direct']),throwTarget:{type:'integer',minimum:0,maximum:100}});
 function describe(m){return (m?.effects||[]).map(x=>(x.name||TYPES[x.type])+' '+x.value+(x.duration?' · '+x.duration+'턴':'')).join(' / ');}
-function brief(m){if(!m)return undefined;m=normalize(m);return {activation:m.activation,targeting:clone(m.targeting),requires:m.requires,effects:m.effects.map(r=>({name:r.name,type:r.type,value:r.value,mode:r.mode,duration:r.duration,delivery:r.delivery,hitDuration:r.hitDuration,stacking:r.stacking,target:r.target,recipient:r.recipient,...(r.when==='hit'?{}:{when:r.when}),...(r.chance===100?{}:{chance:r.chance}),...(['tickDamage','tickResource'].includes(r.type)?{trigger:r.trigger,damageType:r.damageType}:{}),...(r.scale.basis==='none'?{}:{scale:clone(r.scale)})}))};}
+function brief(m){if(!m)return undefined;m=normalize(m);return {activation:m.activation,targeting:clone(m.targeting),requires:m.requires,...(m.hits>1?{hits:m.hits}:{}),...(m.followUps.length?{followUps:clone(m.followUps)}:{}),...(m.summon.actor?{summon:clone(m.summon)}:{}),...(m.activation==='automatic'?{automatic:clone(m.automatic)}:{}),...(m.itemDelivery==='throw'?{itemDelivery:'throw',throwTarget:m.throwTarget}:{}),effects:m.effects.map(r=>({name:r.name,type:r.type,value:r.value,mode:r.mode,duration:r.duration,lifetime:r.lifetime,delivery:r.delivery,hitDuration:r.hitDuration,stacking:r.stacking,target:r.target,recipient:r.recipient,...(r.when==='hit'?{}:{when:r.when}),...(r.chance===100?{}:{chance:r.chance}),...(['tickDamage','tickResource'].includes(r.type)?{trigger:r.trigger,damageType:r.damageType}:{}),...(r.scale.basis==='none'?{}:{scale:clone(r.scale)})}))};}
 module.exports={LEGACY,TYPES,DAMAGE,STATUS,RELATIONS,KINDS,TRIGGERS,row,targeting,normalize,schema,rowSchema,describe,brief};
 
 },
@@ -2984,7 +3057,7 @@ add('냉기 인챈트',[{type:'applyDamage',damageType:'ice',value:5,delivery:'o
 add('냉기 취약',[{type:'buildupRate',target:'cold',mode:'multiply',value:1.5},{type:'resistance',target:'ice',mode:'multiply',value:1.2}]);
 function list(custom={}){return [...presets,...Object.values(custom)].map(clone);}
 // Give authors the reusable vocabulary, not an enormous required JSON contract.
-const PROMPT='Optional mechanics: {targeting:{relations:[self|ally|enemy|neutral],kinds:[person|summon|object],ownSummon:false,count:1 (0=all present)},effects:[{preset:"Korean preset name",value?,duration?,recipient:"selected|self|allies|enemies|party"}]}. Or use effect rows {type,target,mode:add|multiply,value,duration,chance,trigger:turn_end|turn_start|action,status,harmful,scale:{basis:stat|proficiency|level,key,coefficient}}. Use mechanics.activation:passive for learned always-on effects; HP/MP drain uses tickResource with a negative value. For self enchants set each transmitted row delivery:on_hit, duration=carrier turns, hitDuration=target status turns; direct self bonuses use recipient:self. mechanics.requires is a list of prerequisite active effect/skill names, e.g. [빙결 인챈트]. Death-prevention concepts use deathImmune passive. Use buildupRate to model resistance or susceptibility to cold/poison accumulation. Infer appropriate effects for original skills during setup and new registration, not only direct damage. Stored effects execute automatically. Relations never change because a skill deals damage: allies and owned summons may intentionally be harmed. Objects are not characters. Presets: '+presets.map(p=>p.name).join(', ')+'. Use only intended effects; do not duplicate the same effect in legacy condition/effects. No numeric source restriction; infer missing mechanics once.';
+const PROMPT='Skill mechanics.hits (1–20) rolls each strike separately at one base cost; followUps:[{actor:self|name,skill:self|name,count:1}] chains on hits with each follow-up skill cost, no companion turn cost. mechanics.summon:{actor:name,mode:permanent|cast,duration:5} reuses one prepared companion; summon-only skills are utility/buff with self targeting. automatic activation uses mechanics.automatic:{trigger:incapacitated|sp_empty|mp_empty|hp_below,threshold:30,limit:1} and self effects. applyResource targets hp/mp/sp: add is a signed amount; multiply is signed percent of maximum (10 restores 10%). lifetime:temporary expires; permanent persists. raw/resourceMax use the same lifetime for stat/max-resource changes. Consumables accept the same mechanics.effects; itemDelivery:throw with throwTarget:30 rolls per target and consumes on misses. repair adds durability to equipped items (target:*) or a named item. Equipment durability defaults by rarity; only override for a stated concept. Optional mechanics: {targeting:{relations:[self|ally|enemy|neutral],kinds:[person|summon|object],ownSummon:false,count:1 (0=all present)},effects:[{preset:"Korean preset name",value?,duration?,recipient:"selected|self|allies|enemies|party"}]}. Or use effect rows {type,target,mode:add|multiply,value,duration,chance,trigger:turn_end|turn_start|action,status,harmful,scale:{basis:stat|proficiency|level,key,coefficient}}. Use mechanics.activation:passive for learned always-on effects; HP/MP drain uses tickResource with a negative value. For self enchants set each transmitted row delivery:on_hit, duration=carrier turns, hitDuration=target status turns; direct self bonuses use recipient:self. mechanics.requires is a list of prerequisite active effect/skill names, e.g. [빙결 인챈트]. Death-prevention concepts use deathImmune passive. Use buildupRate to model resistance or susceptibility to cold/poison accumulation. Infer appropriate effects for original skills during setup and new registration, not only direct damage. Stored effects execute automatically. Relations never change because a skill deals damage: allies and owned summons may intentionally be harmed. Objects are not characters. Presets: '+presets.map(p=>p.name).join(', ')+'. Use only intended effects; do not duplicate the same effect in legacy condition/effects. No numeric source restriction; infer missing mechanics once.';
 function compile(input,defaults={}){
   if(!input)return null;
   const data=typeof input==='string'||Array.isArray(input)?{effects:input}:input;
@@ -3019,7 +3092,7 @@ function expand(input){
     assert(false,'EFFECT_TYPE','효과 '+(index+1)+'의 종류를 해석할 수 없습니다: '+(hints.join(' / ')||'이름·종류 없음'));
   });
 }
-const PROTOCOL='Stored effect rows run automatically; never recalculate or repeat their ticks, damage, healing, links or bonus actions. Skill targets distinguish relation (self/ally/enemy/neutral), kind (person/summon/object), owned summons and a count (0 means all currently present). Friendly damage does not change allegiance. Supply participants with kind:"summon", owner:"owner name" for summons. Supply objects:[{name,description,tags,durability}] for actual object targets; reuse names and infer durability only if missing. Objects have durability and state, never NPC stats, wallets or turns. Read effectEvents/changes, remaining conditions and restrictions; fear forbids attacking or approaching its named source, awe forbids approaching/attacking any person. Keep these restrictions in scene movement as well. The tool resolves attacks, but does not invent positions or routes. An enchant carrier belongs to the caster; its delivery:on_hit rows affect each actually hit target automatically. Passives, prerequisites, stacking and expiry are handled by the tool. Do not copy an expired effect into the scene. Copy the returned card beside its matching narrative event.';
+const PROTOCOL='Summons: registry summon(name,owner,mode:permanent|cast,duration) or a saved summon skill; dismiss_summon withdraws the named companion. Hits, on-hit follow-ups and automatic threshold skills execute within the original call: narrate every returned step and do not call them again. Use inventory.use for potions/powders/repair tools; thrown effects are applied only on hits. inventory.repair pays the recorded price; broken equipment needs restore:true to reach durability 1. Durability wear and zero-durability bonus loss are automatic. Stored effect rows run automatically; never recalculate or repeat their ticks, damage, healing, links or bonus actions. Skill targets distinguish relation (self/ally/enemy/neutral), kind (person/summon/object), owned summons and a count (0 means all currently present). Friendly damage does not change allegiance. Supply participants with kind:"summon", owner:"owner name" for summons. Supply objects:[{name,description,tags,durability}] for actual object targets; reuse names and infer durability only if missing. Objects have durability and state, never NPC stats, wallets or turns. Read effectEvents/changes, remaining conditions and restrictions; fear forbids attacking or approaching its named source, awe forbids approaching/attacking any person. Keep these restrictions in scene movement as well. The tool resolves attacks, but does not invent positions or routes. An enchant carrier belongs to the caster; its delivery:on_hit rows affect each actually hit target automatically. Passives, prerequisites, stacking and expiry are handled by the tool. Do not copy an expired effect into the scene. Copy the returned card beside its matching narrative event.';
 module.exports={list,compile,expand,PROMPT,PROTOCOL};
 
 },
@@ -3069,7 +3142,7 @@ function scaled(w,source,target,r,s){
   let n=r.value,b=0;const sc=r.scale||{};
   if(sc.basis==='stat'){
     b=source.raw?.[sc.key]||0;const invest=w.meta.native?.actors?.[source.id];if(invest?.applyAllocation)b+=invest.allocated?.[sc.key]||0;
-    for(const it of Object.values(w.inventory||{}).filter(it=>it.ownerId===source.id&&(it.equipped||Object.values(source.equipment||{}).includes(it.instanceId))))for(const ef of w.definitions.items[it.definitionId]?.effects||[])if(ef.type==='raw'&&(ef.target==='*'||ef.target===sc.key))b=ef.mode==='multiply'?b*ef.value:b+ef.value;
+    for(const it of Object.values(w.inventory||{}).filter(it=>it.ownerId===source.id&&require('./durability.js').working(w,it)&&(it.equipped||Object.values(source.equipment||{}).includes(it.instanceId))))for(const ef of w.definitions.items[it.definitionId]?.effects||[])if(ef.type==='raw'&&(ef.target==='*'||ef.target===sc.key))b=ef.mode==='multiply'?b*ef.value:b+ef.value;
     for(const c of source.conditions||[])for(const ef of [...(c.effect||[]),...(c.component?[c.component]:[])])if(ef.type==='raw'&&(ef.target==='*'||ef.target===sc.key))b=ef.mode==='multiply'?b*ef.value:b+ef.value;
   }else if(sc.basis==='sourceMax')b=resource(source,sc.key||'hp')?.max||0;
   else if(sc.basis==='targetMax')b=resource(target,sc.key||'hp')?.max||0;
@@ -3082,15 +3155,15 @@ function scaled(w,source,target,r,s){
   return Math.max(-1e6,Math.min(1e6,n));
 }
 function activeRows(w,a,includeDelivery=false){
-  const out=(a.conditions||[]).filter(c=>c.component&&c.duration>0&&(includeDelivery||c.component.delivery!=='on_hit')).map(c=>({r:c.component,state:c,source:entity(w,c.sourceId)||a}));
+  const out=(a.conditions||[]).filter(c=>c.component&&(c.duration>0||c.permanent)&&(includeDelivery||c.component.delivery!=='on_hit')).map(c=>({r:c.component,state:c,source:entity(w,c.sourceId)||a}));
   // Equipment/passive auras are evaluated against the present party; immutable
   // definitions never hold shield consumption or per-turn counters.
   for(const source of [a,...scene(w,a).filter(t=>t.id!==a.id&&!isObject(t))]){
     const definitions=[];
-    for(const it of Object.values(w.inventory||{}).filter(it=>it.ownerId===source.id&&it.quantity>0&&(it.equipped||Object.values(source.equipment||{}).includes(it.instanceId)))){
+    for(const it of Object.values(w.inventory||{}).filter(it=>it.ownerId===source.id&&require('./durability.js').working(w,it)&&(it.equipped||Object.values(source.equipment||{}).includes(it.instanceId)))){
       const d=it.definitionId?w.definitions.items[it.definitionId]:it;if(d?.mechanics?.activation==='passive')definitions.push([it.instanceId||it.id,d]);
     }
-    for(const id of Array.isArray(source.skills)?source.skills:Object.keys(source.skills||{})){const d=w.definitions.skills[id];if(d?.mechanics&&(d.type==='passive'||d.mechanics.activation==='passive'))definitions.push([id,d]);const grown=d&&require('./mastery-plan.js').effects(d,source.skills?.[id]?.mastery||0,'passive');if(grown?.length)definitions.push([id+'.mastery',{...d,mechanics:{effects:grown}}]);}
+    for(const id of Array.isArray(source.skills)?source.skills:Object.keys(source.skills||{})){const d=w.definitions.skills[id];if(d?.mechanics&&(d.mechanics.activation!=='automatic'&&(d.type==='passive'||d.mechanics.activation==='passive')))definitions.push([id,d]);const grown=d&&require('./mastery-plan.js').effects(d,source.skills?.[id]?.mastery||0,'passive');if(grown?.length)definitions.push([id+'.mastery',{...d,mechanics:{effects:grown}}]);}
     for(const [id,d] of definitions)for(const [i,input] of d.mechanics.effects.entries()){
       if(!includeDelivery&&input.delivery==='on_hit')continue;const hp=resource(a,'hp');if(hp&&hp.current/hp.max*100>(input.healthBelow??100))continue;
       if(source.id!==a.id&&!(['party','allies'].includes(input.recipient)&&relation(w,source,a)==='ally'))continue;
@@ -3116,12 +3189,12 @@ function emit(events,a,label,value){events?.push({targetId:a.id,label:a.name+' �
 function sync(w,a){if(isObject(a))return;if(w.meta.rulebook?.id==='erencha')require('./erencha-rules.js').recalculate(w,a,false);else require('./rules.js').syncMax(w,a.id);}
 function heal(w,a,amount,key='hp',events){
   const r=resource(a,key);if(!r)return 0;
-  if(r.role==='vital'&&r.current<=0)return 0;
+  if(r.role==='vital'&&r.current<=0&&!a.automaticRecovery)return 0;
   const n=Math.max(0,Number(amount)||0);if(r.role==='vital'&&has(w,a,'healBlock')){emit(events,a,'회복 불가','질병 · 0');return 0;}
   if(r.binding&&r.binding!=='plugin-owned')return 0;
-  const gained=Math.min(r.max-r.current,n);r.current+=gained;if(gained)emit(events,a,r.name||key,'+'+gained+' ('+r.current+'/'+r.max+')');return gained;
+  const gained=Math.min(r.max-r.current,n);r.current+=gained;if(gained)emit(events,a,r.name||key,'+'+gained+' ('+r.current+'/'+r.max+')');require('./combat-features.js').automatic(w,a,undefined,events);return gained;
 }
-function changeResource(w,a,n,key,events){const r=resource(a,key);if(!r)return 0;if(n>=0)return heal(w,a,n,key,events);if(r.binding&&r.binding!=='plugin-owned')return 0;const lost=Math.min(r.current,-n);r.current-=lost;if(r.role==='vital'&&r.current<=0&&has(w,a,'deathImmune')){r.current=1;emit(events,a,'죽음 면역','HP 1로 버팁니다.');}emit(events,a,r.name||key,'−'+lost+' ('+r.current+'/'+r.max+')');return -lost;}
+function changeResource(w,a,n,key,events){const r=resource(a,key);if(!r)return 0;if(n>=0)return heal(w,a,n,key,events);if(r.binding&&r.binding!=='plugin-owned')return 0;const lost=Math.min(r.current,-n);r.current-=lost;require('./combat-features.js').automatic(w,a,undefined,events);if(r.role==='vital'&&r.current<=0&&has(w,a,'deathImmune')){r.current=1;emit(events,a,'죽음 면역','HP 1로 버팁니다.');}emit(events,a,r.name||key,'−'+lost+' ('+r.current+'/'+r.max+')');return -lost;}
 function damage(w,a,amount,type='physical',context={}){
   const types=sourceEnchantTypes(w,context.sourceId);
   if(context.enchanted&&!context.elementPacket&&types.length>1){
@@ -3147,6 +3220,10 @@ function damage(w,a,amount,type='physical',context={}){
   for(const role of ['shield','vital'])for(const r of Object.values(a.resources||{}).filter(r=>r.role===role)){
     if(r.binding&&r.binding!=='plugin-owned')continue;const lost=Math.min(r.current,n);r.current-=lost;n-=lost;if(role==='vital')hpDamage+=lost;else resourceShield+=lost;
   }
+  require('./combat-features.js').automatic(w,a,context.rng,events);
+  if(hpDamage>0&&!isObject(a))require('./durability.js').wear(w,a,hpDamage,'armor',events);
+  if(hpDamage>0&&context.attack&&!context.secondary&&source)require('./durability.js').wear(w,source,hpDamage,'weapon',events);
+  if(hpDamage>0){sync(w,a);if(source&&context.attack&&!context.secondary)sync(w,source);}
   if(resource(a,'hp')?.current<=0&&rows.some(e=>e.r.type==='deathImmune')){const hp=resource(a,'hp');hp.current=1;hpDamage=Math.max(0,hpDamage-1);emit(events,a,'죽음 면역','HP 1로 버팁니다.');}
   for(const b of before)b.after=a.resources[b.id].current;
   if(hpDamage+absorbed+resourceShield>0)a.conditions=(a.conditions||[]).filter(c=>!c.component?.wakeOnHit);
@@ -3161,7 +3238,8 @@ function damage(w,a,amount,type='physical',context={}){
   return {power:amount,afterResistance,hpDamage,shieldDamage:absorbed+resourceShield,redirected,resources:before,effectEvents:events.slice(eventOffset)};
 }
 function recipients(w,source,selected,r){if(r.recipient==='self')return [source];if(r.recipient==='selected')return selected;return scene(w,source).filter(t=>r.recipient==='party'?['self','ally'].includes(relation(w,source,t)):relation(w,source,t)===(r.recipient==='allies'?'ally':'enemy'));}
-function apply(w,source,selected,definition,{hit=true,hpDamage=0,rng,events=(w.meta.effectEvents||=[]),handled=new Set()}={}){
+function apply(w,source,selected,definition,{hit=true,hpDamage=0,rng,events=(w.meta.effectEvents||=[]),handled=new Set(),automatic=false}={}){
+  if(definition.mechanics?.activation==='automatic'&&!automatic)return events;
   const dealt=new Map(selected.map(t=>[t.id,hpDamage]));
   const grown=require('./mastery-plan.js').effects(definition,source.skills?.[definition.id]?.mastery||0).filter(r=>!['damage','power','accuracy','cost','uses'].includes(r.type));
   for(const [index,r] of [...(definition.mechanics?.effects||[]),...grown].entries()){
@@ -3177,7 +3255,8 @@ function apply(w,source,selected,definition,{hit=true,hpDamage=0,rng,events=(w.m
       if(growth.status&&['tickDamage','tickResource','applyDamage','applyResource','armor','evasion','accuracy','damage','defense','resourceMax','power','initiative','resistance','shield','lifesteal','reflect','penetration','critical','buildup'].includes(r.type))amount=r.mode==='multiply'?1+(amount-1)*growth.status:amount*growth.status;
       const duration=Math.min(1000,Math.max(1,Math.round((r.duration||3)*(growth.duration||1)))),referenceId=r.reference==='selected'?selected[0]?.id:source.id;
       if(r.delivery!=='on_hit'&&r.type==='applyDamage'){const impact=damage(w,t,amount,r.damageType,{sourceId:source.id,attack:true,rng,events});dealt.set(t.id,(dealt.get(t.id)||0)+impact.hpDamage);continue;}
-      if(r.delivery!=='on_hit'&&r.type==='applyResource'){changeResource(w,t,amount,r.target,events);continue;}
+      if(r.delivery!=='on_hit'&&r.type==='applyResource'){const before=resource(t,r.target)?.current||0;if(automatic)t.automaticRecovery=true;try{changeResource(w,t,r.mode==='multiply'?(resource(t,r.target)?.max||0)*amount/100:amount,r.target,events);}finally{delete t.automaticRecovery;}const delta=(resource(t,r.target)?.current||0)-before;if(r.lifetime==='temporary'&&delta)(t.conditions||=[]).push({id:uid('resource-lease'),name:r.name,kind:'effect',effectKey:uid('lease'),sourceId:source.id,sourceSkillId:definition.id||'',duration,component:clone(r),resourceLease:{key:r.target,delta},skipFirstEnd:t.id===source.id,effect:[]});continue;}
+      if(r.delivery!=='on_hit'&&r.type==='repair'){for(const item of (r.target==='*'?require('./durability.js').equipped(w,t):Object.values(w.inventory).filter(i=>i.ownerId===t.id&&i.quantity>0&&require('./durability.js').equipment(require('./durability.js').definition(w,i)))).filter(i=>r.target==='*'||[i.id,i.instanceId,require('./durability.js').definition(w,i)?.name].includes(r.target))){try{require('./durability.js').repair(w,t,item,{amount:Math.max(0,amount),restore:false},events);}catch(error){emit(events,t,r.name,error.message);}}continue;}
       if(r.delivery!=='on_hit'&&r.type==='objectState'){if(isObject(t)){t.state[r.stateKey]=r.stateValue;emit(events,t,r.stateKey,r.stateValue);}continue;}
       const key=r.type==='buildup'&&r.delivery!=='on_hit'&&r.status?'buildup:'+r.status+':'+r.thresholdEffect:(definition.id||definition.name)+':'+index+':'+source.id;
       const existing=(t.conditions||[]).filter(c=>c.effectKey===key&&c.duration>0);
@@ -3191,14 +3270,14 @@ function apply(w,source,selected,definition,{hit=true,hpDamage=0,rng,events=(w.m
         if(fires){if(r.thresholdEffect==='freeze')apply(w,source,[t],{id:key+'.freeze',mechanics:{effects:[M.row({type:'incapacitated',name:'동결',status:'cold',category:'magic',harmful:true,duration:Math.max(1,r.burst),value:1})]}},{rng,events});else damage(w,t,r.burst*fires,r.damageType,{sourceId:source.id,rng,events});}
         continue;
       }
-      if(r.stacking==='refresh'&&existing.length){for(const c of existing){c.duration=Math.max(c.duration,duration);c.component={...clone(r),value:amount,scale:{basis:'none',key:'',coefficient:0}};if(r.type==='shield')c.shield=Math.max(c.shield||0,amount);}emit(events,t,r.name,'지속 갱신');continue;}
+      if(r.stacking==='refresh'&&existing.length){for(const c of existing){c.permanent=r.lifetime==='permanent';c.duration=Math.max(c.duration,duration);c.component={...clone(r),value:amount,scale:{basis:'none',key:'',coefficient:0}};if(r.type==='shield')c.shield=Math.max(c.shield||0,amount);}emit(events,t,r.name,'지속 갱신');continue;}
       if(r.stacking==='replace')t.conditions=t.conditions.filter(c=>c.effectKey!==key);
       if(r.stacking==='stack'&&existing.length>=r.maxStacks){existing[0].duration=Math.max(existing[0].duration,duration);continue;}
-      (t.conditions||=[]).push({id:uid('effect'),name:r.name,kind:'effect',duration,sourceId:source.id,sourceSkillId:definition.id,skipFirstEnd:(w.combat?w.combat.order[w.combat.index]?.actorId===t.id:t.id===source.id),referenceId,effectKey:key,effect:[],component:{...clone(r),value:Math.max(-1e6,Math.min(1e6,amount)),scale:{basis:'none',key:'',coefficient:0}},shield:r.type==='shield'?Math.max(0,amount):0,actions:0});
+      (t.conditions||=[]).push({id:uid('effect'),name:r.name,kind:'effect',duration,permanent:r.lifetime==='permanent',sourceId:source.id,sourceSkillId:definition.id,skipFirstEnd:(w.combat?w.combat.order[w.combat.index]?.actorId===t.id:t.id===source.id),referenceId,effectKey:key,effect:[],component:{...clone(r),value:Math.max(-1e6,Math.min(1e6,amount)),scale:{basis:'none',key:'',coefficient:0}},shield:r.type==='shield'?Math.max(0,amount):0,actions:0});
       const detail=['fear','taunt','protect'].includes(r.type)?(entity(w,referenceId)?.name||''):
         ['incapacitated','silence','awe','healBlock','defenseBlock','immunity','damageImmune'].includes(r.type)?M.TYPES[r.type]:
         (r.mode==='multiply'?'×':amount>=0?'+':'')+Math.round(amount*1000)/1000+(['lifesteal','reflect','counter','penetration','share'].includes(r.type)?'%':'');
-      sync(w,t);emit(events,t,r.name,detail+' · '+duration+'턴');
+      sync(w,t);emit(events,t,r.name,detail+' · '+(r.lifetime==='permanent'?'영구':duration+'턴'));
     }
   }
   return events;
@@ -3235,7 +3314,7 @@ function tick(w,a,event,rng,events=[],expire=event==='turn_end'){
     if(e.r.type==='tickDamage'){const n=Math.max(0,value(w,a,e)+(e.r.ramp||0)*(e.state.actions||0));damage(w,a,n,e.r.damageType,{sourceId:e.source.id,rng,events});if(event==='action'){e.state.actions=(e.state.actions||0)+1;saveState(a,e);}}
     if(e.r.type==='tickResource')changeResource(w,a,value(w,a,e),e.r.target,events);
   }
-  if(expire){for(const c of a.conditions||[])if(c.component){if(c.skipFirstEnd)c.skipFirstEnd=false;else c.duration--;}a.conditions=(a.conditions||[]).filter(c=>!c.component||c.duration>0);sync(w,a);}
+  if(expire){for(const c of a.conditions||[])if(c.component&&!c.permanent){if(c.skipFirstEnd)c.skipFirstEnd=false;else c.duration--;if(c.duration<=0&&c.resourceLease){const r=resource(a,c.resourceLease.key);if(r)r.current=Math.max(r.role==='vital'&&r.current>0?1:0,Math.min(r.max,r.current-c.resourceLease.delta));emit(events,a,c.name,'일시 변화 종료');}}a.conditions=(a.conditions||[]).filter(c=>!c.component||c.duration>0);sync(w,a);}
   return events;
 }
 function outgoing(w,a,amount,type,skillId){
@@ -3737,7 +3816,7 @@ function gates(w, a, s, {
   assert(!FX.silence(w,a,s),'SILENCED','침묵 상태에서 이 기술을 사용할 수 없습니다.');
   const missing=FX.requirements(w,a,s);
   assert(!missing.length,'SKILL_PREREQUISITE',s.name+' 사용 조건 미충족: '+missing.join(', ')+'. 해당 스킬·상태의 효과가 이 인물에게 유지 중이어야 합니다. 조건이나 기술을 수정할 오류가 아닙니다. 이 기술은 아직 실행하지 않았습니다.');
-  assert(s.mechanics?.activation!=='passive','PASSIVE_SKILL','상시 적용 중인 패시브입니다. 사용 호출은 필요하지 않습니다.');
+  assert(!['passive','automatic'].includes(s.mechanics?.activation),'PASSIVE_SKILL','상시 적용 중인 패시브입니다. 사용 호출은 필요하지 않습니다.');
   assert(s.kind!=='defense'||!FX.has(w,a,'defenseBlock'),'DEFENSE_BLOCKED','갑옷 파괴 상태에서는 방어할 수 없습니다.');
   const state = a.skills[s.id];
   assert(state, 'UNREGISTERED_SKILL', '이 인물이 배우지 않은 기술입니다.');
@@ -3770,6 +3849,7 @@ function spend(w, a, s, {
     reaction, linked
   });
   for (const [k, n] of Object.entries(costs)) a.resources[k].current -= n;
+  require('./combat-features.js').automatic(w,a,rng,w.meta.effectEvents||=[]);
   const st = a.skills[s.id];
   if (s.charges) st.spent++;
   if (!w.meta.native) st.cooldown = s.cooldown;
@@ -3903,40 +3983,32 @@ function linkedActor(w,name) {
   return matches.length===1?matches[0]:null;
 }
 function queueLink(w,args,result) {
-  const source=w.definitions.skills[args.skillId],link=source?.link;
-  if(!link || !w.combat)return;
-  const hits=(result.result.targets || []).filter(hit=>link.mode==='command' || source.kind==='attack' && (source.resolution==='save' || hit.success!==false) && !hit.impact?.missed);
-  if(!hits.length)return;
-  const companion=linkedActor(w,link.actor),s=companion && Object.keys(companion.skills).map(id=>w.definitions.skills[id]).find(s=>s.id===link.skill || require('./native-rpg.js').sameSkill(s.name,link.skill));
-  if(!companion || companion.id===args.actorId || !s) {
-    (result.result.links ||= []).push({status:'skipped',actor:link.actor,skill:link.skill,reason:!companion?'LINK_ACTOR_MISSING':companion.id===args.actorId?'LINK_REQUIRES_COMPANION':'LINK_SKILL_MISSING'});return;
+  const source=w.definitions.skills[args.skillId];if(!source||!w.combat)return;
+  const F=require('./combat-features.js');let previous=null,total=0;
+  for(const link of F.followUps(source)) {
+    const hits=(result.result.targets||[]).filter(hit=>link.mode==='command'||source.kind==='attack'&&hit.success!==false&&!hit.impact?.missed&&!hit.impact?.evaded);
+    if(!hits.length)continue;
+    const companion=F.companion(w,w.actors[args.actorId],link.actor),follow=companion&&F.skill(w,companion,link.skill,source);
+    if(!companion||!follow){(result.result.links||=[]).push({status:'skipped',actor:link.actor,skill:link.skill,reason:'LINK_NOT_PREPARED'});continue;}
+    for(let n=0;n<(link.count||1)&&total<20;n++,total++) {const id=uid('link');(w.combat.pendingLinks||={})[id]={id,actorId:companion.id,skillId:follow.id,targetIds:[...new Set(hits.map(h=>h.targetId))],originThreatIds:hits.map(h=>h.threatId).filter(Boolean),parent:previous,status:'waiting'};previous=id;}
   }
-  const id=uid('link');
-  (w.combat.pendingLinks ||= {})[id]={id,actorId:companion.id,skillId:s.id,targetIds:hits.map(hit=>hit.targetId),originThreatIds:hits.map(hit=>hit.threatId).filter(Boolean),status:'waiting'};
 }
 function resolveLinks(w,ctx,rng) {
   const replies=[];
-  for(const id of Object.keys(w.combat?.pendingLinks || {})) {
-    const link=w.combat.pendingLinks[id];
-    if(link.status!=='waiting')continue;
+  for(const id of Object.keys(w.combat?.pendingLinks||{})) {
+    const link=w.combat.pendingLinks[id];if(link.status!=='waiting')continue;
     if(Object.values(w.combat.threats).some(t=>t.status==='pending'))break;
-    if(link.originThreatIds.some(id=>w.combat.threats[id]?.status!=='resolved'))continue;
+    if(link.parent){const prior=w.combat.pendingLinks[link.parent];if(prior?.status==='waiting')break;if(prior?.status!=='executed'||!prior.landed?.length){link.status='skipped';link.reason='PREVIOUS_LINK_MISSED';continue;}link.targetIds=prior.landed;link.originThreatIds=prior.threatIds||[];}
     try {
       const candidate=clone(w),entry=candidate.combat.pendingLinks[id],a=actor(candidate,entry.actorId),s=skill(candidate,entry.skillId);
       assert(candidate.combat.order.some(row=>row.actorId===a.id),'LINK_NOT_PARTICIPANT','연계 인물이 이번 교전에 참여하지 않았습니다.');
-      assert(s.kind==='attack','LINK_ATTACK_REQUIRED','연계할 동료의 공격 기술이 필요합니다.');
-      const landed=entry.targetIds.filter(targetId=>!entry.originThreatIds.some(id=>candidate.combat.threats[id]?.targetId===targetId && candidate.combat.threats[id].evaded));
-      assert(landed.length,'LINK_TARGET_EVADED','원공격을 회피한 대상에게 명중 후 연계는 발동하지 않습니다.');
-      const valid=landed.filter(targetId=>candidate.actors[targetId] && alive(candidate.actors[targetId]));
-      assert(valid.length,'LINK_TARGET_DEFEATED','연계 대상이 이미 쓰러졌습니다.');
-      entry.status='executed';
-      const reply=executeCore(candidate,'rpg_combat',{op:'action',actionId:id,actorId:a.id,kind:'skill',skillId:s.id,targetIds:s.area?valid:valid.slice(0,1),itemId:''},ctx,rng,{linked:true});
-      Object.assign(w,candidate);
-      replies.push({status:'executed',actorId:a.id,skillId:s.id,result:reply});
-    } catch(error) {
-      w.combat.pendingLinks[id].status='skipped';w.combat.pendingLinks[id].reason=error.code || 'LINK_UNAVAILABLE';
-      replies.push({status:'skipped',actorId:link.actorId,skillId:link.skillId,reason:error.code || 'LINK_UNAVAILABLE',message:error.message});
-    }
+      assert(s.kind==='attack','LINK_ATTACK_REQUIRED','후속 공격 기술을 지정하세요.');
+      const landed=entry.targetIds.filter(targetId=>!entry.originThreatIds.length||entry.originThreatIds.some(id=>{const t=candidate.combat.threats[id];return t?.targetId===targetId&&t.status==='resolved'&&!t.evaded;}));
+      const valid=landed.filter(id=>FX.alive(FX.entity(candidate,id)));assert(valid.length,'LINK_TARGET_UNAVAILABLE','연계 대상이 쓰러졌거나 선행 공격을 회피했습니다.');
+      entry.status='executed';const reply=executeCore(candidate,'rpg_combat',{op:'action',actionId:id,actorId:a.id,kind:'skill',skillId:s.id,targetIds:s.area?valid:valid.slice(0,1),itemId:''},ctx,rng,{linked:true});
+      entry.landed=[...new Set((reply.result.targets||[]).filter(h=>h.success!==false&&!h.impact?.missed&&!h.impact?.evaded).map(h=>h.targetId))];entry.threatIds=(reply.result.targets||[]).map(h=>h.threatId).filter(Boolean);
+      Object.assign(w,candidate);replies.push({status:'executed',actorId:a.id,skillId:s.id,result:reply});
+    }catch(error){w.combat.pendingLinks[id].status='skipped';replies.push({status:'skipped',actorId:link.actorId,skillId:link.skillId,reason:error.code||'LINK_UNAVAILABLE',message:error.message});}
   }
   return replies;
 }
@@ -4044,6 +4116,7 @@ function remove(w, a, i, n) {
   assert(i.quantity >= n, 'INSUFFICIENT_ITEMS', '소지품 수량이 부족합니다.');
   if (n === i.quantity) unequip(w, a, i.instanceId);
   i.quantity -= n;
+  if(!i.quantity)delete w.inventory[i.instanceId];
 }
 function reload(w, a, itemId) {
   const i = itemOwned(w, a, itemId),
@@ -4497,6 +4570,7 @@ function executeCore(w, tool, args, ctx = {}, rng = globalThis.crypto, internal 
         authorized(w, x, ctx);
         viewActor(w, x.id);
       }
+      require('./combat-features.js').reset(w);
       const initiativeRolls = [];
       const order = actors.map(x => {
         const free=!require('./combat-options.js').get(w).turnTable,roll=args.openingActorId||free?0:d100(rng),modifier=args.openingActorId||free?0:viewActor(w,x.id).derived.initiative||0;
@@ -4643,8 +4717,9 @@ function executeCore(w, tool, args, ctx = {}, rng = globalThis.crypto, internal 
           let ammoSaving=null;
           if (args.kind === 'basic_attack') budget(w, a, 'action', true);else ammoSaving=spend(w, a, s, {linked:internal.linked===true},rng);
           const checkStat=require('./equipment-options.js').checkAdjustment(w,a,{kind:'attack',skill:s});
-          const results = [];
-          for (const t of targets) {
+          const results = [];let lastStrike=-1;
+          for (let strike=0;strike<(s.kind==='attack'?(s.mechanics?.hits||1):1);strike++) for (const t of targets) {
+            if(!FX.alive(t))continue;if(lastStrike!==strike){handledEffects.clear();lastStrike=strike;}
             if(FX.isObject(t)){
               const impact={};if(s.kind==='attack')applyDamage(w,t,damage,damageType,impact,{sourceId:a.id,attack:true,rng});
               if(s.kind==='heal')FX.heal(w,t,amount,'hp',w.meta.effectEvents||=[]);
@@ -4733,7 +4808,7 @@ function executeCore(w, tool, args, ctx = {}, rng = globalThis.crypto, internal 
                 skillId: s.id,
                 damage: Math.floor(damage * mult),
                 damageType,
-                effectCastId,effectReaction:internal.linked===true||a.effectExtraRunning===true,mechanics:s.mechanics?clone(s.mechanics):undefined,
+                effectCastId:effectCastId+'.'+strike,effectReaction:internal.linked===true||a.effectExtraRunning===true,mechanics:s.mechanics?clone(s.mechanics):undefined,
                 area: s.area,
                 status: 'pending',
                 condition: grownCondition ? clone(grownCondition) : null
@@ -4754,6 +4829,7 @@ function executeCore(w, tool, args, ctx = {}, rng = globalThis.crypto, internal 
               });
             }
           }
+          require('./combat-features.js').summon(w,a,s,w.meta.effectEvents||=[]);
           FX.afterAction(w,a,{hit:results.some(r=>r.status!=='pending'&&!r.impact?.evaded&&r.success!==false),kill:targets.some(t=>!alive(t)),rng,events:w.meta.effectEvents||=[],reaction:internal.linked===true,token:effectCastId,preparedIds});
           if (args.kind !== 'basic_attack') progression(w, a, s.id, results.some(r => r.success !== false));
           extra = {
@@ -4779,7 +4855,7 @@ function executeCore(w, tool, args, ctx = {}, rng = globalThis.crypto, internal 
   } else if (tool === 'rpg_skill') {
     result=require('./skill-editor.js').edit(w,args,ctx);
   } else if (tool === 'rpg_inventory') {
-    if(args.op==='edit')result=require('./item-editor.js').edit(w,args,ctx);else if (args.op === 'add') result = eventGrant(w, a, args.eventId);else if (args.op === 'reload') result = reload(w, a, args.itemId);else if (args.op === 'unequip') {
+    if(args.op==='repair'){assert(!w.combat,'COMBAT_ACTIVE','유료 수리는 전투 밖에서 진행하세요.');result=require('./durability.js').repair(w,a,w.inventory[args.itemId],{amount:args.amount??1e6,restore:args.restore===true,paid:true},w.meta.effectEvents||=[]);syncMax(w,a.id);}else if(args.op==='edit')result=require('./item-editor.js').edit(w,args,ctx);else if (args.op === 'add') result = eventGrant(w, a, args.eventId);else if (args.op === 'reload') result = reload(w, a, args.itemId);else if (args.op === 'unequip') {
       const id = a.equipment[args.slot];
       assert(id, 'EMPTY_SLOT', '비어 있는 장비 칸입니다.');
       unequip(w, a, id);
@@ -4809,14 +4885,10 @@ function executeCore(w, tool, args, ctx = {}, rng = globalThis.crypto, internal 
         budget(w, a);
         const useGate=FX.beforeAction(w,a,{id:'basic',kind:'utility'},targets,rng,w.meta.effectEvents||=[]);
         if(useGate.skipped){a.budgets.action=Math.max(0,a.budgets.action-1);return {status:'resolved',outcome:'failure',result:{actorId:a.id,skippedAction:{reason:useGate.reason}}};}
-        const handled=new Set();for(const t of targets){FX.heal(w,t,amount,r.id,w.meta.effectEvents||=[]);FX.apply(w,a,[t],d,{hit:true,rng,handled});}
-        remove(w, a, i, 1);
-        budget(w, a, 'action', true);
-        result = {
-          targetId: target.id,
-          resource: r.id,
-          current: r.current
-        };
+        const rolls=[],handled=new Set();for(const t of targets){const roll=require('./combat-features.js').thrown(w,a,t,d,rng);rolls.push({targetId:t.id,...roll});if(roll.success)FX.heal(w,t,amount,r.id,w.meta.effectEvents||=[]);FX.apply(w,a,[t],d,{hit:roll.success,rng,handled});}
+        remove(w,a,i,1);budget(w,a,'action',true);
+        result={actorId:a.id,itemId:i.instanceId,itemName:d.name,targetId:target.id,resource:r.id,current:r.current,targets:rolls,remaining:i.quantity};
+        extra={resolution:rolls.some(x=>x.roll!==null)?'check':'automatic',roll:rolls.length===1?rolls[0].roll:null,outcome:rolls.some(x=>x.success)?'success':'failure'};
       }
     }
   } else if (tool === 'rpg_economy') {
@@ -5145,6 +5217,7 @@ function castOutsideCombat(w,args,ctx={},rng=globalThis.crypto) {
     if(s.kind==='heal')for(const resource of Object.values(target.resources).filter(r=>r.role==='vital'))mutable(resource);
     if(!FX.isObject(target))viewActor(w,target.id);
   }
+  require('./combat-features.js').summon(w,a,s,w.meta.effectEvents||=[]);
   const amount=basic?basic.damage:skillPower(w,a.id,s.id),preparedIds=new Set(a.conditions.filter(c=>c.component?.type==='nextPower').map(c=>c.id));
   const grownCondition=basic?null:require('./skill-growth.js').condition(s,a.skills[s.id].mastery);
   const costs=Object.entries(basic?{}:costList(w,a,s)).map(([id,value])=>({id,name:a.resources[id].name,amount:value,before:a.resources[id].current,max:a.resources[id].max}));
@@ -5260,6 +5333,7 @@ function execute(w,tool,args,ctx={},rng=globalThis.crypto) {
     result.result={...result.result,turn:turnState(w)};
     if(result.result.openingResolved && w.combat)Object.assign(result.result,{order:clone(w.combat.order),round:w.combat.round,index:w.combat.index});
   }
+  require('./combat-features.js').retire(w);require('./combat-features.js').clearEmpty(w);
   const effectEvents=FX.takeEvents(w);if(effectEvents.length)result.result={...result.result,effectEvents:[...(result.result?.effectEvents||[]),...effectEvents]};
   return result;
 }
@@ -5449,7 +5523,7 @@ async function prepareValue(app,scope,tx,args,tool,signal) {
     }
     const record={...canonical(facts,original),id,name,kind};cache.actors.push(record);R.install(w,record);await save();return id;
   }
-  const actorId=await ensure(args.actor||args.actorId||Object.values(w.actors).find(a=>a.kind==='player')?.id);
+  const actorId=await ensure(args.actor||args.actorId||args.owner||Object.values(w.actors).find(a=>a.kind==='player')?.id);
   const ids=[],targets=[];let plan={actorId,actors:cache.actors,skills:cache.skills,actions:cache.actions,objects:cache.objects,summons:cache.summons};
   const FX=require('./effect-system.js');for(const object of cache.objects)FX.object(w,object);
   for(const input of args.objects||[]){const old=R.find(w.meta.effectObjects,input.name),id=old?.id||'object.'+(await hash(input.name)).slice(0,24);if(!old){cache.objects.push({...input,id});FX.object(w,{...input,id});}}
@@ -5458,7 +5532,8 @@ async function prepareValue(app,scope,tx,args,tool,signal) {
     plan={...plan,...await require('./adventure.js').prepare({app,scope,w,args,actorId,ask:askPlace,ensure}),actors:cache.actors,participantIds:[],targetIds:[]};cache.plan=plan;await save();return {...plan,cacheKey:key};
   }
   if(tool==='rpg_play'&&args.op==='record'&&w.meta.eventClaims[Identity.actorEventKey('event',actorId,args)])return {...plan,event:{},participantIds:[],targetIds:[],cacheKey:key};
-  if(tool==='rpg_registry')for(const a of args.op==='ensure_actors'?args.actors:[args]){const id=await ensure(a.name,a.description,a.kind||'ally',a.instanceKey);ids.push(id);if(a.kind==='summon'){const ownerId=a.owner?await ensure(a.owner):actorId;cache.summons.push({id,ownerId});}}
+  if(tool==='rpg_registry'&&args.op==='dismiss_summon'){const found=R.find(w.actors,args.name);assert(found,'UNKNOWN_ACTOR','해제할 소환수를 지정하세요.');return {...plan,participantIds:[found.id],targetIds:[],cacheKey:key};}
+  if(tool==='rpg_registry')for(const a of args.op==='ensure_actors'?args.actors:[args.op==='summon'?{...args,kind:'summon'}:args]){const id=await ensure(a.name,a.description,a.kind||'ally',a.instanceKey);ids.push(id);if(a.kind==='summon'){const ownerId=a.owner?await ensure(a.owner):actorId;cache.summons.push({id,ownerId});}}
   for(const p of args.participants||[]){const id=await ensure(p.name,p.description,p.kind||'ally',p.instanceKey);ids.push(id);if(p.kind==='summon'){const ownerId=p.owner?await ensure(p.owner):actorId;cache.summons.push({id,ownerId});w.actors[id].ownerId=ownerId;}}
   const attacking=builtin(args.action)==='attack'||/공격|사격|베기|attack|strike/i.test(args.action||'');
   const discovered=require('./adventure.js').encounter(w);
@@ -5492,7 +5567,11 @@ async function prepareValue(app,scope,tx,args,tool,signal) {
     }
     const activeSkill=cache.skills.find(s=>s.id===plan.skillId)||w.definitions.skills[plan.skillId];
     if(activeSkill?.type==='attack'&&!targets.length&&discovered)targets.push(...discovered.enemies.map(e=>e.id));
-    if(activeSkill?.link?.actor)await ensure(activeSkill.link.actor,'이 기술에 연계하는 실제 동료','ally');
+    const F=require('./combat-features.js');
+    for(const s of [...actor.skills.map(id=>w.definitions.skills[id]),activeSkill].filter(Boolean)){const spec=s.mechanics?.summon;if(!spec?.actor||(s.id!==activeSkill?.id&&spec.mode!=='permanent'))continue;const old=R.find(w.actors,spec.actor),id=await ensure(spec.actor,'기술에 연결된 소환수','summon');cache.summons.push({id,ownerId:actorId,standby:spec.mode!=='permanent'&&!old?.summon});if(spec.mode==='permanent')ids.push(id);}
+    if(activeSkill?.mechanics?.summon?.actor&&!targets.length)targets.push(actorId);
+    for(const follow of activeSkill?F.followUps(activeSkill):[]){const owner=['self','자신',actor.id,actor.name].includes(follow.actor)?actorId:await ensure(follow.actor,'기술에 연계하는 동료','ally');if(owner!==actorId)ids.push(owner);const person=w.actors[owner];if(['self','같은 기술'].includes(follow.skill)||F.skill(w,person,follow.skill,activeSkill))continue;const data=await ask(request,app.settings.connection,app.secrets,P.SKILL,{name:follow.skill,actor:person.name,description:activeSkill.name+'에 연계하는 후속 기술'},cache,'follow.'+owner+'.'+follow.skill,save);cache.skills.push(R.skill({...data,id:'erencha.skill.'+(await hash(owner+'|'+follow.skill)).slice(0,24),name:follow.skill},owner));}
+    ids.push(...F.companionIds(w,[actorId,...ids]));
   }
   if(tool==='rpg_play'&&args.op==='record')plan.event=await ask(request,app.settings.connection,app.secrets,P.RECORD,{request:args,actor,knownSkills:actor.skills.map(id=>{const s=w.definitions.skills[id];return {name:s.name,type:s.type,effects:s.effects,description:s.description};}),clock:w.meta.erencha.clock,quests:w.meta.erencha.quests,knownResults:w.ledger.slice(-5).map(x=>({eventId:x.eventId,actionId:x.logicalActionId,result:x.result.result}))},cache,'record',save);
   if(tool==='rpg_inventory'&&args.op==='gain'||tool==='rpg_economy'&&args.mode==='buy') {
@@ -5520,7 +5599,7 @@ const {d100}=require('./rules.js');
 const R=require('./erencha-rules.js');
 const Proficiency=require('./erencha-proficiency.js');
 const CombatOptions=require('./combat-options.js');
-const alive=a=>!!a&&a.resources.hp.current>0;
+const alive=a=>!!a&&a.active!==false&&a.resources.hp.current>0;
 const change=(rows,label,value)=>rows.push({label,value:String(value)});
 const actor=(w,id)=>{const a=R.find(w.actors,id)||R.find(w.meta.effectObjects,id);assert(a,'UNKNOWN_ACTOR','등록된 인물을 지정하세요.');return a;};
 const result=(w,a,name,changes=[],extra={})=>({status:'resolved',resolution:extra.roll?'check':'automatic',roll:extra.roll||null,outcome:extra.outcome||'resolved',result:{rulebook:'erencha',actorId:a.id,action:{name},changes,...extra},narrationRule:'실제 명중·피해·자원·숙련도·턴 결과만 서술하세요. 주사위 실패는 처리된 결과입니다. 캐릭터 레벨과 숙련도는 별개입니다.'});
@@ -5548,9 +5627,9 @@ function awardKill(w,killer,target,changes,rng) {
     }else change(changes,target.name+' 사망','Lv.20 미만 · 손실 없음');
   }
 }
-function hit(w,a,t,s,args,rng,{linked=false,extraTarget=false,counterMultiplier=null,deferAfter=false}={}) {
+function hitOnce(w,a,t,s,args,rng,{linked=false,extraTarget=false,counterMultiplier=null,deferAfter=false}={}) {
   assert(alive(a),'ACTOR_INCAPACITATED',a.name+'은 행동할 수 없습니다.');
-  assert(s.type!=='passive','PASSIVE_SKILL','지속 효과 기술은 자동 적용합니다.');
+  assert(s.type!=='passive'&&s.mechanics?.activation!=='automatic','PASSIVE_SKILL','지속 효과 기술은 자동 적용합니다.');
   const initialTarget=t?.id,changes=[],fxContext=args._effectContext||{handled:new Set(),token:uid('effect-action')};
   fxContext.preparedIds||=new Set(a.conditions.filter(c=>c.component?.type==='nextPower').map(c=>c.id));
   const mod=R.modifiers(w,a,s.name),bypass=mod.cooldownBypass.some(n=>[s.name,...s.aliases].some(alias=>R.norm(n)===R.norm(alias)));
@@ -5564,6 +5643,7 @@ function hit(w,a,t,s,args,rng,{linked=false,extraTarget=false,counterMultiplier=
   assert(!ranged||ammo,'AMMO_MISSING','소비할 화살·탄약이 없습니다.');
   if(!extraTarget){const gate=FX.beforeAction(w,a,s,t?[t]:[],rng,changes);if(gate.skipped){settleEffectDeaths(w,changes,rng);return result(w,a,s.name,changes,{outcome:'failure',reason:gate.reason,skippedAction:true});}t=gate.targets[0]||t;}
   if(cost){a.resources.mp.current-=cost;change(changes,'MP 소비',cost+' · 남은 MP '+a.resources.mp.current);}
+  require('./combat-features.js').automatic(w,a,rng,changes);
   if(!extraTarget&&!bypass&&s.cooldown)a.cooldowns[s.id]=s.cooldown+1;
   if(!extraTarget)a.uses[s.id]=R.num(a.uses[s.id])+1;
   let roll=null,success=true,damage=0,threshold=null;
@@ -5604,18 +5684,32 @@ function hit(w,a,t,s,args,rng,{linked=false,extraTarget=false,counterMultiplier=
   if(!deferAfter)FX.afterAction(w,a,{hit:success,kill:t&&!alive(t),rng,events:changes,reaction:linked,token:fxContext.token,preparedIds:fxContext.preparedIds});
   if(!extraTarget)R.gainProficiency(w,a,s.proficiency,changes);
   const out=result(w,a,s.name,changes,{targetId:t?.id||null,retargeted:t?.id!==initialTarget,success,damage,roll,target:threshold,outcome:roll!==null&&roll<=5?'fatal':success?'success':'failure',linked});
-  if(s.link&&!linked&&(s.type==='command'||success)) {
-    const companion=R.find(w.actors,s.link.actor),follow=companion&&(R.find(Object.fromEntries(companion.skills.map(id=>[id,w.definitions.skills[id]])),s.link.skill)||(/^(기본 공격|공격|attack)$/i.test(s.link.skill)?basic(companion):null));
-    if(companion&&alive(companion)&&!FX.incapacitated(w,companion)&&follow){try{const step=hit(w,companion,t,follow,{...args,_effectContext:null},rng,{linked:true});out.result.steps=[{result:outWithoutSteps(out)},{result:step}];}catch(error){change(changes,'연계 미발동',error.message);}}
-    else change(changes,'연계 미발동','등록되고 행동 가능한 동료·기술이 필요합니다.');
-  }
+
   return out;
+}
+function hit(w,a,t,s,args,rng,options={}){
+  const rows=[],F=require('./combat-features.js');
+  for(let n=0;n<(s.type==='attack'?(s.mechanics?.hits||1):1);n++){
+    if(!alive(a)||t&&!alive(t))break;
+    const out=hitOnce(w,a,t,s,{...args,_effectContext:n?{handled:new Set(),token:uid('strike')}:args._effectContext},rng,{...options,linked:options.linked===true||n>0,extraTarget:options.extraTarget||n>0});rows.push(out);if(out.result.skippedAction)break;
+  }
+  const first=rows[0]||result(w,a,s.name,[],{success:false,reason:'행동 가능한 대상 없음'});if(first.result.skippedAction)return first;
+  if(!options.extraTarget)F.summon(w,a,s,first.result.changes);
+  if(!options.linked&&!options.extraTarget&&(s.type==='command'||rows.some(x=>x.result.success))){let budget=20,landed=true;for(const link of F.followUps(s)){
+    const companion=F.companion(w,a,link.actor),follow=companion&&F.skill(w,companion,link.skill,s);
+    for(let n=0;n<(link.count||1)&&budget-->0&&landed;n++){
+      if(!companion||!follow||!alive(companion)||FX.incapacitated(w,companion)||!alive(t)){change(first.result.changes,'연계 종료','동료·기술·대상의 현재 상태를 확인하세요.');landed=false;break;}
+      try{const next=hit(w,companion,t,follow,{...args,_effectContext:null},rng,{linked:true});rows.push(next);landed=next.result.success===true;}catch(error){change(first.result.changes,'연계 종료',error.message);landed=false;}
+    }
+  }}
+  if(rows.length===1)return first;
+  return {...first,result:{...first.result,success:rows.some(x=>x.result.success),steps:rows.map(result=>({result}))}};
 }
 function outWithoutSteps(output){const copy=clone(output);delete copy.result.steps;return copy;}
 function tailChanges(output){const steps=output.result.steps;return steps?.length?tailChanges(steps[steps.length-1].result):output.result.changes;}
 function basic(a){return R.skill({id:'erencha.basic.'+a.id,name:'기본 공격',proficiency:Object.values(a.proficiencies).find(p=>/검|궁|격투|마법|sword|bow|combat/i.test(p.name))?.name||'기초 전투',power:0,mpCost:0,target:30},a.id);}
 function respawn(w,id,changes,duel=false) {
-  const a=w.actors[id];R.recalculate(w,a);a.resources.hp.current=a.resources.hp.max;if(a.resources.mp)a.resources.mp.current=a.resources.mp.max;a.conditions=[];a.cooldowns={};R.recalculate(w,a);
+  const a=w.actors[id];R.recalculate(w,a);a.resources.hp.current=a.resources.hp.max;if(a.resources.mp)a.resources.mp.current=a.resources.mp.max;a.conditions=a.conditions.filter(c=>c.permanent);a.cooldowns={};R.recalculate(w,a);
   change(changes,a.name+' 귀환',duel?'결투 종료':'가까운 마을 병원');
   if(a.kind==='player'&&!duel){w.meta.erencha.clock.location='가까운 마을 병원';if(w.meta.adventure)w.meta.adventure.activeId=null;}
   delete w.meta.erencha.respawns[id];delete w.meta.erencha.events['defeat:'+id];
@@ -5635,7 +5729,7 @@ function completeBattle(w,changes) {
 function advance(w,changes=[],rng=globalThis.crypto) {
   const c=w.combat;if(!c)return;const previous=w.actors[c.order[c.index].actorId];
   if(previous.effectExtraActions>0&&alive(previous)){previous.effectExtraActions--;previous.effectExtraRunning=true;return;}
-  FX.tick(w,previous,'turn_end',rng,changes);previous.effectExtraRunning=false;
+  FX.tick(w,previous,'turn_end',rng,changes);if(previous.summon?.remaining>0&&!--previous.summon.remaining){previous.active=false;change(changes,'소환 종료',previous.name);}previous.effectExtraRunning=false;
   for(const object of Object.values(w.meta.effectObjects||{}))if(object.effectTickOwner===previous.id)FX.tick(w,object,'turn_end',rng,changes);
   settleEffectDeaths(w,changes,rng);if(completeBattle(w,changes))return;
   (c.ownTurns||={})[previous.id]=(c.ownTurns[previous.id]||0)+1;
@@ -5644,7 +5738,8 @@ function advance(w,changes=[],rng=globalThis.crypto) {
   const a=w.actors[c.order[c.index].actorId];tick(w,a,rng,changes);delete a.stance;completeBattle(w,changes);
 }
 function start(w,plan,args,rng) {
-  const ids=[...new Set([...(plan.builtin==='continue'?[]:[plan.actorId]),...plan.participantIds,...plan.targetIds])].filter(id=>w.actors[id]&&alive(w.actors[id]));
+  require('./combat-features.js').reset(w);
+  const ids=[...new Set([...(plan.builtin==='continue'?[]:[plan.actorId]),...plan.participantIds,...plan.targetIds,...require('./combat-features.js').companionIds(w,[plan.actorId,...plan.participantIds])])].filter(id=>w.actors[id]&&alive(w.actors[id]));
   const teams=Object.fromEntries(ids.map(id=>[id,(w.actors[w.actors[id].ownerId]||w.actors[id]).kind==='enemy'?1:0]));
   assert(new Set(Object.values(teams)).size===2,'TARGET_REQUIRED','실제 교전하는 양쪽 인물을 지정하세요.');
   const order=ids.map(actorId=>{const a=w.actors[actorId],roll=CombatOptions.get(w).turnTable?d100(rng):0,base=roll+Proficiency.benefits(proficiency(a,'스텝')).accuracy+R.modifiers(w,a).evasion;return {actorId,roll,effectInitiativeBase:base,initiative:base+FX.numeric(w,a,'initiative')};}).sort((a,b)=>b.initiative-a.initiative||a.actorId.localeCompare(b.actorId));
@@ -5670,7 +5765,7 @@ function combat(w,plan,args,authority,rng) {
     if(requested&&['defense','evasion'].includes(plan.builtin)) {if(plan.builtin==='defense')assert(!FX.has(w,a,'defenseBlock'),'DEFENSE_BLOCKED','갑옷 파괴 상태에서는 방어할 수 없습니다.');a.stance=plan.builtin;const changes=[];R.gainProficiency(w,a,plan.builtin==='evasion'?'회피':'방어',changes);change(changes,'태세',plan.builtin==='defense'?'다음 자기 턴까지 받는 피해 50% 경감':'회피 난이도 +20 · 광역 피격 피해 +20%');out=result(w,a,args.action,changes);}
     else if(requested&&plan.builtin==='escape') {const roll=d100(rng),threshold=Math.max(5,Math.min(95,50-Proficiency.benefits(proficiency(a,'스텝')).accuracy)),success=roll>threshold,changes=[];R.gainProficiency(w,a,'스텝',changes);out=result(w,a,'탈출',changes,{roll,target:threshold,success,outcome:success?'success':'failure'});if(success){w.combat=null;change(changes,'전투','탈출');}}
     else {
-      let skill=requested?(plan.skillId?w.definitions.skills[plan.skillId]:basic(a)):a.skills.map(id=>w.definitions.skills[id]).find(s=>s.type==='attack'&&!(a.cooldowns[s.id]>0)&&(a.entity==='monster'||s.mpCost<=(a.resources.mp?.current||0))&&(s.uses===null||R.num(a.uses[s.id])<s.uses))||basic(a);
+      let skill=requested?(plan.skillId?w.definitions.skills[plan.skillId]:basic(a)):a.skills.map(id=>w.definitions.skills[id]).find(s=>s.type==='attack'&&!['passive','automatic'].includes(s.mechanics?.activation)&&!(a.cooldowns[s.id]>0)&&(a.entity==='monster'||s.mpCost<=(a.resources.mp?.current||0))&&(s.uses===null||R.num(a.uses[s.id])<s.uses))||basic(a);
       let selected=requested?FX.targets(w,a,skill,plan.targetIds.length?plan.targetIds:[enemy.id]):FX.targets(w,a,skill,[enemy.id]);
       const forced=FX.activeRows(w,a).find(e=>e.r.type==='taunt'),forcedTarget=forced&&FX.entity(w,forced.state.referenceId||forced.state.sourceId);
       if(!requested&&forcedTarget&&alive(forcedTarget))selected=[forcedTarget];
@@ -5694,14 +5789,15 @@ function combat(w,plan,args,authority,rng) {
   return result(w,a,args.action,[],{steps,turnTable,round:initialRound,requestedActionApplied:applied,pending:next?{actorId:next.id,name:next.name,awaitUser:CombatOptions.get(w).commander&&CombatOptions.controlled(w,next)||CombatOptions.get(w).action&&next.kind==='player',reason:next.kind==='player'?'사용자 행동 선택':'다음 교전자'}:null,outcome:steps.length?'resolved':'awaiting_action'});
 }
 function inventory(w,plan,args,rng,authority) {
-  const a=actor(w,plan.actorId),changes=[],q=R.num(args.quantity,1,1,1e6);
+  const a=actor(w,plan.actorId),changes=[],useRolls=[],q=R.num(args.quantity,1,1,1e6);
   let it=R.find(Object.fromEntries(Object.entries(w.inventory).filter(([,x])=>x.ownerId===a.id)),args.item);
+  if(args.op==='repair'){assert(!w.combat,'COMBAT_ACTIVE','유료 수리는 전투 밖에서 진행하세요.');const repaired=require('./durability.js').repair(w,a,it,{amount:args.amount??1e6,restore:args.restore===true,paid:true},changes);R.recalculate(w,a,false);return result(w,a,'장비 수리',changes,{repair:repaired});}
   if(args.op==='gain') {
     const claim=Identity.actorEventKey('item',a.id,args);if(w.meta.eventClaims[claim])return result(w,a,'소지품',[],{outcome:'unchanged'});
     if(!it){it=clone(plan.item);it.quantity=0;it.equipped=false;w.inventory[it.id]=it;}it.quantity+=q;w.meta.eventClaims[claim]=true;change(changes,it.name,'+'+q);
   }else {
     assert(it&&it.quantity>=q,'ITEM_MISSING','필요한 소지품 수량이 없습니다.');
-    if(args.op==='use'){assert(it.type==='consumable','ITEM_NOT_USABLE','소모품을 지정하세요.');const selected=FX.targets(w,a,it,plan.targetIds.length?plan.targetIds:[a.id]);assert(selected.length,'INVALID_TARGET','조건에 맞는 소모품 대상이 없습니다.');const useGate=FX.beforeAction(w,a,{id:'basic',type:'utility'},selected,rng,changes);if(useGate.skipped)return result(w,a,it.name,changes,{outcome:'failure',skippedAction:true,reason:useGate.reason});const handled=new Set();for(const t of selected){for(const k of ['hp','mp'])if(t.resources[k]&&it.recovery[k]){const r=t.resources[k],before=r.current;FX.heal(w,t,it.recovery[k]*q,k,changes);change(changes,t.name+' '+k.toUpperCase(),before+' → '+r.current);}if(it.effects.length){const name='소모품 · '+it.name;t.conditions=t.conditions.filter(c=>c.name!==name);t.conditions.push({name,remaining:it.duration||2,effects:clone(it.effects)});FX.sync(w,t);change(changes,'소모품 효과',it.name+' · '+(it.duration||2)+'턴');}FX.apply(w,a,[t],it,{hit:true,rng,events:changes,handled});}it.quantity-=q;}
+    if(args.op==='use'){assert(it.type==='consumable','ITEM_NOT_USABLE','소모품을 지정하세요.');const selected=FX.targets(w,a,it,plan.targetIds.length?plan.targetIds:[a.id]);assert(selected.length,'INVALID_TARGET','조건에 맞는 소모품 대상이 없습니다.');const useGate=FX.beforeAction(w,a,{id:'basic',type:'utility'},selected,rng,changes);if(useGate.skipped)return result(w,a,it.name,changes,{outcome:'failure',skippedAction:true,reason:useGate.reason});const handled=new Set();for(const t of selected){const cr=require('./combat-features.js').thrown(w,a,t,it,rng);useRolls.push({targetId:t.id,...cr});if(!cr.success){FX.apply(w,a,[t],it,{hit:false,rng,events:changes,handled});change(changes,'투척',t.name+' · d100 '+cr.roll+' / '+cr.target+' · 실패');continue;}if(cr.roll!==null)change(changes,'투척',t.name+' · d100 '+cr.roll+' / '+cr.target+' · 명중');for(const k of ['hp','mp'])if(t.resources[k]&&it.recovery[k]){const r=t.resources[k],before=r.current;FX.heal(w,t,it.recovery[k]*q,k,changes);change(changes,t.name+' '+k.toUpperCase(),before+' → '+r.current);}if(it.effects.length){const name='소모품 · '+it.name;t.conditions=t.conditions.filter(c=>c.name!==name);t.conditions.push({name,remaining:it.duration||2,effects:clone(it.effects)});FX.sync(w,t);change(changes,'소모품 효과',it.name+' · '+(it.duration||2)+'턴');}FX.apply(w,a,[t],it,{hit:true,rng,events:changes,handled});}it.quantity-=q;}
     else if(args.op==='lose')it.quantity-=q;
     else if(args.op==='give'){const t=actor(w,plan.targetIds[0]);const copy={...clone(it),id:it.id+'.'+args.actionId,ownerId:t.id,quantity:q,equipped:false};it.quantity-=q;w.inventory[copy.id]=copy;change(changes,'전달',t.name+'에게 '+it.name+' '+q+'개');}
     else if(args.op==='equip'){assert(['weapon','armor','accessory'].includes(it.type),'ITEM_NOT_EQUIPMENT','착용할 장비를 지정하세요.');const preferred=it.type==='weapon'?['right_hand','left_hand']:it.type==='accessory'?['accessory_1','accessory_2']:['armor','head','waist','shoes','gloves'];const occupied=new Set(Object.values(w.inventory).filter(x=>x.ownerId===a.id&&x.equipped&&x.id!==it.id).map(x=>x.slot));const slot=R.SLOTS.includes(args.slot)?args.slot:it.slot||preferred.find(s=>!occupied.has(s))||preferred[0];for(const x of Object.values(w.inventory))if(x.ownerId===a.id&&x.slot===slot)x.equipped=false;it.slot=slot;it.equipped=true;R.assignSlots(w,a);change(changes,'착용',it.name+' · '+it.slot);}
@@ -5718,7 +5814,7 @@ function inventory(w,plan,args,rng,authority) {
     }
     if(!it.quantity)it.equipped=false;
   }
-  R.recalculate(w,a);return result(w,a,'소지품 · '+args.op,changes);
+  settleEffectDeaths(w,changes,rng);require('./combat-features.js').retire(w);require('./combat-features.js').clearEmpty(w);R.recalculate(w,a);return result(w,a,'소지품 · '+args.op,changes,{targets:useRolls,...(useRolls.length?{success:useRolls.some(x=>x.success),outcome:useRolls.some(x=>x.success)?'success':'failure'}:{})});
 }
 function trade(w,plan,args) {
   const a=actor(w,plan.actorId),q=R.num(args.quantity,1,1,1e6),changes=[];
@@ -5729,7 +5825,7 @@ function trade(w,plan,args) {
   if(args.mode==='buy'){const discount=Math.min(.2,Math.min(.1,Math.floor(a.fame/100)*.01)+benefit),cost=Math.ceil(it.price*q*(1-discount));assert(wallet.gold>=cost,'INSUFFICIENT_MONEY','소지금이 부족합니다.');wallet.gold-=cost;it.quantity+=q;change(changes,'구매',it.name+' '+q+'개 · -'+cost+' G'+(discount?' · 명성·숙련 할인 '+Math.round(discount*100)+'%':''));}
   else {assert(it.quantity>=q&&!it.equipped,'ITEM_MISSING','판매 수량을 확인하고 장비를 해제하세요.');const gross=Math.max(0,Math.floor(FX.numeric(w,a,'sale',it.price*q*(args.mode==='auction'?1:.5)*(1+R.modifiers(w,a).saleBonus/100+(args.mode==='auction'?0:benefit))))),fee=args.mode==='auction'?Math.ceil(gross*.1):0;wallet.gold+=gross-fee;it.quantity-=q;change(changes,'판매',it.name+' '+q+'개 · +'+(gross-fee)+' G'+(fee?' (수수료 '+fee+' G)':''));}
   if(it.price>0&&args.mode!=='auction')R.gainProficiency(w,a,p.name,changes);
-  return result(w,a,'거래',changes);
+  require('./combat-features.js').clearEmpty(w);return result(w,a,'거래',changes);
 }
 function record(w,plan,args) {
   const a=actor(w,plan.actorId),e=plan.event||{},changes=[],claim=Identity.actorEventKey('event',a.id,args);
@@ -5774,11 +5870,15 @@ function action(w,plan,tool,args,authority={},rng=globalThis.crypto) {
   R.upgrade(w);
   for(const input of plan.actors||[])R.install(w,input);
   for(const input of plan.objects||[])FX.object(w,input);
-  for(const row of plan.summons||[])if(w.actors[row.id]){w.actors[row.id].kind='summon';w.actors[row.id].ownerId=row.ownerId;}
-  w.meta.effectScene=[...new Set([plan.actorId,...(plan.participantIds||[]),...(plan.targetIds||[]),...(plan.objects||[]).map(x=>x.id)])];
+  for(const row of plan.summons||[])if(w.actors[row.id]){w.actors[row.id].kind='summon';w.actors[row.id].ownerId=row.ownerId;if(row.standby)w.actors[row.id].active=false;}
+  require('./combat-features.js').maintainSummons(w);
+  w.meta.effectScene=[...new Set([...require('./combat-features.js').companionIds(w,[plan.actorId,...(plan.participantIds||[])]),plan.actorId,...(plan.participantIds||[]),...(plan.targetIds||[]),...(plan.objects||[]).map(x=>x.id)])];
   for(const s of plan.skills||[]){if(!w.definitions.skills[s.id]){w.definitions.skills[s.id]=clone(s);w.actors[s.ownerId].skills.push(s.id);}else{const old=w.definitions.skills[s.id];old.aliases=[...new Set([...old.aliases,...s.aliases])];if(require('./erencha-life.js').needsRecipe(old)&&s.activity)old.activity=clone(s.activity);}}
+  require('./combat-features.js').maintainSummons(w);
   for(const x of plan.actions||[]){if(!w.meta.erencha.actions[x.id])w.meta.erencha.actions[x.id]=clone(x);else{const old=w.meta.erencha.actions[x.id];old.aliases=[...new Set([...old.aliases,...x.aliases])];if(require('./erencha-life.js').needsRecipe(old)&&x.activity)old.activity=clone(x.activity);}}
   const a=actor(w,plan.actorId);
+  if(tool==='rpg_registry'&&args.op==='summon'){const target=FX.entity(w,plan.participantIds[0]);require('./combat-features.js').summon(w,a,{mechanics:{summon:{actor:target.id,mode:args.mode||'cast',duration:args.duration||5}}},w.meta.effectEvents||=[]);return result(w,a,'소환',FX.takeEvents(w),{actorId:target.id});}
+  if(tool==='rpg_registry'&&args.op==='dismiss_summon'){const target=FX.entity(w,plan.participantIds[0]);assert(target?.ownerId===a.id&&target.kind==='summon','INVALID_SUMMON','자신의 소환수만 해제할 수 있습니다.');target.active=false;return result(w,a,'소환 해제',[],{dismissed:target.id});}
   if(tool==='rpg_registry')return result(w,a,'등장인물 등록',[],{actors:plan.participantIds.map(id=>clone(w.actors[id])),outcome:'registered'});
   if(args.op==='record'&&tool==='rpg_play')return record(w,plan,args);
   if(tool==='rpg_play'&&plan.inventoryAction){tool='rpg_inventory';args={...args,...plan.inventoryAction};}
@@ -5802,7 +5902,7 @@ function action(w,plan,tool,args,authority={},rng=globalThis.crypto) {
   if(plan.action?.type==='task'){
     output=require('./erencha-life.js').perform(w,plan,args,rng);
   }else if(plan.builtin==='rest'){
-    assert(!w.combat,'COMBAT_ACTIVE','전투 중에는 휴식할 수 없습니다.');const changes=[];for(const [key,r] of Object.entries(a.resources)){const before=r.current;FX.heal(w,a,r.max-r.current,key,changes);change(changes,r.name,before+' → '+r.current);}a.cooldowns={};a.conditions=[];R.recalculate(w,a,false);output=result(w,a,'휴식',changes);
+    assert(!w.combat,'COMBAT_ACTIVE','전투 중에는 휴식할 수 없습니다.');const changes=[];for(const [key,r] of Object.entries(a.resources)){const before=r.current;FX.heal(w,a,r.max-r.current,key,changes);change(changes,r.name,before+' → '+r.current);}a.cooldowns={};a.conditions=a.conditions.filter(c=>c.permanent);R.recalculate(w,a,false);output=result(w,a,'휴식',changes);
    }else if(!w.combat&&plan.skillId&&(['heal','buff'].includes(w.definitions.skills[plan.skillId].type)||plan.targetIds.every(id=>FX.isObject(FX.entity(w,id))||FX.relation(w,a,FX.entity(w,id))!=='enemy'))){
     const skill=w.definitions.skills[plan.skillId],selected=FX.targets(w,a,skill,plan.targetIds.length?plan.targetIds:[a.id]);assert(selected.length,'INVALID_TARGET','조건에 맞는 대상이 없습니다.');
     tick(w,a,rng);const context={...args,_effectContext:{handled:new Set(),token:uid('effect-action')}},rows=[];
@@ -5814,7 +5914,7 @@ function action(w,plan,tool,args,authority={},rng=globalThis.crypto) {
   else if(plan.builtin==='continue'&&!w.combat&&plan.participantIds.length<2)output=result(w,a,'관전',[],{outcome:'unchanged',requestedActionApplied:false,reason:'진행 중인 전투가 없습니다.'});
   else output=combat(w,plan,args,authority,rng);
   const events=FX.takeEvents(w);if(events.length)tailChanges(output).push(...events);
-  if(event)w.meta.erencha.events[event]=clone(output);return output;
+  require('./combat-features.js').retire(w);require('./combat-features.js').clearEmpty(w);if(event)w.meta.erencha.events[event]=clone(output);return output;
 }
 function admin(w,tool,args,authority) {
   assert(authority.admin,'AUTHORING_REQUIRED','직접 편집은 사용자 화면에서 합니다.');R.upgrade(w);const a=actor(w,args.actorId),changes=[];
@@ -6074,7 +6174,7 @@ function item(input={},ownerId,index=0) {
   const rank=RANKS.find(x=>norm(x)===norm(input.rank||input.rarity))||'Common';
   const type=['weapon','armor','accessory','consumable','ammo','material','protection'].includes(input.type)?input.type:'material';
   return {...(input.mechanics?{mechanics:require('./effect-presets.js').compile(input.mechanics,{activation:type==='consumable'?'on_use':['weapon','armor','accessory','passive'].includes(type)?'passive':'on_use',targeting:{relations:['attack','command'].includes(type)?['enemy']:['heal','buff','consumable'].includes(type)?['self','ally']:['self','ally','enemy','neutral'],count:input.area?0:1}})}:{}),id:text(input.id,'erencha.item.'+ownerId+'.'+index,100),ownerId,name:text(input.name,'소지품'),type,rank,enhancement:num(input.enhancement,0,0,30),quantity:num(input.quantity,1,0,1e6),
-    slot:SLOTS.includes(input.slot)?input.slot:null,equipped:input.equipped===true&&['weapon','armor','accessory'].includes(type),power:num(input.power,type==='weapon'?10*([1,2,4,7,11][RANKS.indexOf(rank)]):0),
+    ...(require('./durability.js').equipment({type})?{durability:require('./durability.js').config({...input,rank}),durabilityCurrent:Number.isFinite(input.durabilityCurrent)?Math.max(0,input.durabilityCurrent):require('./durability.js').config({...input,rank}).max}:{}),slot:SLOTS.includes(input.slot)?input.slot:null,equipped:input.equipped===true&&['weapon','armor','accessory'].includes(type),power:num(input.power,type==='weapon'?10*([1,2,4,7,11][RANKS.indexOf(rank)]):0),
     defense:num(input.defense,type==='armor'?5*([1,2,4,7,11][RANKS.indexOf(rank)]):0),price:num(input.price,10,0,1e12),effects:effects(input.effects),
     recovery:{hp:num(input.recovery?.hp),mp:num(input.recovery?.mp)},duration:num(input.duration,2,1,1000),...(input.quality?{quality:num(input.quality,100,1,10000)}:{}),description:text(input.description),basis:text(input.basis,'원문 설명에 맞춘 보완 수치')};
 }
@@ -6134,8 +6234,8 @@ function assignSlots(w,a) {
 function modifiers(w,a,skillName='') {
   const out=Object.fromEntries(EFFECTS.filter(x=>x!=='cooldownBypass').map(k=>[k,0]));out.cooldownBypass=[];
   const apply=ef=>{if(ef.skill&&norm(ef.skill)!==norm(skillName)&&ef.type!=='cooldownBypass')return;if(ef.condition==='low_hp'&&a.resources.hp.current>a.resources.hp.max*.3)return;if(ef.condition==='first_hit'&&a.turnAttacks>0)return;if(ef.type==='cooldownBypass')out.cooldownBypass.push(ef.skill);else out[ef.type]=(out[ef.type]||0)+ef.value;};
-  for(const it of Object.values(w.inventory).filter(x=>x.ownerId===a.id&&x.equipped&&x.quantity)) {out.power+=Math.round(it.power*Math.pow(1.1,it.enhancement));out.defense+=Math.round(it.defense*Math.pow(1.1,it.enhancement));it.effects.forEach(apply);}
-  for(const id of a.skills){const s=w.definitions.skills[id];if(s?.type==='passive')s.effects.forEach(apply);}
+  for(const it of Object.values(w.inventory).filter(x=>x.ownerId===a.id&&x.equipped&&require('./durability.js').working(w,x))) {out.power+=Math.round(it.power*Math.pow(1.1,it.enhancement));out.defense+=Math.round(it.defense*Math.pow(1.1,it.enhancement));it.effects.forEach(apply);}
+  for(const id of a.skills){const s=w.definitions.skills[id];if(s?.type==='passive'&&s.mechanics?.activation!=='automatic')s.effects.forEach(apply);}
   // Legacy saves may still hold aptitude effects outside a passive skill.
   for(const x of a.aptitudes)if(x.status!=='declined'&&!a.skills.includes(x.skillId)&&!a.skills.some(id=>{const s=w.definitions.skills[id];return s?.type==='passive'&&[s.name,...s.aliases].some(n=>norm(n)===norm(x.name));}))x.effects.forEach(apply);
   for(const c of a.conditions)if(c.remaining>0)(c.effects||[]).forEach(apply);
@@ -6255,19 +6355,19 @@ module.exports={packet,synchronize,presentation};
 const {obj,str,id,int,en,arr,optional}=require('./schema.js');
 const person=optional(obj({name:str(),kind:en('player','ally','enemy','summon'),owner:str(),description:str(4000),instanceKey:id}),'kind','owner','description','instanceKey');
 const act=optional(obj({objects:arr(optional(obj({name:str(),description:str(2000),durability:int(1,1000000),tags:arr(str(),20)}),'description','durability','tags'),100),actor:str(),action:str(1000),intent:str(4000),targets:arr(str(),20),participants:arr(person,50),eventId:str(300),opening:en('surprise'),combatMode:en('pve','duel','pvp')}),'objects','intent','targets','participants','eventId','opening','combatMode');
-const inv=optional(obj({actor:str(),item:str(),quantity:int(1,1000000),target:str(),slot:str(),description:str(4000),protect:{type:'boolean'},eventId:str(300)}),'quantity','target','slot','description','protect','eventId');
+const inv=optional(obj({actor:str(),item:str(),quantity:int(1,1000000),target:str(),slot:str(),description:str(4000),amount:int(0,1000000),restore:{type:'boolean'},protect:{type:'boolean'},eventId:str(300)}),'quantity','target','slot','description','protect','eventId','amount','restore');
 const ops={
-  rpg_registry:{ensure_actor:optional(obj({...person.properties,actor:str()}),'kind','owner','description','instanceKey','actor'),ensure_actors:optional(obj({actor:str(),actors:arr(person,50)}),'actor')},
+  rpg_registry:{summon:optional(obj({name:str(),owner:str(),description:str(4000),mode:en('permanent','cast'),duration:int(1,1000)}),'description','mode','duration'),dismiss_summon:obj({name:str(),owner:str()}),ensure_actor:optional(obj({...person.properties,actor:str()}),'kind','owner','description','instanceKey','actor'),ensure_actors:optional(obj({actor:str(),actors:arr(person,50)}),'actor')},
   rpg_play:{act,explore:optional(obj({actor:str(),action:{...en('start','move','inspect','investigate','interact','end'),description:'No active exploration: first start with name. After start resolves, move/inspect/investigate/interact/end use that saved place.'},name:{...str(),description:'Required for start: the actual place being entered.'},destination:{...str(),description:'Required for move: an exit returned by the current exploration.'},intent:str(4000),eventId:str(300)}),'name','destination','intent','eventId'),record:optional(obj({actor:str(),action:str(1000),intent:str(4000),eventId:str(300)}),'intent')},
   rpg_state:{...Object.fromEntries(['summary','actor','inventory','wallet','growth','last_results'].map(k=>[k,optional(obj({actorId:id}),'actorId')])),action_result:obj({actionId:id})},
-  rpg_inventory:{inspect:optional(obj({actorId:id}),'actorId'),...Object.fromEntries(['gain','use','lose','give','equip','unequip','enhance'].map(k=>[k,inv]))},
+  rpg_inventory:{inspect:optional(obj({actorId:id}),'actorId'),...Object.fromEntries(['gain','use','lose','give','equip','unequip','enhance','repair'].map(k=>[k,inv]))},
   rpg_economy:{trade:optional(obj({actor:str(),item:str(),mode:en('buy','sell','auction'),quantity:int(1,1000000),description:str(4000)}),'quantity','description')}
 };
 const descriptions={
-    rpg_registry:'실제 등장 인물의 레벨·숙련도·기술·장비를 한 번 준비합니다. ensure_actor(name,kind,description) 또는 ensure_actors(actors). 다른 플레이어도 avatar로 보존합니다. 같은 몬스터 여러 개체는 서로 다른 instanceKey를 줍니다. 등록만으로 전투를 시작하지 않습니다.',
+    rpg_registry:'소환은 summon(name,owner,mode:permanent|cast,duration), 해제는 dismiss_summon(name,owner). 실제 등장 인물의 레벨·숙련도·기술·장비를 한 번 준비합니다. ensure_actor(name,kind,description) 또는 ensure_actors(actors). 다른 플레이어도 avatar로 보존합니다. 같은 몬스터 여러 개체는 서로 다른 instanceKey를 줍니다. 등록만으로 전투를 시작하지 않습니다.',
     rpg_play:'act(actor,action,targets,participants,intent): 기술/기본 공격/방어/회피/도주/휴식/계속/관전, 숙련 활동, 장비 착용·해제. 턴 순서와 실제 requestedActionApplied를 따릅니다. record(actor,action,intent,eventId): 이야기에서 정한 닉네임·적성·숙련도 승급, 퀘스트 수락·진행·완료, 판정 없이 끝난 실제 숙련 활동, 전직, 시간·장소·현실/게임 전환. 플러그인의 별도 수락 절차는 없습니다. 같은 사건은 같은 eventId이며 act의 숙련도는 다시 지급하지 않습니다. 결과를 읽고 필요한 다음 행동을 순서대로 호출하세요. 상위 RP 규칙에서 사용자 행동을 위임했다면 같은 응답 안에서 다음 act를 고를 수 있습니다. 진행 중인 쿨다운을 기다리려고 도구를 반복 호출하지 마세요.',
     rpg_state:'저장된 상태를 조회합니다. last_results는 중단된 서술의 실제 결과이며 재실행하지 않습니다.',
-    rpg_inventory:'inspect 조회. gain/use/lose/give/equip/unequip/enhance는 actor와 item 이름,quantity. give는 target, enhance는 protect 선택. gain은 실제 획득만, 사용·강화·장착은 결과를 받은 후 서술합니다. 보호재 사용은 실제 보유한 파멸의 잔재를 소비합니다. 장비는 기술 사용을 제한하지 않습니다.',
+    rpg_inventory:'repair(actor,item,amount,restore)는 유료 수리. 파괴 장비는 restore:true로 1까지 복구. 수리 도구는 use. 투척 소모품은 자동 명중 판정, 실패해도 소모합니다. inspect 조회. gain/use/lose/give/equip/unequip/enhance는 actor와 item 이름,quantity. give는 target, enhance는 protect 선택. gain은 실제 획득만, 사용·강화·장착은 결과를 받은 후 서술합니다. 보호재 사용은 실제 보유한 파멸의 잔재를 소비합니다. 장비는 기술 사용을 제한하지 않습니다.',
     rpg_economy:'trade(actor,item,mode:buy|sell|auction,quantity). 저장된 가격으로 원자적 정산. auction은 판매 수수료10%. 처음 보는 상점 물건은 description에 제안을 적으면 가격·효과를 준비한 뒤 구매합니다. 원화 환전은 지원하지 않습니다.'
 };
 descriptions.rpg_play+=' explore: 장소 name 또는 destination과 실제 조작 intent로 탐험합니다. 이동·조작·획득은 별도 결과이며 적 발견만으로 전투를 시작하지 않습니다.';
@@ -6299,7 +6399,7 @@ function skills(w,a,draft=false) {
 }
 const effectLabels={power:'효과 위력',hp:'최대 HP',mp:'최대 MP',defense:'피해 경감',accuracy:'명중',evasion:'회피',mpSaving:'MP 절약 %',xpBonus:'캐릭터 경험치 %',proficiencyBonus:'숙련도 경험치 %',ammoSaving:'탄약 보존 확률 %',saleBonus:'판매가 %',poisonImmunity:'독 면역',cooldownBypass:'지정 기술 재사용 무시'};
 function effectText(effects){return effects.length?'<p class="muted">'+effects.map(x=>e(effectLabels[x.type]+' '+(x.type==='cooldownBypass'?x.skill:x.value)+(x.condition!=='always'?' · '+x.condition:''))).join('<br>')+'</p>':'';}
-function inventory(w,a,draft=false) {return panel('소지금',V.wallet(w,a))+panel('장비·소지품',Object.values(w.inventory).filter(x=>x.ownerId===a.id).map(x=>'<article class="card"><div class="play-card-head"><h3>'+e(x.name)+(x.enhancement?' +'+x.enhancement:'')+'</h3>'+controls('item',x.id,a.id,draft)+'</div>'+V.facts([['등급',x.rank],['수량',x.quantity],['착용',x.equipped?slotLabels[x.slot]||x.slot:'보관 중'],['위력',x.power],['방어',x.defense]])+'<p>'+e(x.description)+'</p>'+effectText(x.effects)+'<p>'+e(require('./effect-model.js').describe(x.mechanics))+'</p>'+ (!draft&&['weapon','armor','accessory'].includes(x.type)&&x.quantity>0?'<div class="toolbar"><select data-erencha-slot="'+e(x.id)+'">'+Object.entries(slotLabels).map(([id,label])=>'<option value="'+id+'" '+(x.slot===id?'selected':'')+'>'+label+'</option>').join('')+'</select><button type="button" data-erencha-equip="'+e(x.id)+'">'+(x.equipped?'해제':'착용')+'</button></div>':'')+'</article>').join('')||'<p class="muted">보유한 물건이 없습니다.</p>');}
+function inventory(w,a,draft=false) {return panel('소지금',V.wallet(w,a))+panel('장비·소지품',Object.values(w.inventory).filter(x=>x.ownerId===a.id&&x.quantity>0).map(x=>'<article class="card"><div class="play-card-head"><h3>'+e(x.name)+(x.enhancement?' +'+x.enhancement:'')+'</h3>'+controls('item',x.id,a.id,draft)+'</div>'+V.facts([['등급',x.rank],['수량',x.quantity],['착용',x.equipped?slotLabels[x.slot]||x.slot:'보관 중'],['위력',x.power],['방어',x.defense],...(require('./durability.js').equipment(x)?[['내구도',require('./durability.js').label(w,x)]]:[])])+'<p>'+e(x.description)+'</p>'+effectText(x.effects)+'<p>'+e(require('./effect-model.js').describe(x.mechanics))+'</p>'+ (!draft&&['weapon','armor','accessory'].includes(x.type)&&x.quantity>0?'<div class="toolbar"><select data-erencha-slot="'+e(x.id)+'">'+Object.entries(slotLabels).map(([id,label])=>'<option value="'+id+'" '+(x.slot===id?'selected':'')+'>'+label+'</option>').join('')+'</select><button type="button" data-erencha-equip="'+e(x.id)+'">'+(x.equipped?'해제':'착용')+'</button></div>':'')+'</article>').join('')||'<p class="muted">보유한 물건이 없습니다.</p>');}
 function quests(w,a){return (a.classQuest?panel('전직',e(a.classQuest.description||a.classQuest.name)+(a.classQuest.status==='available'?'<p>이야기에서 원하는 직업의 전직 퀘스트를 받을 수 있습니다.</p>':'')):'')+panel('퀘스트',Object.values(w.meta.erencha.quests).filter(q=>q.actorId===a.id).map(q=>'<article class="card"><div class="play-card-head"><h3>'+e(q.name)+'</h3>'+controls('quest',q.id,a.id)+'</div><span class="tag">'+(q.status==='completed'?'완료':'진행 중')+'</span><p>'+e(q.description)+'</p>'+(q.progress?'<p>'+e(q.progress)+'</p>':'')+V.facts([['경험치 보상',q.rewardXP],['골드 보상',q.gold]])+'</article>').join('')||'<p class="muted">수락한 퀘스트가 없습니다.</p>');}
 function render(ui,tab) {
   const current=ui.info?.state;if(!R.active(current))return panel('에렌샤 온라인','<p>시스템 구축에서 시작 인물을 준비하세요.</p>');
@@ -6323,22 +6423,25 @@ function editor(ui) {
   const conditions={always:'항상',low_hp:'HP 30% 이하',first_hit:'자기 턴 첫 공격'};
   const entries=x.effects.map((ef,i)=>({id:'erencha:'+i,title:effectLabels[ef.type]||ef.type,summary:[ef.type==='cooldownBypass'?ef.skill:ef.value,conditions[ef.condition]||ef.condition].join(' · '),editor:()=>'<div class="fields"><label>종류<select data-erencha-field="effects.'+i+'.type" data-erencha-effect-type="'+i+'">'+FXUI.choiceOptions(ui,ef.type,{legacy:effectLabels,hasStats:false})+'</select></label>'+field('effects.'+i+'.value','수치',ef.value,'number')+field('effects.'+i+'.skill','대상 기술 (선택)',ef.skill)+choice('effects.'+i+'.condition','조건',ef.condition,Object.entries(conditions))+'</div><button type="button" data-erencha-effect-remove="'+i+'">이 효과 삭제</button>'}));
   const adapter={kind:'erencha-'+edit.kind,export:()=>x.effects.length?{kind:'erencha-'+edit.kind,effects:clone(x.effects)}:null,import:data=>{x.effects=clone(data?.effects||[]);}};
-  const nav=FXUI.tabs(edit,{effects:'효과',basic:'기본 정보',usage:isItem?'착용·사용':'비용·사용 조건',...(!isItem&&x.type==='task'?{activity:'생활 활동'}:{})});
+  const nav=FXUI.tabs(edit,{effects:'효과',basic:'기본 정보',usage:isItem?'착용·사용':'비용·사용 조건',...(!isItem?{sequence:'공격·소환'}:require('./durability.js').equipment(x)?{durability:'내구도'}:{}),...(!isItem&&x.type==='task'?{activity:'생활 활동'}:{})});
   let body;
-  if(edit.editorPage==='effects')body=FXUI.render(ui,edit.mechanics,(edit.draft?ui.job.erenchaCandidate:ui.info.state).actors[edit.actorId],{item:isItem,entries,adapter,extraChoices:Object.fromEntries(Object.entries(effectLabels).map(([key,label])=>['erencha:'+key,label]))});
+  if(edit.editorPage==='sequence')body=require('./combat-feature-ui.js').render(edit.mechanics);
+  else if(edit.editorPage==='durability'){x.durability||=require('./durability.js').config(x);body=require('./combat-feature-ui.js').durability(x.durability,x.durabilityCurrent);}
+  else if(edit.editorPage==='effects')body=FXUI.render(ui,edit.mechanics,(edit.draft?ui.job.erenchaCandidate:ui.info.state).actors[edit.actorId],{item:isItem,entries,adapter,extraChoices:Object.fromEntries(Object.entries(effectLabels).map(([key,label])=>['erencha:'+key,label]))});
   else if(edit.editorPage==='basic')body='<div class="fields">'+field('name','이름',x.name)+choice('type','종류',x.type,isItem?[['weapon','무기'],['armor','방어구'],['accessory','장신구'],['ammo','탄약'],['consumable','소모품'],['material','재료'],['protection','강화 보호재']]:[['attack','공격'],['heal','회복'],['buff','강화'],['command','연계 명령'],['task','활동'],['passive','지속 효과']])+(isItem?choice('rank','등급',x.rank,R.RANKS.map(v=>[v,v]))+field('enhancement','강화',x.enhancement,'number')+field('quantity','수량',x.quantity,'number')+field('price','가격 (G)',x.price,'number')+field('defense','방어',x.defense,'number'):field('proficiency','숙련도 분야',x.proficiency)+choice('damageType','피해 속성',x.damageType,Object.entries(require('./effect-model.js').DAMAGE).filter(([k])=>k!=='*'))+field('target','기본 난이도',x.target,'number'))+field('power','기본 위력',x.power,'number')+'<label class="wide">설명<textarea data-erencha-field="description">'+e(x.description)+'</textarea></label></div>';
   else if(edit.editorPage==='activity')body=require('./erencha-life-ui.js').editor(x,field,choice);
   else body='<div class="fields">'+(isItem?(['weapon','armor','accessory'].includes(x.type)?choice('equipped','착용',String(x.equipped),[['true','착용 중'],['false','보관 중']])+choice('slot','착용 칸',x.slot||'',[['','자동 선택'],...Object.entries(slotLabels)]):x.type==='consumable'?field('recovery.hp','HP 회복',x.recovery.hp,'number')+field('recovery.mp','MP 회복',x.recovery.mp,'number')+field('duration','효과 지속 턴',x.duration||2,'number'):'<p class="muted">별도의 착용·사용 설정이 없습니다.</p>'):field('requiresText','먼저 유지할 스킬·상태 · 이름을 쉼표로 구분',(edit.mechanics.requires||[]).join(', '))+field('mpCost','기본 MP 소비',x.mpCost,'number')+field('cooldown','재사용 대기 (자기 턴)',x.cooldown,'number')+field('duration','지속 턴',x.duration,'number')+field('uses','사용 한도 (비우면 제한 없음)',x.uses,'number'))+'</div>';
   return '<section class="item-editor editor-workspace" id="erencha-editor"><h2>'+e(x.name)+' 편집</h2>'+nav+'<div class="editor-page">'+body+'</div>'+buttons+'</section>';
 }
 function capture(ui) {
-  if(!ui.erenchaEditor)return;const x=ui.erenchaEditor.value;
+  if(!ui.erenchaEditor)return;const x=ui.erenchaEditor.value;require('./combat-feature-ui.js').capture(ui.erenchaEditor.mechanics);if(x.durability){const current=require('./combat-feature-ui.js').captureDurability(x.durability);if(current!==undefined)x.durabilityCurrent=current;}
   if(ui.erenchaEditor.mechanics&&document.querySelector('[data-fx-editor]')){FXUI.capture(ui.erenchaEditor.mechanics);x.mechanics=clone(ui.erenchaEditor.mechanics);}
   for(const el of document.querySelectorAll('[data-erencha-field]')) {if(el.hasAttribute('data-erencha-effect-type')&&!Object.hasOwn(effectLabels,el.value))continue;if(el.dataset.erenchaField==='requiresText'){ui.erenchaEditor.mechanics.requires=el.value.split(/[,，\n]/).map(v=>v.trim()).filter(Boolean);continue;}const parts=el.dataset.erenchaField.split('.'),last=parts.pop();let dest=x;for(const p of parts){dest=dest?.[p];if(!dest)break;}if(!dest)continue;dest[last]=last==='equipped'?el.value==='true':el.type==='number'?(el.value===''&&last==='uses'?null:Number(el.value)):el.value;}
-  if(ui.erenchaEditor.mechanics){if(ui.erenchaEditor.kind==='skill')ui.erenchaEditor.mechanics.activation=x.type==='passive'?'passive':'on_use';x.mechanics=clone(ui.erenchaEditor.mechanics);}
+  if(ui.erenchaEditor.mechanics){if(ui.erenchaEditor.kind==='skill')ui.erenchaEditor.mechanics.activation=ui.erenchaEditor.mechanics.activation==='automatic'?'automatic':x.type==='passive'?'passive':'on_use';x.mechanics=clone(ui.erenchaEditor.mechanics);}
 }
 function bind(ui) {
   require('./erencha-life-ui.js').bind(ui,capture);
+  if(ui.erenchaEditor?.mechanics)require('./combat-feature-ui.js').bind(ui,ui.erenchaEditor.mechanics,()=>capture(ui));
   if(ui.erenchaEditor?.mechanics)FXUI.bind(ui,ui.erenchaEditor.mechanics,{captureOuter:()=>capture(ui),addExtra:key=>{if(!key.startsWith('erencha:'))return false;const effects=ui.erenchaEditor.value.effects;effects.push({type:key.slice(8),value:1,skill:'',condition:'always'});return 'erencha:'+(effects.length-1);}});
   const editorRoot=document.getElementById('erencha-editor');if(editorRoot){FXUI.bindTabs(ui,ui.erenchaEditor,editorRoot,()=>capture(ui));editorRoot.addEventListener('input',()=>capture(ui));editorRoot.addEventListener('change',event=>{capture(ui);if(event.target.dataset.erenchaField==='type')ui.render();});}
   const byId=id=>document.getElementById(id),on=(id,fn)=>{const el=byId(id);if(el)el.onclick=()=>ui.act(fn);};
@@ -6614,6 +6717,14 @@ async function prepare(native,scope,tx,args,signal) {
       selected=skillPlan.skill;kind=['defense','evasion'].includes(selected.kind)?selected.kind:'skill';
     } else kind='check';
   }
+  const preparedSummons=[];
+  for(const row of [...Object.keys(w.actors[actorId].skills).map(id=>w.definitions.skills[id]),selected].filter(Boolean)){
+    const spec=row.mechanics?.summon;if(!spec?.actor||(row.id!==selected?.id&&spec.mode!=='permanent'))continue;
+    const existing=findActor(w,spec.actor),id=await ensure(spec.actor,'ally');preparedSummons.push({id,ownerId:actorId,standby:spec.mode!=='permanent'&&!existing?.summon});
+    if(spec.mode==='permanent')explicit.push(id);
+  }
+  for(const follow of selected?.mechanics?.followUps||[]){const owner=['self','자신',actorId,w.actors[actorId].name].includes(follow.actor)?actorId:await ensure(follow.actor,'ally');if(owner!==actorId)explicit.push(owner);if(['self','같은 기술'].includes(follow.skill))continue;if(!knownSkill(w,w.actors[owner],follow.skill)){const input={op:'prepare_skill',actorId:owner,name:follow.skill,intent:selected.name+'의 후속 공격'},prepared=await native.prepareValue(scope,temp,'rpg_play',input,signal);native.apply(w,prepared,'rpg_play',input,tx.authority);preparations.push({tool:'rpg_play',args:input,plan:prepared});await save();}}
+  explicit.push(...require('./combat-features.js').companionIds(w,[actorId,...explicit]));
   const targets=[];
   for(const target of args.targets || []) {
     const obj=Object.values(wObjects()).find(x=>x.id===target||N.sameSkill(x.name,target));
@@ -6622,6 +6733,7 @@ async function prepare(native,scope,tx,args,signal) {
     const friendly=kind==='check'||(relations?relations.some(side=>side==='ally'||side==='self')&&!relations.includes('enemy'):selected?.kind==='heal'||selected?.kind==='utility'&&selected?.link?.mode!=='command');
     targets.push(await ensure(target,friendly?'ally':'enemy'));
   }
+  if(!targets.length&&selected?.mechanics?.summon?.actor)targets.push(actorId);
   if(terrain){for(const name of args.terrain.targets){const id=await ensure(name,'enemy');terrain.targetIds.push(id);explicit.push(id);}require('./terrain.js').attach(w,terrain.objectId,terrain.targetIds,terrain.severity);targets.splice(0,targets.length,terrain.objectId);}
   const discovered=!w.combat && require('./native-exploration.js').encounter(w);
   const offensive=kind==='attack' || kind==='skill' && (selected?.kind==='attack' || selected?.link?.mode==='command');
@@ -6670,11 +6782,13 @@ async function prepare(native,scope,tx,args,signal) {
     if(!w.combat || !w.combat.order.some(row=>row.actorId===id))teams[id]=1-teams[actorId];
   }
   for(const row of summons)teams[row.id]=teams[row.ownerId] ?? (FX.enemy(w,w.actors[row.id])?1:0);
-  const plan={op:'play-action',objects,summons,teams,terrain,...(args.combat!==undefined?{combat:args.combat}:{}),...(args.threatId?{threatId:args.threatId}:{}),preparations,actorId,kind,skillId:selected?.id || '',targetIds:targets,participants:[...new Set(explicit)],reactions,linkBindings,opening:args.opening || null,...(connectsEncounter?{encounterId:discovered.eventId}:{}),checkPlan,eventId:args.eventId || stableId('check',tx.userMessageId+'|'+actorId+'|'+N.norm(args.action)+'|'+N.norm(args.intent || '')+'|'+[...targets].sort().join('|')),cacheKey:key};
+  const plan={op:'play-action',objects,summons,preparedSummons,teams,terrain,...(args.combat!==undefined?{combat:args.combat}:{}),...(args.threatId?{threatId:args.threatId}:{}),preparations,actorId,kind,skillId:selected?.id || '',targetIds:targets,participants:[...new Set(explicit)],reactions,linkBindings,opening:args.opening || null,...(connectsEncounter?{encounterId:discovered.eventId}:{}),checkPlan,eventId:args.eventId || stableId('check',tx.userMessageId+'|'+actorId+'|'+N.norm(args.action)+'|'+N.norm(args.intent || '')+'|'+[...targets].sort().join('|')),cacheKey:key};
   await native.app.repo.write(key,{preparations,plan});return plan;
 }
 function apply(native,w,plan,args,authority) {
   for(const p of plan.preparations)native.apply(w,p.plan,p.tool,p.args,authority);
+  for(const row of plan.preparedSummons||[]){const a=w.actors[row.id];a.kind='summon';a.ownerId=row.ownerId;if(row.standby)a.active=false;}
+  require('./combat-features.js').maintainSummons(w);
   for(const input of plan.objects||[])FX.object(w,input);
   if(plan.terrain)require('./terrain.js').attach(w,plan.terrain.objectId,plan.terrain.targetIds,plan.terrain.severity);
   for(const row of plan.summons||[])if(w.actors[row.id]){w.actors[row.id].kind='summon';w.actors[row.id].ownerId=row.ownerId;}
@@ -6760,7 +6874,7 @@ function apply(native,w,plan,args,authority) {
     if(w.combat?.turnTable===false){
       if(!requestedActionApplied&&plan.kind!=='continue')return;
       const c=w.combat;c.freeQueue||=c.order.map(r=>r.actorId).filter(id=>id!==plan.actorId&&Engine.alive(w.actors[id]));
-      while(w.combat?.freeQueue?.length&&!pending()&&!blocked&&!w.combat.rescuePending){const npc=w.actors[w.combat.freeQueue[0]];if(CombatOptions.controlled(w,npc)){w.combat.index=w.combat.order.findIndex(r=>r.actorId===npc.id);return;}w.combat.freeQueue.shift();if(!Engine.alive(npc))continue;if(FX.incapacitated(w,npc)){endNPCTurn(npc,'INCAPACITATED');continue;}const skills=Object.keys(npc.skills).map(id=>w.definitions.skills[id]).filter(s=>s.kind==='attack'&&s.mechanics?.activation!=='passive');const s=skills.find(s=>{try{Engine.gates({...w,combat:null},npc,s);return true;}catch{return false;}}),targetIds=targetsFor(npc,s);if(!targetIds.length)continue;execute('rpg_combat',{op:'action',actorId:npc.id,kind:s?'skill':'basic_attack',skillId:s?.id||'',targetIds,itemId:'',reactions:chosenReactions(targetIds,s?.area),finishTurn:true});settleAutomaticReactions();}
+      while(w.combat?.freeQueue?.length&&!pending()&&!blocked&&!w.combat.rescuePending){const npc=w.actors[w.combat.freeQueue[0]];if(CombatOptions.controlled(w,npc)){w.combat.index=w.combat.order.findIndex(r=>r.actorId===npc.id);return;}w.combat.freeQueue.shift();if(!Engine.alive(npc))continue;if(FX.incapacitated(w,npc)){endNPCTurn(npc,'INCAPACITATED');continue;}const skills=Object.keys(npc.skills).map(id=>w.definitions.skills[id]).filter(s=>s.kind==='attack'&&!['passive','automatic'].includes(s.mechanics?.activation));const s=skills.find(s=>{try{Engine.gates({...w,combat:null},npc,s);return true;}catch{return false;}}),targetIds=targetsFor(npc,s);if(!targetIds.length)continue;execute('rpg_combat',{op:'action',actorId:npc.id,kind:s?'skill':'basic_attack',skillId:s?.id||'',targetIds,itemId:'',reactions:chosenReactions(targetIds,s?.area),finishTurn:true});settleAutomaticReactions();}
       if(w.combat&&!w.combat.freeQueue?.length){delete w.combat.freeQueue;const ready=w.combat.order.findIndex(r=>CombatOptions.controlled(w,w.actors[r.actorId])&&Engine.alive(w.actors[r.actorId]));if(ready>=0)w.combat.index=ready;}return;
     }
     const limit=w.combat?.order.length || 0;
@@ -13882,7 +13996,7 @@ function catalog(ui) {
   if(!w?.meta.hunters)return '<section class="panel"><p>헌터 룰북을 구축하고 적용하면 등록 인물이 표시됩니다.</p></section>';
   // The built-in catalog is preparation data. Show people after they appear,
   // without deleting or activating their saved definitions just to list them.
-  const all=Object.values(w.actors).filter(a=>a.active).sort((a,b)=>(a.kind==='player'?0:1)-(b.kind==='player'?0:1)||a.name.localeCompare(b.name,'ko'));
+  const all=Object.values(w.actors).filter(a=>a.active&&!a.retired&&!(a.kind==='enemy'&&Object.values(a.resources).some(r=>r.role==='vital'&&r.current<=0))).sort((a,b)=>(a.kind==='player'?0:1)-(b.kind==='player'?0:1)||a.name.localeCompare(b.name,'ko'));
   const search=norm(ui.hunterSearch||'');
   const rows=all.map(a=>{
     const record=w.meta.native?.actors?.[a.id],hunter=record?.hunter||{};
@@ -14049,7 +14163,7 @@ function open(ui,w,a,itemId,adapter=null) {
   assert(d && item.ownerId===a.id && item.quantity>0,'NOT_OWNED','편집할 소지품을 찾지 못했습니다.');
   const amount=d.use?formulaText(d.use.amount):'0';
   const draft={name:d.name,description:d.provenance?.note || '',category:d.category,quantity:String(item.quantity),price:String(d.value),currencyId:d.currencyId,slots:[...d.slots],ammoType:d.ammoType || d.ammo?.type || '',capacity:String(d.ammo?.capacity || 0),loaded:String(item.loaded || 0),useResource:d.use?.resource || '',useAmount:amount ?? ''};
-  ui.nativeItemEditor={mechanics:FXUI.init(d,{item:true}),originalMechanics:FXUI.init(d,{item:true}),scope:scopeKey(ui.info.scope),actorId:a.id,itemId,expected:snapshot(w,itemId),original:clone(draft),draft,effects:clone(d.effects).map(data=>({data,amount:String(data.value)})),originalEffects:clone(d.effects),customAmmo:false,customTargets:new Set(),existingFormula:amount===null,saving:false,adapter};
+  ui.nativeItemEditor={durability:require('./durability.js').config(d),originalDurability:require('./durability.js').config(d),durabilityCurrent:require('./durability.js').info(w,item)?.current,originalDurabilityCurrent:require('./durability.js').info(w,item)?.current,mechanics:FXUI.init(d,{item:true}),originalMechanics:FXUI.init(d,{item:true}),scope:scopeKey(ui.info.scope),actorId:a.id,itemId,expected:snapshot(w,itemId),original:clone(draft),draft,effects:clone(d.effects).map(data=>({data,amount:String(data.value)})),originalEffects:clone(d.effects),customAmmo:false,customTargets:new Set(),existingFormula:amount===null,saving:false,adapter};
 }
 function current(ui,w,a) {
   const state=ui.nativeItemEditor;
@@ -14109,13 +14223,14 @@ function render(ui,w,a,itemId) {
   }
   const entries=d.category==='equipment'?state.effects.map((row,i)=>({id:'native:'+i,title:TYPES[row.data.type]||row.data.type,summary:[targetOptions(w,a,row.data.type).find(x=>x.value===row.data.target)?.label||row.data.target,row.data.type==='checkStat'?statName(row.data.stat):FXUI.numberText({...row.data,value:row.amount}),...(row.data.tags?.length?[row.data.tags.join(', ')]:[])].join(' · '),editor:()=>effectRow(ui,w,a,state,row,i)})):[];
   const adapter={kind:'native-item',export:()=>d.category==='equipment'&&state.effects.length?{kind:'native-item',effects:clone(state.effects)}:null,import:data=>{state.effects=clone(data?.effects||[]);state.customTargets.clear();}};
-  const nav=FXUI.tabs(state,{effects:'효과',basic:'기본 정보',usage:'착용·사용'});
-  const body=state.editorPage==='effects'?FXUI.render(ui,state.mechanics,a,{item:true,entries,adapter}):state.editorPage==='usage'?(details||'<p class="muted">이 물품에는 별도의 착용·사용 설정이 없습니다.</p>'):'<div class="fields">'+input('name','이름',d.name,'maxlength="256" required')+select('category','종류',d.category,pairs(CATEGORIES))+(state.adapter?.definitionOnly?'':input('quantity','수량',d.quantity,'type="number" min="1" max="'+(d.category==='equipment'?1:1000000)+'" step="1" required'))+input('price','개당 기준 가격',d.price,'type="number" min="0" max="1000000000" step="1" required')+select('currencyId','화폐',d.currencyId,currencies)+'</div>';
+  const nav=FXUI.tabs(state,{effects:'효과',basic:'기본 정보',usage:'착용·사용',...(d.category==='equipment'?{durability:'내구도'}:{})});
+  const body=state.editorPage==='durability'?require('./combat-feature-ui.js').durability(state.durability,state.durabilityCurrent):state.editorPage==='effects'?FXUI.render(ui,state.mechanics,a,{item:true,entries,adapter}):state.editorPage==='usage'?(details||'<p class="muted">이 물품에는 별도의 착용·사용 설정이 없습니다.</p>'):'<div class="fields">'+input('name','이름',d.name,'maxlength="256" required')+select('category','종류',d.category,pairs(CATEGORIES))+(state.adapter?.definitionOnly?'':input('quantity','수량',d.quantity,'type="number" min="1" max="'+(d.category==='equipment'?1:1000000)+'" step="1" required'))+input('price','개당 기준 가격',d.price,'type="number" min="0" max="1000000000" step="1" required')+select('currencyId','화폐',d.currencyId,currencies)+'</div>';
   return '<div id="native-item-editor" class="item-editor editor-workspace" data-item-id="'+e(itemId)+'"><fieldset class="item-editor-body" '+(state.saving?'disabled':'')+'><legend>'+e(d.name)+' 편집</legend><p class="editor-brief">'+e(CATEGORIES[d.category])+' · '+e(d.quantity)+'개</p>'+nav+'<div class="editor-page">'+body+'</div><div class="row item-editor-actions"><button type="button" id="item-edit-save" class="primary">'+(state.saving?'저장 중…':'물품 저장')+'</button><button type="button" id="item-edit-cancel">취소</button>'+(!state.adapter||state.adapter.remove?'<button type="button" id="item-edit-delete" class="subtle editor-delete">물품 삭제</button>':'')+'</div></fieldset></div>';
 }
 function capture(ui) {
   const state=ui.nativeItemEditor,form=document.getElementById('native-item-editor');
   if(!state || !form || form.dataset.itemId!==state.itemId)return;
+  const durabilityCurrent=require('./combat-feature-ui.js').captureDurability(state.durability,form);if(durabilityCurrent!==undefined)state.durabilityCurrent=durabilityCurrent;
   FXUI.capture(state.mechanics,form.querySelector('[data-fx-editor]'));
   for(const el of form.querySelectorAll('[data-item-field]')) {
     const key=el.dataset.itemField;if(key==='ammoChoice' || key==='ammoCustom')continue;
@@ -14143,6 +14258,7 @@ function number(value,label,{min=0,max=1000000,integer=true}={}) {
 }
 function patch(state) {
   const d=state.draft,b=state.original,out={};
+  if(d.category==='equipment'){if(canonical(state.durability)!==canonical(state.originalDurability))out.durability=clone(state.durability);if(state.durabilityCurrent!==state.originalDurabilityCurrent)out.durabilityCurrent=state.durabilityCurrent;}
   if(canonical(state.mechanics)!==canonical(state.originalMechanics))out.mechanics=require('./effect-model.js').normalize(state.mechanics);
   for(const key of ['name','description','category','currencyId'])if(d[key]!==b[key])out[key]=d[key];
   for(const key of ['quantity','price'])if(d[key]!==b[key])out[key]=number(d[key],key==='quantity'?'수량':'가격',{min:key==='quantity'?1:0,max:key==='price'?1000000000:1000000});
@@ -14251,6 +14367,8 @@ function edit(w,args,ctx) {
   if(own(p,'currencyId'))d.currencyId=p.currencyId;
   assert(w.profile.currencies.some(c=>c.id===d.currencyId),'UNKNOWN_CURRENCY','가격의 화폐를 선택하세요.');
   if(own(p,'effects'))d.effects=clone(p.effects);
+  if(own(p,'durability'))d.durability=clone(p.durability);
+  if(own(p,'durabilityCurrent'))item.durabilityCurrent=Math.min(require('./durability.js').config(d).max,p.durabilityCurrent);
   if(own(p,'mechanics'))d.mechanics=require('./effect-model.js').normalize(p.mechanics);
   d.optionBudget=Math.max(d.optionBudget,d.effects.reduce((sum,e)=>sum+Math.abs(e.value),0));
   if(own(p,'slots'))d.slots=[...new Set(p.slots)];
@@ -14902,6 +15020,11 @@ class NativeAssistant {
     const conn=app.settings.connection,secrets=app.secrets;
     if(tool==='rpg_play' && args.op==='act')return require('./gameplay.js').prepare(this,scope,tx,args,signal);
     if(tool==='rpg_play' && args.op==='explore')return require('./adventure.js').legacy(tx.state,args)?require('./native-exploration.js').prepare(this,scope,tx,args,signal):require('./adventure.js').prepareNative(this,scope,tx,args,signal);
+    if(tool==='rpg_registry'&&['summon','dismiss_summon'].includes(args.op)){
+      if(args.op==='dismiss_summon')return {op:'dismiss-companion',name:args.name,owner:args.owner};
+      const base=await this.prepareValue(scope,tx,tool,{op:'ensure_actor',name:args.name,kind:'summon',owner:args.owner,description:args.description||args.name},signal);
+      return {op:'summon-companion',base,owner:args.owner,mode:args.mode||'cast',duration:args.duration||5};
+    }
     if(tool==='rpg_registry') {
       if(args.op==='ensure_actor'&&args.kind==='summon'){
         const owner=args.owner||args.actor||Object.values(w.actors).find(a=>a.kind==='player')?.id;
@@ -15039,6 +15162,8 @@ class NativeAssistant {
     return {op:'skill',id:actor.id,cacheKey,ammunition,authored:data,description:text(data.description) || args.intent,skill:ability(data,stableId(actor.id+'-skill',name),name,ammunition,weapons,partners,Boolean(w.meta.hunters))};
   }
   apply(w,plan,tool,args,authority) {
+    if(plan.op==='dismiss-companion'){const F=require('./combat-features.js'),a=F.find(w,plan.name),owner=F.find(w,plan.owner);assert(a?.kind==='summon'&&a.ownerId===owner?.id,'INVALID_SUMMON','소유한 소환수를 지정하세요.');a.active=false;return {result:{actorId:a.id,dismissed:true}};}
+    if(plan.op==='summon-companion'){const out=this.apply(w,plan.base,tool,args,authority),F=require('./combat-features.js'),owner=F.find(w,plan.owner);assert(owner,'UNKNOWN_ACTOR','소환수의 주인이 없습니다.');const a=F.summon(w,owner,{mechanics:{summon:{actor:out.result.actorId,mode:plan.mode,duration:plan.duration}}},w.meta.effectEvents||=[]);return {result:{actorId:a.id,ownerId:owner.id,summoned:true,effectEvents:require('./effect-system.js').takeEvents(w)}};}
     if(plan.op==='summon-actor'){
       const owner=plan.ownerPlan?this.apply(w,plan.ownerPlan,'rpg_registry',args,authority).result.actorId:null;
       const result=this.apply(w,plan.base,'rpg_registry',args,authority),a=w.actors[result.result.actorId];
@@ -15526,7 +15651,7 @@ function item(input,owner,id,catalog={},knownWeapons=[],pricing={}) {
   const selected=currencyMatch(input.currencyId || input.currency || pricing.currencyId || 'unit',choices);
   assert(selected,'CURRENCY_UNKNOWN','아이템 가격의 화폐를 확인하세요: '+(input.currencyId || input.currency));
   const value=Math.max(0,Math.floor(number(input.price,kind==='equipment'?20:1))),currencyId=selected.key;
-  const definition={...(input.mechanics?{mechanics:require('./effect-presets.js').compile(input.mechanics,{activation:kind==='equipment'?'passive':'on_use',targeting:{relations:['self','ally']}})}:{}),id,name:input.name,category:kind,slots,twoHanded:false,tags:rows(input.tags).filter(v=>typeof v==='string'),effects,value,currencyId,rarity:'standard',optionBudget:effects.reduce((n,e)=>n+Math.abs(e.value),0),provenance:proof(),...Ammunition.item(input,kind,catalog,knownWeapons)};
+  const definition={...(input.durability?{durability:require('./durability.js').config(input)}:{}),...(input.mechanics?{mechanics:require('./effect-presets.js').compile(input.mechanics,{activation:kind==='equipment'?'passive':'on_use',targeting:{relations:['self','ally']}})}:{}),id,name:input.name,category:kind,slots,twoHanded:false,tags:rows(input.tags).filter(v=>typeof v==='string'),effects,value,currencyId,rarity:String(input.rarity||input.rank||'standard'),optionBudget:effects.reduce((n,e)=>n+Math.abs(e.value),0),provenance:proof(),...Ammunition.item(input,kind,catalog,knownWeapons)};
   const resource=String(input.resource || '').trim().toLowerCase();
   if(kind==='consumable' && ['hp','mp','sp'].includes(resource))definition.use={resource,amount:parseFormula(String(Math.max(0,number(input.amount,10))),{keys:KEYS})};
   return {definition,instance:{instanceId:id,definitionId:id,ownerId:owner,quantity:kind==='equipment'?1:Math.max(1,Math.floor(number(input.quantity,1))),loaded:Math.min(definition.ammo?.capacity || 0,Math.max(0,Math.floor(number(input.ammo?.loaded,0)))),spent:0},equip:input.equipped===true && slots.length>0};
@@ -15691,7 +15816,7 @@ function equipment(ui) {
   const items=Object.values(w.inventory).filter(i=>i.ownerId===a.id && i.quantity>0);
   const inventory='<div class="play-items">'+items.map(i=>{
     const d=w.definitions.items[i.definitionId],editor=ItemEditor.render(ui,w,a,i.instanceId),category={equipment:'장비',consumable:'소모품',material:'재료',ammo:'탄약',quest:'퀘스트 물품'}[d.category];
-    return '<article class="play-item"><div class="play-card-head"><div><h3>'+e(d.name)+'</h3><small>'+e(category)+' · '+e(i.quantity)+'개</small></div><div class="row">'+(d.category==='equipment'?'<button data-native-preview="'+e(i.instanceId)+'">착용 비교</button>':'')+'<button data-native-edit-item="'+e(i.instanceId)+'" aria-expanded="'+!!editor+'">편집</button></div></div><p>'+e([d.effects.map(require('./equipment-options.js').describe).join(' · '),require('./effect-model.js').describe(d.mechanics)].filter(Boolean).join(' · ') || '수치 효과 없음')+'</p>'+editor+'</article>';
+    return '<article class="play-item"><div class="play-card-head"><div><h3>'+e(d.name)+'</h3><small>'+e(category)+' · '+e(i.quantity)+'개'+(d.category==='equipment'?' · '+e(require('./durability.js').label(w,i)):'')+'</small></div><div class="row">'+(d.category==='equipment'?'<button data-native-preview="'+e(i.instanceId)+'">착용 비교</button>':'')+'<button data-native-edit-item="'+e(i.instanceId)+'" aria-expanded="'+!!editor+'">편집</button></div></div><p>'+e([d.effects.map(require('./equipment-options.js').describe).join(' · '),require('./effect-model.js').describe(d.mechanics)].filter(Boolean).join(' · ') || '수치 효과 없음')+'</p>'+editor+'</article>';
   }).join('')+'</div>';
   const equipped=Object.entries(a.equipment).filter(([,id])=>id),empty=Object.entries(a.equipment).filter(([,id])=>!id);
   const gear=equipped.map(([slot,id])=>'<article class="play-gear"><small>'+e(slots[slot]||slot)+'</small><b>'+e(w.definitions.items[w.inventory[id]?.definitionId]?.name||'알 수 없는 아이템')+'</b><button data-native-unequip="'+e(slot)+'">해제</button></article>').join('');
@@ -17429,7 +17554,7 @@ async function prepare(app,scope,tx,tool,args) {
   if(book.family==='social')return {kind:'social',data:await require('./social-assistant.js').prepare(app,scope,tx,args,tool)};
   if(book.family==='erencha')return {kind:'erencha',data:await require('./erencha-assistant.js').prepare(app,scope,tx,args,tool)};
   const call=nativeRoute(tx.state,tool,args);
-  if(tx.state.meta.native && (call.tool==='rpg_play'||call.tool==='rpg_registry'&&['ensure_actor','ensure_actors'].includes(call.args.op))) {
+  if(tx.state.meta.native && (call.tool==='rpg_play'||call.tool==='rpg_registry'&&['ensure_actor','ensure_actors','summon','dismiss_summon'].includes(call.args.op))) {
     return {kind:'native',call,data:await app.native.prepare(scope,tx,call.tool,call.args)};
   }
   if(!tx.state.meta.native&&tool==='rpg_registry'&&args.op==='ensure_actor') {
@@ -17763,7 +17888,7 @@ function expression(expr, actor, profile, depth = 0, context = {stack:[]}) {
   return value;
 }
 function equipmentEffects(world, actor) {
-  return [...new Set(Object.values(actor.equipment))].filter(Boolean).flatMap(id => world.definitions.items[world.inventory[id]?.definitionId]?.effects || []);
+  return [...new Set(Object.values(actor.equipment))].filter(id=>require('./durability.js').working(world,world.inventory[id])).flatMap(id => world.definitions.items[world.inventory[id]?.definitionId]?.effects || []);
 }
 function effects(world, actor) {
   return [...require('./effect-system.js').modifiers(world,actor), ...equipmentEffects(world, actor), ...actor.conditions.flatMap(c => c.effect || []), ...(world.exploration?.nodes[world.exploration.current]?.environment?.effects || [])];
@@ -18115,6 +18240,7 @@ const skill = optional(obj({
   provenance
 }), 'charges', 'ammo', 'condition','narrativeEffects','activationBlocked','rarity','masteryGrowth','masteryPlan','evasionFormula','link','mechanics');
 const item = optional(obj({
+  durability:require('./durability.js').schema,
   id,
   name: str(),
   mechanics: require('./effect-model.js').schema,
@@ -18139,7 +18265,7 @@ const item = optional(obj({
     amount: expression
   }),
   provenance
-}), 'ammo', 'ammoType', 'use','mechanics');
+}), 'ammo', 'ammoType', 'use','mechanics','durability');
 const actor = optional(obj({
   id,
   name: str(),
@@ -18313,8 +18439,8 @@ const initial = obj({
     ownerId: id,
     quantity: int(1, 1000000),
     loaded: int(0, 10000),
-    equip:{type:'boolean'}
-  }),'equip'), 300),
+    equip:{type:'boolean'},durabilityCurrent:num(0,1000000)
+  }),'equip','durabilityCurrent'), 300),
   wallets: map(map(int(0, 1000000000000)))
 });
 const catalogActor = obj({
@@ -19885,13 +20011,14 @@ function render(ui,w,a,skillId) {
   const entries=conditionEntries(ui,w,a,state);
   const link=toggle('linkEnabled','동료 연계',d.linkEnabled)+(d.linkEnabled?'<div class="fields">'+select('linkMode','발동 방식',d.linkMode,pairs({on_hit:'내 공격 명중 후 동료 공격',command:'내 공격 없이 명령으로 동료 공격'}))+named('linkActor','연계할 동료',d.linkActor,companions.map(other=>({value:other.id,label:other.name})),state)+named('linkSkill','동료의 기술',d.linkSkill,skillRows,state)+'</div><small>동료의 행동 횟수는 소모하지 않습니다. 기술 자원과 명중은 별도로 계산합니다.</small>':'');
   const ammo=toggle('ammoEnabled','탄약 소모',d.ammoEnabled)+(d.ammoEnabled?'<div class="fields">'+named('ammoType','탄약 종류',d.ammoType,Object.entries(Ammunition.fromWorld(w)).map(([id,row])=>({value:id,label:row.name})),state)+select('ammoMode','소모 위치',d.ammoMode,pairs({stack:'소지 탄약',magazine:'장전된 탄창'}))+input('ammoQuantity','사용할 때 소모 수량',d.ammoQuantity,'type="number" min="1" max="100" step="1" required')+'</div>':'');
-  const nav=FXUI.tabs(state,{effects:'효과',basic:'기본 정보',usage:'비용·사용 조건',growth:'숙련도 성장'});
-  const body=state.editorPage==='growth'?MasteryUI.render(ui,state,a):state.editorPage==='effects'?FXUI.render(ui,state.mechanics,a,{entries,adapter:effectAdapter(state)}):state.editorPage==='basic'?'<div class="fields">'+input('name','이름',d.name,'maxlength="300" required')+select('kind','종류',d.kind,pairs(KINDS))+select('rarity','등급',d.rarity,pairs(RARITIES))+'<label class="wide">설명<textarea data-skill-field="description" rows="3" maxlength="2000">'+e(d.description)+'</textarea></label></div>'+combat+(d.kind==='evasion'?input('evasionFormula','회피 성공률 계산식 (%)',d.evasionFormula,'maxlength="500"'):''):'<section>'+input('requires','먼저 유지할 스킬·상태 · 이름을 쉼표로 구분',d.requires,'maxlength="2000" placeholder="예: 빙결 인챈트"')+'<small>입력한 스킬·상태의 효과가 이 인물에게 남아 있을 때만 사용할 수 있습니다. 여러 이름을 적으면 모두 필요합니다.</small></section><section><h4>자원 비용</h4>'+state.costs.map((row,i)=>costRow(a,row,i)).join('')+'<button type="button" id="skill-cost-add" '+(state.costs.length>=20||!Object.keys(a.resources).length?'disabled':'')+'>+ 비용 추가</button></section><section>'+charges+'</section><section>'+link+'</section><section>'+ammo+'</section>';
+  const nav=FXUI.tabs(state,{effects:'효과',basic:'기본 정보',usage:'비용·사용 조건',sequence:'공격·소환',growth:'숙련도 성장'});
+  const body=state.editorPage==='sequence'?require('./combat-feature-ui.js').render(state.mechanics):state.editorPage==='growth'?MasteryUI.render(ui,state,a):state.editorPage==='effects'?FXUI.render(ui,state.mechanics,a,{entries,adapter:effectAdapter(state)}):state.editorPage==='basic'?'<div class="fields">'+input('name','이름',d.name,'maxlength="300" required')+select('kind','종류',d.kind,pairs(KINDS))+select('rarity','등급',d.rarity,pairs(RARITIES))+'<label class="wide">설명<textarea data-skill-field="description" rows="3" maxlength="2000">'+e(d.description)+'</textarea></label></div>'+combat+(d.kind==='evasion'?input('evasionFormula','회피 성공률 계산식 (%)',d.evasionFormula,'maxlength="500"'):''):'<section>'+input('requires','먼저 유지할 스킬·상태 · 이름을 쉼표로 구분',d.requires,'maxlength="2000" placeholder="예: 빙결 인챈트"')+'<small>입력한 스킬·상태의 효과가 이 인물에게 남아 있을 때만 사용할 수 있습니다. 여러 이름을 적으면 모두 필요합니다.</small></section><section><h4>자원 비용</h4>'+state.costs.map((row,i)=>costRow(a,row,i)).join('')+'<button type="button" id="skill-cost-add" '+(state.costs.length>=20||!Object.keys(a.resources).length?'disabled':'')+'>+ 비용 추가</button></section><section>'+charges+'</section><section>'+link+'</section><section>'+ammo+'</section>';
   const brief=[KINDS[d.kind],RARITIES[d.rarity],...state.costs.map(row=>(a.resources[row.data.resource]?.name||row.data.resource)+' '+row.amount+(row.data.mode==='flat'?'':'%'))].join(' · ');
   return '<div id="native-skill-editor" class="item-editor editor-workspace" data-skill-id="'+e(skillId)+'"><fieldset class="item-editor-body" '+(state.saving?'disabled':'')+'><legend>'+e(d.name)+' 편집</legend><p class="editor-brief">'+e(brief)+'</p>'+nav+'<div class="editor-page">'+body+'</div><div class="row item-editor-actions"><button type="button" id="skill-edit-save" class="primary">'+(state.saving?'저장 중…':'기술 저장')+'</button><button type="button" id="skill-edit-cancel">취소</button>'+(!state.adapter||state.adapter.remove?'<button type="button" id="skill-edit-delete" class="subtle editor-delete">기술 삭제</button>':'')+'</div></fieldset></div>';
 }
 function capture(ui) {
   const state=ui.nativeSkillEditor,container=document.getElementById('native-skill-editor');if(!state || !container || container.dataset.skillId!==state.skillId)return;
+  require('./combat-feature-ui.js').capture(state.mechanics,container);
   MasteryUI.capture(state,container);
   FXUI.capture(state.mechanics,container.querySelector('[data-fx-editor="effects"]'));
   for(const field of container.querySelectorAll('[data-skill-field]')) {
@@ -19950,6 +20077,7 @@ function patch(state) {
   return p;
 }
 function bind(ui,w,a) {
+  if(ui.nativeSkillEditor)require('./combat-feature-ui.js').bind(ui,ui.nativeSkillEditor.mechanics,()=>capture(ui));
   for(const button of document.querySelectorAll('[data-native-edit-skill]'))button.onclick=()=>ui.act(()=>{open(ui,w,a,button.dataset.nativeEditSkill);ui.render();document.getElementById('native-skill-editor')?.scrollIntoView({block:'start'});});
   const state=current(ui,w,a),container=document.getElementById('native-skill-editor');if(!state || !container)return;
   FXUI.bindTabs(ui,state,container,()=>capture(ui));
@@ -22239,7 +22367,7 @@ class UI {
   actorCards() {
     const w = this.info?.state;
     if (!w) return '<div class="empty">저장한 게임 상태가 없습니다.<br>시스템 구축에서 자료와 등장인물을 준비하세요.</div>';
-    const all=Object.values(w.actors).filter(a=>a.active&&(a.kind!=='enemy'||w.combat?.order.some(row=>row.actorId===a.id)));
+    const all=Object.values(w.actors).filter(a=>a.active&&!a.retired&&!(a.kind==='enemy'&&Object.values(a.resources).some(r=>r.role==='vital'&&r.current<=0))&&(a.kind!=='enemy'||w.combat?.order.some(row=>row.actorId===a.id)));
     const cards=list=>'<div class="cards">'+list.map(a=>{
       const growth=a.kind!=='enemy'&&w.meta.native?require('./native-rpg.js').sheet(w,a.id):null;
       return '<article class="card"><div class="play-card-head"><h3>'+e(a.name)+'</h3><span class="tag">'+e(labels[a.kind]||a.kind)+'</span></div>'+
@@ -22782,7 +22910,7 @@ module.exports = {
 },
 "./version.js":function(module,exports,require){
 'use strict';
-module.exports={VERSION:'0.18.8'};
+module.exports={VERSION:'0.19.0'};
 
 }};const __cache={};function require(id){if(__cache[id])return __cache[id].exports;if(!__modules[id])throw new Error("Unknown local module "+id);const m={exports:{}};__cache[id]=m;__modules[id](m,m.exports,require);return m.exports;}
 const {App}=require("./app.js"),{UI}=require("./ui.js");const app=new App(Risuai),ui=new UI(app,"/* LongMemory 0.24.0 visual signature. No embedded documents or remote assets. */\n:root{\n  color-scheme:dark;font:14px/1.65 Inter,'Pretendard','Noto Sans KR',system-ui,'Malgun Gothic',sans-serif;\n  --bg:#252422;--sidebar:#211f1d;--surface:#302e2b;--panel:#34312e;--field:#282624;--inset:#292725;\n  --text:#fffcf2;--muted:#ccc5b9;--border:#554f48;--border-strong:#797168;\n  --button:#403d39;--hover:#504a43;--primary:#eb5e28;--primary-text:#252422;--primary-hover:#f47d51;\n  --accent:#ffb28e;--accent-bg:#49352d;--accent-border:#a77862;--focus:#f6b896;\n  --good:#bcd9bc;--good-bg:#293a2e;--good-border:#57705b;\n  --danger:#ffb6b2;--danger-bg:#4b2d2c;--danger-border:#ab6c66;--shadow:#0004;\n  --line:var(--border);background:var(--bg);color:var(--text)\n}\n:root[data-theme=\"light\"]{\n  color-scheme:light;--bg:#faf7ef;--sidebar:#f4eddf;--surface:#fffdf7;--panel:#fffaf0;--field:#fffdf8;--inset:#f5f0e6;\n  --text:#403d39;--muted:#71695f;--border:#d8cebf;--border-strong:#aca08f;\n  --button:#f3ecdf;--hover:#eadfcd;--primary:#f4bfbf;--primary-text:#403d39;--primary-hover:#f6b896;\n  --accent:#3b627d;--accent-bg:#e2edf2;--accent-border:#8caebf;--focus:#3b627d;\n  --good:#3e6249;--good-bg:#e6efdf;--good-border:#a3b795;\n  --danger:#9d3839;--danger-bg:#f9e5e1;--danger-border:#ce9890;--shadow:#403d391a\n}\n*{box-sizing:border-box}body{margin:0;min-width:0}button,input,textarea,select{font:inherit}\nbutton{border:1px solid var(--border);border-radius:8px;color:var(--text);background:var(--button);padding:9px 13px;cursor:pointer;line-height:1.5}\nbutton:hover{background:var(--hover)}button:disabled{opacity:.42;cursor:default}\nbutton.primary{background:var(--primary);color:var(--primary-text);border-color:transparent;font-weight:700}button.primary:hover:not(:disabled){background:var(--primary-hover)}button.subtle{background:transparent}\nbutton.danger{color:var(--danger);border-color:var(--danger-border);background:var(--danger-bg)}\nbutton:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--focus);outline-offset:3px}\ninput,textarea,select{width:100%;max-width:100%;min-width:0;background:var(--field);border:1px solid var(--border-strong);border-radius:8px;padding:11px;color:var(--text)}\ninput::placeholder,textarea::placeholder{color:var(--muted);opacity:1}input[type=checkbox]{width:20px;height:20px;accent-color:var(--accent);vertical-align:middle;flex-shrink:0}\ntextarea{min-height:110px;resize:vertical;line-height:1.7}label{display:block;font-size:13px;color:var(--text)}label input,label select,label textarea{margin-top:7px}label+label{margin-top:14px}.fields>label+label{margin-top:0}\nh1,h2,h3,p{overflow-wrap:anywhere}h2{font-size:19px;line-height:1.5;margin:0 0 18px;font-weight:700}h3{font-size:16px;line-height:1.6;margin:0 0 10px}p{margin:10px 0 16px}\n.muted,small{color:var(--muted)}small{font-size:12px}.spaced{margin-top:18px}.hidden,[hidden]{display:none!important}\n.shell{display:grid;grid-template-columns:244px minmax(0,1fr);height:100vh;height:100dvh;overflow:hidden}\n.sidebar{position:sticky;top:0;height:100vh;height:100dvh;min-width:0;padding:28px 14px 22px;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;gap:22px}\n.sidebar-brand{padding:0 10px}.brand{display:flex;align-items:flex-start;gap:10px}.brand-mark{font-size:25px;line-height:1.25;color:var(--accent)}.brand h1{font-size:20px;line-height:1.35;letter-spacing:-.5px;font-weight:750;margin:0}\n.nav{display:flex;flex-direction:column;gap:16px;overflow-y:auto;min-height:0;scrollbar-width:thin}.nav-group{display:grid;gap:4px}.nav-label{color:var(--muted);font-size:11px;letter-spacing:.06em;padding:0 12px 4px}\n.nav button{width:100%;text-align:left;border:0;background:transparent;color:var(--muted);padding:11px 12px}.nav button:hover{background:var(--button)}.nav button.selected{background:var(--accent-bg);color:var(--accent);font-weight:650}\n.theme-picker{display:flex;gap:3px;border:1px solid var(--border);border-radius:10px;padding:3px;margin-top:auto;background:var(--field)}.theme-picker button{flex:1;border:0;background:transparent;color:var(--muted);padding:8px 6px;font-size:12px;white-space:nowrap}\n.theme-picker button[aria-pressed=\"true\"]{background:var(--button);color:var(--text);box-shadow:0 1px 3px var(--shadow)}.theme-picker button span{margin-right:5px}\n.content{height:100%;overflow-y:auto;min-height:0;width:100%;min-width:0;max-width:1450px;margin:0 auto;padding:28px 30px 90px}.top{position:sticky;top:0;z-index:30;background:var(--bg);padding-top:16px;display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:24px;padding-bottom:20px;border-bottom:1px solid var(--border)}\n.context-block{min-width:0;flex:1}.chat-context{font-size:22px;line-height:1.4;font-weight:700;letter-spacing:-.4px;margin:0 0 8px}.context-status{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;font-size:13px;color:var(--muted)}.context-status span+span:before{content:'·';margin-right:10px;color:var(--border-strong)}\n.top-actions{flex-shrink:0}.top-actions button{padding:8px 11px;font-size:12px}.row,.toolbar{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.toolbar{margin-bottom:14px}.row>*{min-width:0}\n.panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:22px;margin:0 0 18px;min-width:0}.card{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:20px;min-width:0}\n.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;margin-bottom:20px}.grid,.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.wide{grid-column:1/-1}.split{display:grid;grid-template-columns:1.15fr 1fr;gap:20px;align-items:start}.split>.panel{min-width:0}\n.badge,.tag{display:inline-block;border:1px solid var(--border-strong);background:var(--button);border-radius:5px;padding:3px 7px;font-size:11px;color:var(--muted)}.badge{font-size:12px}.number,.stat strong,td{font-variant-numeric:tabular-nums}\n.stat{display:flex;justify-content:space-between;gap:12px;margin-top:10px}.bar{height:5px;background:var(--border);border-radius:5px;margin:7px 0 14px;overflow:hidden}.bar span{display:block;height:100%;background:var(--accent)}.metric{font-size:28px;line-height:1.2;color:var(--accent);margin:5px 0}\n.notice{border-left:3px solid var(--accent);background:var(--accent-bg);padding:14px 17px;border-radius:4px;line-height:1.7;margin:0 0 18px;overflow-wrap:anywhere}.success{border-color:var(--good-border);background:var(--good-bg);color:var(--good)}.error{border-color:var(--danger-border);background:var(--danger-bg);color:var(--danger)}\n#feedback{position:fixed;right:24px;bottom:20px;z-index:80;width:max-content;max-width:min(670px,calc(100vw - 32px));max-height:32vh;overflow:auto;border:1px solid var(--accent-border);border-radius:10px;padding:13px 20px;margin:0;box-shadow:0 6px 24px var(--shadow);white-space:pre-wrap}\n#feedback.error{border-color:var(--danger-border)}#feedback.success{border-color:var(--good-border)}#feedback:empty{display:none}\n.empty{padding:60px 24px;text-align:center;border:1px dashed var(--border-strong);border-radius:13px;color:var(--muted);margin-bottom:18px}details>summary{cursor:pointer;color:var(--text);line-height:1.7;padding:7px 0}details[open]>summary{margin-bottom:10px}\npre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--inset);border:1px solid var(--border);border-radius:8px;padding:15px;max-height:420px;overflow:auto;font:12px/1.7 ui-monospace,Consolas,monospace}.scroll{overflow:auto;max-width:100%;scrollbar-width:thin}table{width:100%;border-collapse:collapse;font-size:13px}\nth,td{text-align:left;padding:12px 10px;border-bottom:1px solid var(--border);vertical-align:top;overflow-wrap:anywhere}th{font-weight:550;color:var(--muted);background:var(--inset)}tbody tr:hover{background:var(--inset)}\n.sourcelist{max-height:520px;overflow:auto;border:1px solid var(--border);border-radius:9px;background:var(--surface);margin:0 0 14px;scrollbar-width:thin}.source{position:relative;border-bottom:1px solid var(--border)}.source:last-child{border-bottom:0}\n.source input[type=checkbox]{position:absolute;left:12px;top:13px;z-index:1;width:26px;height:26px;margin:0;cursor:pointer}.source details{min-width:0}.source summary{display:flex;align-items:center;justify-content:space-between;gap:12px;list-style:none;min-height:54px;padding:12px 12px 12px 50px;margin:0;overflow-wrap:anywhere}\n.source summary::-webkit-details-marker{display:none}.source summary:hover{background:var(--inset)}.source summary:focus-visible{outline-offset:-3px}.source-name{min-width:0;color:var(--text);font-size:13px}.source-hint{flex-shrink:0;font-size:12px;color:var(--muted)}.source-hint:before{content:'▸ ';color:var(--accent)}.source details[open] .source-hint:before{content:'▾ '}.source pre{max-height:260px;margin:0 12px 14px 50px}\n.choice,.partial-catalog{display:flex;gap:10px;align-items:flex-start}.choice{padding:10px 0;cursor:pointer;overflow-wrap:anywhere}.choice input[type=checkbox],.partial-catalog input[type=checkbox]{width:22px;height:22px;margin:0;flex-shrink:0}\n.draft-editor{border:1px solid var(--border);border-radius:9px;padding:16px;margin-bottom:18px}.draft-editor>summary{font-weight:650}.draft-json{min-height:360px;font:12px/1.65 ui-monospace,Consolas,monospace;tab-size:2;white-space:pre;overflow:auto}.design-brief{min-height:260px;line-height:1.8}.draft-error{overflow-wrap:anywhere}.draft-error pre{white-space:pre-wrap}.draft-error p{margin:8px 0}\n.initial-actors{border:1px solid var(--border);border-radius:8px;padding:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;max-height:320px;overflow:auto}.initial-actors legend{color:var(--muted);padding:0 6px}.initial-actors label{display:flex;align-items:flex-start;gap:10px;background:var(--inset);padding:10px;border-radius:6px;cursor:pointer;margin:0}.initial-actors input[type=checkbox]{width:22px;height:22px;flex-shrink:0;margin:0}.initial-actors span{min-width:0;overflow-wrap:anywhere}.initial-actors small{display:block;font-size:11px}\n.issue-choice{padding:16px;margin:14px 0;background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:8px;overflow-wrap:anywhere}.issue-choice p{margin:8px 0}.issue-choice small{display:block;margin-top:8px}\n.item-editor-row>td{padding:12px 0 20px}.item-editor{padding:18px;background:var(--surface);border:1px solid var(--accent-border);border-radius:10px}.item-editor-body{margin:0;padding:0;border:0;min-width:0}.item-editor-body>legend{font-size:16px;font-weight:650;margin-bottom:18px;padding:0}.item-editor h4{font-size:14px;margin:20px 0 12px}.item-editor textarea{min-height:80px}.item-editor-actions{margin-top:22px}.item-editor .fields+.fields{margin-top:16px}\n.item-slots{display:flex;flex-wrap:wrap;gap:12px 18px;margin:22px 0 0;padding:14px;border:1px solid var(--border);border-radius:8px}.item-slots legend{padding:0 6px;color:var(--muted)}.item-slots label{display:flex;gap:8px;align-items:center;margin:0;cursor:pointer}.item-slots input{margin:0}\n.item-effect{border:1px solid var(--border);border-radius:8px;margin:0 0 12px;padding:12px;min-width:0}.item-effect legend{color:var(--muted);padding:0 6px}.item-effect-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px}.item-effect-fields>label+label{margin-top:0}.item-effect-footer{justify-content:flex-end;margin-top:12px}.item-effect-footer small{margin-right:auto}.item-ammo>.fields{margin:14px 0}\n/* Editors retain the app theme and navigation, while showing one task at a time. */\n.editor-workspace{max-width:960px;margin:18px auto;scroll-margin-top:145px}.editor-workspace .item-editor-body>legend{margin-bottom:4px}.editor-brief{color:var(--muted);font-size:12px;margin:0 0 18px}.editor-tabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--border);padding-bottom:8px;margin:0 0 18px}.editor-tabs button{background:transparent;border-color:transparent;color:var(--muted);padding:8px 14px}.editor-tabs button[aria-selected=\"true\"]{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent);font-weight:650}.editor-page{min-height:190px}.editor-page>section+section{border-top:1px solid var(--border);margin-top:18px;padding-top:14px}.editor-page .fields{gap:12px 18px}.editor-page .fields+.fields{margin-top:14px}.editor-page section>h4:first-child{margin-top:0}.editor-workspace .item-editor-actions{position:sticky;bottom:0;z-index:4;background:var(--surface);border-top:1px solid var(--border);padding:14px 0 4px;margin-top:20px}.editor-delete{margin-left:auto;color:var(--muted)}\n.fx-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0 10px}.fx-heading h4{margin:0;font-size:14px}.fx-heading h4 small{margin-left:5px;font-weight:400}.fx-heading button{padding:7px 12px;font-size:13px}.fx-targets{border-bottom:1px solid var(--border);padding-bottom:10px}.fx-targets>summary{font-weight:650;display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}.fx-targets>summary:before{content:'▸';color:var(--muted)}.fx-targets[open]>summary:before{content:'▾'}.fx-targets>summary span{font-size:12px;color:var(--muted);font-weight:400}.fx-targets .fx-chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.fx-chips .choice{padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:var(--field);margin:0;align-items:center;gap:7px}.fx-chips .choice:has(input:checked){background:var(--accent-bg);border-color:var(--accent-border)}.fx-chips input[type=checkbox]{width:18px;height:18px}.fx-activation{max-width:330px;margin:12px 0}.fx-targets .choice{align-items:center}\n.fx-list{display:grid;gap:8px}.fx-entry{border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--field);min-width:0}.fx-entry.is-open{border-color:var(--accent-border)}.fx-summary{width:100%;display:flex;align-items:center;justify-content:space-between;gap:14px;text-align:left;border:0;border-radius:0;background:transparent;padding:12px 14px}.fx-summary>span:first-child{min-width:0}.fx-summary strong{font-size:14px;display:block}.fx-summary small{font-size:12px;display:block;line-height:1.7;margin-top:2px;overflow-wrap:anywhere}.fx-summary .fx-edit-label{font-size:12px;color:var(--accent);white-space:nowrap;flex-shrink:0}.fx-entry.is-open>.fx-summary{background:var(--accent-bg)}.fx-detail{padding:16px;border-top:1px solid var(--border)}.fx-detail .item-effect{border:0;padding:0;margin:0}.fx-detail .item-effect>legend{display:none}.fx-detail .item-effect-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 18px}.fx-detail button[data-skill-effect-remove],.fx-detail button[data-item-effect-remove],.fx-detail button[data-erencha-effect-remove],.fx-detail button[data-fx-remove]{padding:6px 10px;font-size:12px;margin-top:14px;color:var(--muted)}.fx-advanced{margin:14px 0 10px;border-top:1px solid var(--border);padding-top:6px}.fx-advanced>summary{font-size:12px;color:var(--muted)}.fx-empty{font-size:13px;color:var(--muted);text-align:center;padding:22px 12px;border:1px dashed var(--border);border-radius:8px;margin:0}.fx-save-preset{margin-top:14px}.fx-save-preset>summary{font-size:12px;color:var(--muted)}.fx-save-preset .toolbar{align-items:flex-end}.fx-save-preset label{flex:1;max-width:420px}\n.fx-library{border:1px solid var(--accent-border);background:var(--surface);border-radius:9px;padding:14px;margin:10px 0 16px}.fx-library>.fx-heading{margin:0 0 8px}.fx-library .fx-search{font-size:12px}.fx-search input{padding:9px 11px}.fx-groups{display:flex;flex-wrap:wrap;gap:5px;margin:12px 0}.fx-groups button{font-size:12px;padding:5px 10px;background:transparent}.fx-groups button[aria-pressed=\"true\"]{background:var(--accent-bg);color:var(--accent);border-color:var(--accent-border)}.fx-library-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;max-height:290px;overflow-y:auto;scrollbar-width:thin}.fx-pick{text-align:left;background:var(--field);padding:10px 12px}.fx-pick strong{font-size:13px}.fx-pick small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:11px;line-height:1.6;margin-top:4px}.fx-library p{font-size:12px;margin:12px 0 0}\n@media(max-width:620px){.editor-workspace{padding:14px;margin:12px 0}.editor-tabs{gap:0}.editor-tabs button{padding:8px 10px;font-size:12px}.fx-detail{padding:12px}.fx-detail .item-effect-fields,.editor-workspace .fields{grid-template-columns:1fr}.fx-library-grid{grid-template-columns:1fr}.fx-targets>summary span{flex-basis:100%;padding-left:22px}.editor-workspace .item-editor-actions{gap:6px}.editor-workspace .item-editor-actions button{padding:8px 11px}.fx-summary{padding:11px}}\nfooter{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);color:var(--muted);font-size:11px;letter-spacing:.04em}\n@media(max-width:1150px){.split{grid-template-columns:minmax(0,1fr)}}\n@media(max-width:900px){\n  .shell{display:flex;flex-direction:column}.sidebar{flex-shrink:0;position:static;top:0;z-index:40;height:auto;padding:14px 18px 10px;border-right:0;border-bottom:1px solid var(--border);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px}\n  .sidebar-brand{grid-column:1;grid-row:1;padding:0}.brand h1{font-size:18px}.brand-mark{font-size:24px}.theme-picker{grid-column:2;grid-row:1;align-self:start;margin:0}.theme-picker button{padding:7px}\n  .nav{grid-column:1/-1;grid-row:2;display:flex;flex-direction:row;gap:4px;overflow-x:auto;overflow-y:hidden;max-width:100%}.nav-group{display:contents}.nav-label{display:none}.nav button{width:auto;flex-shrink:0;white-space:nowrap;padding:9px 11px}\n  .content{flex:1;min-height:0;height:auto;padding:22px 18px 90px}.top{gap:12px}.cards{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}\n}\n@media(max-width:600px){\n  .sidebar{padding:12px 12px 8px;gap:10px}.brand{gap:7px}.brand h1{font-size:17px}.brand-mark{font-size:22px}.theme-picker button{font-size:11px;padding:7px 5px}.theme-picker button span{margin-right:3px}\n  .content{padding:20px 12px 85px}.top{flex-wrap:wrap;margin-bottom:20px;padding-bottom:16px}.chat-context{font-size:20px}.context-status{font-size:12px}.grid,.fields,.cards{grid-template-columns:minmax(0,1fr)}.wide{grid-column:auto}.panel,.card{padding:17px}.toolbar button{flex:1 1 120px}.source summary{gap:8px}.source pre{margin-left:12px}.source-hint{font-size:11px}\n  th,td{padding:10px 8px}.scroll table{min-width:440px}#feedback{right:12px;bottom:12px;max-width:calc(100vw - 24px);padding:12px 15px}\n}\n@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}\n\n.source-choice{display:flex;align-items:center;gap:12px;min-height:54px;padding:12px 12px 12px 50px;cursor:pointer}.source-choice .source-name{flex:1}.source-preview-button{font-size:12px;flex-shrink:0}.source-choice:has(input:checked){background:var(--accent-bg)}\n\n/* Inner play pages only. The existing shell, navigation and themes stay intact. */\n.play-name{margin:22px 0 18px;font-size:22px;letter-spacing:-.4px}\n.play-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:18px;margin:18px 0}\n.play-facts>div{min-width:0}.play-facts dt{color:var(--muted);font-size:12px;margin-bottom:5px}.play-facts dd{margin:0;font-size:19px;font-weight:650;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}\n.play-wallet{padding:16px 18px;background:var(--inset);border:1px solid var(--border);border-radius:10px}.play-wallet dd{color:var(--accent);font-size:24px}\n.play-traits{padding:18px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}\n.play-traits-three{grid-template-columns:repeat(3,minmax(0,1fr))}.play-traits-three>div:nth-child(2){text-align:center}.play-traits-three>div:nth-child(3){text-align:right}\n.play-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:20px 0}\n.play-stat{display:flex;flex-direction:column;gap:7px;min-width:0;padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:10px}\n.play-stat>span{font-size:13px;color:var(--muted)}.play-stat>strong{font-size:30px;line-height:1.3;font-variant-numeric:tabular-nums}.play-stat>small{line-height:1.6}.play-growth{margin-top:auto;padding-top:10px}\n.play-meter{height:5px;border-radius:5px;background:var(--border);overflow:hidden;margin:8px 0 14px}.play-meter>span{height:100%;display:block;background:var(--accent)}.play-growth .play-meter{margin-bottom:0}\n.play-relations{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:22px}\n.play-relation{padding:20px;border:1px solid var(--border);border-radius:11px;background:var(--surface)}.play-relation h3{margin:0 0 20px}\n.play-person-link{font-size:16px;font-weight:650;text-align:left;background:none;border:0;padding:0;color:var(--text)}.play-person-link:hover{color:var(--accent);background:none;text-decoration:underline;text-underline-offset:4px}\n.play-relation .play-facts{grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);grid-template-columns:none;margin:0}.play-relation .play-facts dd{font-size:25px}.play-relation .play-facts>div+div{border-left:1px solid var(--border);padding-left:14px}\n.play-card-head,.play-list-row{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.play-card-head>*,.play-list-row>*{min-width:0}.play-card-head h3{margin:0}.play-card-head>button,.play-card-head>.tag,.play-card-head>.row{flex-shrink:0}.play-card-head .row{justify-content:flex-end}\n.play-list-row{align-items:center;padding:16px 0;border-bottom:1px solid var(--border)}.play-list-row:last-child{border-bottom:0}.play-list-row small{display:block;margin-top:5px}.play-list-row>button,.play-list-row>.tag{flex-shrink:0}\n.play-stakes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.play-stakes p{padding:16px;background:var(--inset);border-radius:8px}.play-stakes small{display:block;margin-bottom:7px}\n.play-skills,.play-items{display:grid;gap:14px}.play-skill,.play-item{padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:10px;min-width:0}.play-skill .play-card-head h3{line-height:1.8}.play-skill h3 small{font-weight:400}.play-skill .play-facts dd{font-size:14px}.play-skill-growth{font-size:12px;color:var(--muted);border-top:1px solid var(--border);padding-top:13px}.play-item>p:last-child{margin-bottom:0}.play-item .item-editor{margin-top:18px}.play-inline-editor{min-width:0}.play-inline-editor .item-editor{border-color:var(--accent-border)}\n.play-equipment{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.play-gear{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:14px;row-gap:6px;padding:16px;border:1px solid var(--border);border-radius:9px;background:var(--surface)}.play-gear small,.play-gear b{grid-column:1;overflow-wrap:anywhere}.play-gear button{grid-column:2;grid-row:1/3;align-self:center}\n.play-turns{display:flex;gap:10px;flex-wrap:wrap;list-style:none;margin:0;padding:0}.play-turns li{display:flex;align-items:center;gap:12px;padding:13px 17px;border:1px solid var(--border);border-radius:9px;min-width:150px}.play-turns li[aria-current=\"step\"]{background:var(--accent-bg);border-color:var(--accent-border)}.play-turns small{display:block}.play-turn-number{font-size:20px;font-weight:650;color:var(--accent)}.play-budget{font-size:12px;margin-bottom:0}\n.play-paths{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.play-paths>div{padding:14px;border:1px solid var(--border);border-radius:9px;background:var(--surface)}.play-paths small{display:block;margin-top:4px}\n[data-scheme-card]{scroll-margin-top:130px}\n@media(max-width:650px){.play-relations,.play-equipment,.play-stakes{grid-template-columns:minmax(0,1fr)}.play-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.play-stat,.play-relation,.play-skill,.play-item{padding:15px}.play-card-head{flex-wrap:wrap}.play-card-head>.row{margin-left:auto}.play-traits-three{gap:10px}.play-traits-three dd{font-size:16px}.play-facts dd{overflow-wrap:anywhere}.play-list-row{flex-wrap:wrap}.play-turns li{flex:1}}\n/* Mobile uses one scroll surface: branding leaves, navigation and context remain. */\n.mini-shell{max-width:640px;margin:auto;padding:12px 16px 40px}.mini-shell .top{top:0}.mini-shell .play-facts{gap:10px}.mini-shell .play-facts dd{font-size:16px}\n.download-dialog{color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:calc(100vw - 24px)}.download-link{padding:10px 14px;background:var(--primary);color:var(--primary-text);border-radius:8px;text-decoration:none}\nbody.editing .page-body{padding-bottom:90px}body.editing #feedback{bottom:calc(90px + env(safe-area-inset-bottom));max-height:25vh}\nbody.editing .item-editor-actions{position:fixed;bottom:0;left:244px;right:0;z-index:65;margin:0;padding:12px 24px calc(12px + env(safe-area-inset-bottom));background:var(--surface);border-top:1px solid var(--border);box-shadow:0 -4px 18px var(--shadow)}\n@media(max-width:900px){\n .shell{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto auto 1fr;align-content:start;overflow-y:auto;overflow-x:hidden}\n .sidebar,.content{display:contents}.sidebar-brand{grid-column:1;grid-row:1;padding:16px 12px;background:var(--sidebar)}.theme-picker{grid-column:2;grid-row:1;margin:0;padding:10px 12px;background:var(--sidebar)}\n .nav{grid-column:1/-1;grid-row:2;position:sticky;top:0;z-index:50;background:var(--sidebar);padding:8px 12px;border-bottom:1px solid var(--border)}\n .top{grid-column:1/-1;grid-row:3;position:sticky;top:var(--mobile-nav-height,58px);z-index:45;margin:0;padding:10px 12px;gap:8px;flex-wrap:nowrap}.chat-context{font-size:19px;margin:0 0 4px}.context-status{font-size:11px}.top-actions{gap:5px}.top-actions button{padding:7px 8px}\n .page-body{grid-column:1/-1;grid-row:4;min-width:0;padding:16px 12px 60px}.mini-shell .top{top:0}\n body.editing .item-editor-actions{left:0;padding-left:12px;padding-right:12px}.editor-workspace{scroll-margin-top:155px}\n}\n@media(max-width:600px){.chat-context{font-size:17px}}\r\n\n.mini-shell{height:100vh;height:100dvh;overflow-y:auto}.mini-shell .panel{padding:14px;margin-bottom:12px}.mini-shell details{padding:8px 0;border-bottom:1px solid var(--border)}\nbody.editing .page-body{padding-bottom:calc(var(--editor-actions-height,90px) + 24px)}body.editing #feedback{bottom:calc(var(--editor-actions-height,90px) + 12px)}\n");try{await app.install(ui);}catch(error){await app.dispose();document.body.textContent="NyoruRPG 초기화 실패: "+(error.code?error.message:"호스트 기능·권한을 확인하세요.");try{await Risuai.showContainer("fullscreen");}catch{}}
