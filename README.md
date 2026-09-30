@@ -1,12 +1,12 @@
-# NyoruRPG 0.22.4
+# NyoruRPG 0.22.5
 
-0.22.4는 테마 변경의 `parseRisuChat` 오류와 테마 오류 때문에 `[NyoruRPG:번호]`가 카드로 표시되지 않던 경로를 수정합니다. 진행 지침은 시스템 구축에서 적용한 게임의 룰북을 따르며, 별도 룰북 선택창을 없앴습니다. 연결 모듈 v1 사용자는 플러그인만 업데이트한 뒤 Risu를 새로 고침하세요. [이번 변경과 확인 범위](docs/nyoru-release-0.22.4.md) · [업데이트 알림](docs/nyoru-release-0.22.3.md) · [Vertex JSON 등록](docs/nyoru-release-0.22.2.md) · [모듈 전환·테마 설정](docs/nyoru-release-0.22.0.md). 아래 과거 버전 기록의 모듈 토글 안내는 연결 v1 전환 전의 사용법입니다.
+0.22.5는 **저장·복구 → 저장소 관리**에 채팅별 데이터 정리를 추가합니다. 봇·채팅 이름으로 찾고 게임 백업을 받은 뒤, 구축 초안만 지우거나 선택한 채팅의 RPG 데이터를 삭제할 수 있습니다. 호스트 진단 기록도 별도로 정리합니다. 연결 모듈 v1 사용자는 플러그인만 업데이트한 뒤 Risu를 새로 고침하세요. [이번 변경과 삭제 범위](docs/nyoru-release-0.22.5.md) · [카드 테마 오류 수정](docs/nyoru-release-0.22.4.md) · [업데이트 알림](docs/nyoru-release-0.22.3.md) · [Vertex JSON 등록](docs/nyoru-release-0.22.2.md) · [모듈 전환·테마 설정](docs/nyoru-release-0.22.0.md). 아래 과거 버전 기록의 모듈 토글 안내는 연결 v1 전환 전의 사용법입니다.
 
 ## 다운로드
 
 - [플러그인 NyoruRPG.js](https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js)
 - [새 설치용 연결 모듈 NyoruRPG.risum](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG.risum)
-- [0.22.4 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.22.4.zip)
+- [0.22.5 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.22.5.zip)
 
 기존 사용자는 플러그인을 업데이트한 뒤 **시스템 구축 → 기존 모듈을 연결 전용으로 전환**을 한 번 실행하고 Risu를 새로 고침하세요. 모듈을 지우고 다시 가져오거나 게임을 재구축할 필요는 없습니다. 전환을 마쳤다면 이후 일반 업데이트는 플러그인만 교체합니다.
 
