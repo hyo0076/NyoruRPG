@@ -1,7 +1,7 @@
 //@name universal-rpg-engine
-//@display-name NyoruRPG 0.21.1 · 자동 진행
+//@display-name NyoruRPG 0.22.2 · 자동 진행
 //@api 3.0
-//@version 0.21.1
+//@version 0.22.2
 //@update-url https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js
 (async()=>{
 "use strict";
@@ -362,7 +362,7 @@ function select(app,key='connection'){
 }
 async function load(app){init(app);for(const key of Object.keys(ROLES))app.roleSecrets[key]=await app.roleCredentials[key].load(app.settings[key]);}
 async function save(app){for(const key of Object.keys(ROLES))if(!app.settings[key+'Shared'])await app.roleCredentials[key].save(app.settings[key],app.roleSecrets[key]);}
-function clear(app){for(const value of Object.values(app.roleSecrets||{})){value.apiKey='';value.headers={};}require('./nyunyu.js').clear(app);}
+function clear(app){for(const value of Object.values(app.roleSecrets||{})){value.apiKey='';value.headers={};delete value.serviceAccount;}require('./nyunyu.js').clear(app);}
 module.exports={ROLES,init,select,load,save,clear};
 
 },
@@ -479,16 +479,28 @@ module.exports={name,find,resolve,fromWorld,weapons,context,item,skill};
 },
 "./api-settings-ui.js":function(module,exports,require){
 'use strict';
-const {escapeHTML:e,parseJSON}=require('./util.js');
+const {escapeHTML:e,parseJSON,assert}=require('./util.js');
 const {FORMATS}=require('./provider.js');
 const Connections=require('./ai-connections.js');
+const Vertex=require('./vertex-auth.js');
 const names={'openai-chat':'OpenAI 호환 · Chat','openai-responses':'OpenAI · Responses',anthropic:'Anthropic',gemini:'Gemini API','gemini-vertex':'Gemini Vertex AI'};
+const secrets=(ui,key)=>key==='connection'?ui.app.secrets:ui.app.roleSecrets[key];
 function form(ui,key,title){
   const p=ui.app.settings[key],secret=key==='connection'?ui.app.secrets:ui.app.roleSecrets[key],shared=key!=='connection'&&ui.app.settings[key+'Shared']!==false;
   const input=(field,label,type='text')=>'<label>'+label+'<input data-connection="'+key+'" data-field="'+field+'" type="'+type+'" value="'+e(p[field]??'')+'" autocomplete="off"></label>';
   const choice=(field,label,values)=>'<label>'+label+'<select data-connection="'+key+'" data-field="'+field+'">'+Object.entries(values).map(([id,name])=>'<option value="'+id+'" '+(p[field]===id?'selected':'')+'>'+name+'</option>').join('')+'</select></label>';
   const flag=(field,label)=>'<label class="choice"><input type="checkbox" data-connection="'+key+'" data-field="'+field+'" '+(p[field]?'checked':'')+'>'+label+'</label>';
-  return '<section class="panel"><h2>'+title+'</h2>'+(key!=='connection'?'<label class="choice"><input data-api-shared="'+key+'" type="checkbox" '+(shared?'checked':'')+'>기본 API 사용</label>':'<p class="muted">처음 보는 인물·기술 해석과 뉴뉴 대화에 사용합니다. 저장된 규칙 계산에는 API를 호출하지 않습니다.</p>')+(shared?'<p class="muted">기본 API의 모델과 인증 정보를 함께 사용합니다.</p>':'<div class="fields">'+choice('format','API 형식',names)+choice('transport','전송 방식',{native:'RisuAI 전송',browser:'직접 전송 · CORS 지원 필요'})+input('endpoint','API 주소')+input('model','모델 ID')+'<label>'+(p.format==='gemini-vertex'&&p.vertexAuth==='access-token'?'OAuth 액세스 토큰':'API 키')+' · 이 기기에 저장<input type="password" data-secret="'+key+'" value="'+e(secret.apiKey||'')+'" autocomplete="new-password"></label>'+input('maxOutputTokens','최대 출력 토큰','number')+'<label>요청 대기시간 (초)<input data-connection="'+key+'" data-field="timeoutSeconds" type="number" min="1" value="'+p.timeoutMs/1000+'"></label>'+(p.format==='gemini-vertex'?choice('vertexAuth','Vertex 인증',{ 'api-key':'API 키 · Express Mode','access-token':'OAuth 액세스 토큰'})+input('vertexProject','프로젝트 ID · Express Mode는 비워 둠')+input('vertexLocation','리전 · 예: global'):'')+'</div>'+(p.format==='gemini-vertex'?'<p class="muted">Express Mode는 API 키를 사용합니다. 일반 Vertex는 프로젝트·리전과 유효한 OAuth 액세스 토큰을 입력하세요. 토큰 갱신은 자동으로 하지 않습니다.</p>':'')+'<details class="spaced"><summary>고급 옵션</summary><div class="fields spaced">'+flag('keyless','키 없는 프록시 사용')+flag('allowLocalHTTP','localhost HTTP 허용')+flag('jsonMode','JSON 모드 요청')+choice('tokenParameter','출력 토큰 필드',{max_completion_tokens:'max_completion_tokens',max_tokens:'max_tokens'})+input('temperature','온도 (선택)')+input('topP','Top P (선택)')+input('reasoningEffort','추론 강도 (선택)')+input('serviceTier','서비스 티어 (선택)')+'<label class="wide">추가 본문 JSON<textarea data-connection="'+key+'" data-field="extraBody">'+e(JSON.stringify(p.extraBody||{},null,2))+'</textarea></label><label class="wide">추가 인증 헤더 JSON · 이 기기에 저장<textarea data-secret-headers="'+key+'">'+e(JSON.stringify(secret.headers||{},null,2))+'</textarea></label></div></details><button type="button" class="spaced" data-test="'+key+'">연결 확인 · API 사용</button>')+'</section>';
+  const vertex=p.format==='gemini-vertex',serviceAccount=vertex&&p.vertexAuth==='service-account',account=secret.serviceAccount;
+  const auth=serviceAccount?'<div class="wide"><label>서비스 계정 JSON · 이 기기에 저장<input type="file" accept=".json,application/json" data-vertex-file="'+key+'"></label><p class="muted">'+(account?'등록된 계정: '+e(account.client_email)+'<br>파일의 프로젝트: '+e(account.project_id):'Google Cloud에서 받은 서비스 계정 키 JSON 파일을 선택하세요.')+'</p>'+(account?'<button type="button" data-vertex-remove="'+key+'">JSON 등록 해제</button>':'')+'<p class="muted">파일 선택·등록 해제 후 아래의 연결 설정 저장을 누르세요. 인증 토큰은 요청 시 자동 발급·갱신됩니다.</p></div>':'<label>'+(vertex&&p.vertexAuth==='access-token'?'OAuth 액세스 토큰':'API 키')+' · 이 기기에 저장<input type="password" data-secret="'+key+'" value="'+e(secret.apiKey||'')+'" autocomplete="new-password"></label>';
+  const vertexOptions=vertex?choice('vertexAuth','Vertex 인증',{'api-key':'API 키 · Express Mode','service-account':'서비스 계정 JSON · 자동 갱신','access-token':'OAuth 액세스 토큰 · 직접 입력'}):'';
+  const notice=key!=='connection'&&ui.app.roleCredentials[key]?.notice;
+  return '<section class="panel"><h2>'+title+'</h2>'+(notice?'<p class="notice error">'+e(notice)+'</p>':'')+
+    (key!=='connection'?'<label class="choice"><input data-api-shared="'+key+'" type="checkbox" '+(shared?'checked':'')+'>기본 API 사용</label>':'<p class="muted">처음 보는 인물·기술 해석과 뉴뉴 대화에 사용합니다. 저장된 규칙 계산에는 API를 호출하지 않습니다.</p>')+
+    (shared?'<p class="muted">기본 API의 모델과 인증 정보를 함께 사용합니다.</p>':'<div class="fields">'+choice('format','API 형식',names)+choice('transport','전송 방식',{native:'RisuAI 전송',browser:'직접 전송 · CORS 지원 필요'})+input('endpoint','API 주소')+input('model','모델 ID')+vertexOptions+auth+
+      (vertex?input('vertexProject',serviceAccount?'프로젝트 ID · JSON에서 자동 입력':'프로젝트 ID · Express Mode는 비워 둠')+input('vertexLocation','리전 · 예: global'):'')+
+      input('maxOutputTokens','최대 출력 토큰','number')+'<label>요청 대기시간 (초)<input data-connection="'+key+'" data-field="timeoutSeconds" type="number" min="1" value="'+p.timeoutMs/1000+'"></label></div>'+
+      (vertex?'<p class="muted">'+(serviceAccount?'JSON 키는 기기별 LocalPluginStorage에 보관하며 게임 백업·모델 프롬프트에 넣지 않습니다. 이 인증 방식은 Google Vertex 공식 API 주소에서 사용합니다.':p.vertexAuth==='access-token'?'직접 입력한 OAuth 토큰은 만료되면 새 토큰을 입력해야 합니다. 자동 갱신은 서비스 계정 JSON 방식을 선택하세요.':'Express Mode는 API 키를 사용합니다.')+'</p>':'')+
+      '<details class="spaced"><summary>고급 옵션</summary><div class="fields spaced">'+(serviceAccount?'':flag('keyless','키 없는 프록시 사용'))+flag('allowLocalHTTP','localhost HTTP 허용')+flag('jsonMode','JSON 모드 요청')+choice('tokenParameter','출력 토큰 필드',{max_completion_tokens:'max_completion_tokens',max_tokens:'max_tokens'})+input('temperature','온도 (선택)')+input('topP','Top P (선택)')+input('reasoningEffort','추론 강도 (선택)')+input('serviceTier','서비스 티어 (선택)')+'<label class="wide">추가 본문 JSON<textarea data-connection="'+key+'" data-field="extraBody">'+e(JSON.stringify(p.extraBody||{},null,2))+'</textarea></label><label class="wide">추가 인증 헤더 JSON · 이 기기에 저장<textarea data-secret-headers="'+key+'">'+e(JSON.stringify(secret.headers||{},null,2))+'</textarea></label></div></details><button type="button" class="spaced" data-test="'+key+'">연결 확인 · API 사용</button>')+'</section>';
 }
 function render(ui){return (ui.app.credentials.notice?'<p class="notice error">'+e(ui.app.credentials.notice)+'</p>':'')+form(ui,'connection','기본 API')+form(ui,'buildConnection','시스템 정밀 구축용 API')+form(ui,'reviewConnection','검사용 API')+'<section class="panel"><label class="choice"><input id="review-enabled" type="checkbox" '+(ui.app.settings.reviewEnabled?'checked':'')+'><span>놓치지마 검사</span></label><p class="muted">새 입력을 보낼 때 직전 답변과 저장 결과를 검토합니다. 빠진 사건 기록과 전투 밖의 직접 소모품 사용을 보완합니다. 저장된 결과를 다시 실행하거나 빠진 전투를 소급 판정하지 않습니다. 켜면 답변 전에 검사 API를 사용합니다. 다른 플러그인보다 먼저 실행되는 것은 보장하지 않습니다.</p><label class="choice"><input id="encounter-generation" type="checkbox" '+(ui.app.settings.encounterGeneration!==false?'checked':'')+'><span>새 인물이 등장하면 능력치·기술 자동 준비</span></label><button type="button" id="retry-encounters" class="spaced">실패한 인물 구축 다시 허용</button></section><button type="button" id="save-connection" class="primary">연결 설정 저장</button>';}
 function capture(ui){
@@ -500,6 +512,18 @@ function capture(ui){
 function bind(ui){
   for(const el of document.querySelectorAll('[data-api-shared]'))el.onchange=()=>{ui.capture();ui.render();};
   for(const el of document.querySelectorAll('[data-connection][data-field="format"],[data-connection][data-field="vertexAuth"]'))el.onchange=()=>ui.act(()=>{const key=el.dataset.connection,old=ui.app.settings[key].endpoint;ui.capture();if(el.dataset.field==='format'&&Object.values(FORMATS).includes(old))ui.app.settings[key].endpoint=FORMATS[el.value];ui.render();});
+  for(const el of document.querySelectorAll('[data-vertex-file]'))el.onchange=()=>{
+    const file=el.files?.[0],key=el.dataset.vertexFile;if(!file)return;el.value='';
+    ui.act(async()=>{
+      ui.capture();assert(file.size<=Vertex.MAX_FILE_SIZE,'VERTEX_ACCOUNT','서비스 계정 JSON 파일이 너무 큽니다.');
+      const next=await Vertex.importAccount(await file.text());if(ui.app.unloaded)return;
+      const secret=secrets(ui,key),p=ui.app.settings[key],previous=secret.serviceAccount;
+      secret.serviceAccount=next;
+      if(!p.vertexProject||p.vertexProject===previous?.project_id)p.vertexProject=next.project_id;
+      ui.render();ui.notify('서비스 계정 JSON을 읽었습니다. 연결 설정 저장을 누르면 이 기기에 보관됩니다.');
+    });
+  };
+  for(const el of document.querySelectorAll('[data-vertex-remove]'))el.onclick=()=>ui.act(()=>{ui.capture();delete secrets(ui,el.dataset.vertexRemove).serviceAccount;ui.render();ui.notify('JSON 등록을 해제했습니다. 연결 설정 저장을 눌러 반영하세요.');});
 }
 module.exports={form,render,capture,bind};
 
@@ -540,6 +564,7 @@ class App {
     this.api = api;
     this.host = new RisuHost(api);
     this.repo = new Repository(api.pluginStorage, { automaticWriter: true });
+    this.moduleBridge = new (require('./module-bridge.js').ModuleBridge)(this);
     this.provider = new Provider(api);
     this.compiler = new Compiler(this.repo, this.provider, this.host);
     this.encounters = new EncounterBuilder(this);
@@ -821,18 +846,23 @@ class App {
     });
     if (type && !['main', 'model'].includes(type)) return messages;
     const settings=require('./module-settings.js'),guidance=require('./module-guidance.js');
-    let digest;
-    // Preserve the rulebook instructions selected by Risu's native CBS. Capture
-    // only bot source text, then append state without selecting a second guide.
+    let digest,activeScope,connected=false;
+    // Fill the existing depth-0 lore anchor, not a new position at request end.
     const sourceMessages=settings.cleanMessages(messages);
-    messages=settings.requestMessages(messages);
-    const hasModule=messages.some(m=>m.role==='system'&&typeof m.content==='string'&&m.content.includes('[NYORURPG_PROTOCOL v'));
-    const guide=hasModule?guidance.REQUEST:guidance.BASE;
+    const original=messages;
     try {
       const s = await this.currentScope();
+      activeScope=s;
+      const context=await this.moduleBridge.context(s);
+      if(!context.active)return sourceMessages;
+      const prefs=await this.moduleBridge.preferences(s,context);
+      const injected=settings.inject(original,await this.moduleBridge.protocol(s,context,prefs),{active:true,legacy:context.legacy});
+      messages=injected.messages;
+      if(!injected.injected){this.host.record('moduleAnchorMissing');return messages;}
+      connected=true;
       this.host.capturePrompts(s, sourceMessages);
       const sources = await this.host.sources(s);
-      if (sources.engineActive === false) return messages;
+      if (sources.engineActive === false) return sourceMessages;
       const current=await this.repo.current(s);
       if(current)await this.ensureGameplay(messages);
       let review;try{review=await require('./turn-review.js').run(this,s);}catch(error){this.host.record('reviewFailed',{code:error.code||'REVIEW_FAILED'});review={summary:'이전 답변 검사를 완료하지 못했습니다.',notes:[error.code||'REVIEW_FAILED']};}
@@ -849,15 +879,17 @@ class App {
       digest+=Rulebooks.statusContext(info.state)+require('./turn-review.js').context(review);
       if (!info.state) digest += '\nRPG 상태 → 시스템 구축에서 규칙과 인물을 최초 적용해야 합니다. 준비되지 않은 판정을 성공한 것처럼 서술하지 마세요.';
     } catch (e) {
+      if(!connected||e.code==='SCOPE_MISMATCH')return sourceMessages;
       digest = '상태 연결 오류: ' + (e.code || 'UNKNOWN') + ' — ' + (e.code ? e.message : '진단을 확인하세요.') + ' 숫자를 임의 확정하지 마세요.';
       this.host.record('requestBlocked', { code: e.code || 'UNKNOWN' });
     }
+    if(!await this.host.isCurrent(activeScope))return sourceMessages;
     // Assistant/tool content and provider metadata must round-trip unchanged.
     // A gateway may attach an opaque thought signature to either; even display
     // tokens belong to that original response. Only our own system state changes.
     return [...messages.filter(m => !(m.role === 'system' && typeof m.content === 'string' && m.content.startsWith('[UNIVERSAL_RPG_STATE]'))), {
       role: 'system',
-      content: '[UNIVERSAL_RPG_STATE]\n' + digest + '\n' + guide
+      content: '[UNIVERSAL_RPG_STATE]\n' + digest + '\n' + guidance.REQUEST
     }];
   }
   async install(ui) {
@@ -877,8 +909,13 @@ class App {
       lifecycle.captureOutput(this,arg);
       return this.serialized(async () => {
         this.host.record('output', { messageIndex:arg.messageIndex ?? null });
-        try { await lifecycle.commitOutput(this, arg); }
-        catch (e) { this.host.record('commitBlocked', { code: e.code || 'INTERNAL_ERROR' }); this.ui?.notify?.('RPG 자동 저장 실패: ' + (e.code ? e.message : '저장·복구 진단을 확인하세요.'), true); }
+        let connected=false;
+        try {
+          const scope=await this.currentScope();
+          connected=(await this.moduleBridge.context(scope)).active;
+          if(connected)await lifecycle.commitOutput(this, arg);
+        }
+        catch (e) { this.host.record('commitBlocked', { code: e.code || 'INTERNAL_ERROR' }); if(connected)this.ui?.notify?.('RPG 자동 저장 실패: ' + (e.code ? e.message : '저장·복구 진단을 확인하세요.'), true); }
         // Journal persistence is independent of gameplay/output completion.
         void this.host.flushDiagnostics();
       });
@@ -906,13 +943,22 @@ class App {
     if (typeof this.api.addRisuScriptHandler === 'function') {
       this.displayCache = new Map();
       this.display = async text => {
-        let context;
         try {
           const scope=await this.currentScope();let messages;
-          context={scope,activeTxId:this.tx&&scopeKey(this.tx.scope)===scopeKey(scope)?this.tx.id:null,
+          const moduleContext=await this.moduleBridge.context(scope);
+          if(!moduleContext.active)return text;
+          const context={scope,activeTxId:this.tx&&scopeKey(this.tx.scope)===scopeKey(scope)?this.tx.id:null,
             messages:async ()=>messages||=(await this.host.locate(scope)).chat.message};
-        } catch {}
-        return require('./render.js').renderStoredText(text,this.settings.display,this.repo,this.displayCache,context);
+          const rendered=await require('./render.js').renderStoredText(text,this.settings.display,this.repo,this.displayCache,context);
+          if(!await this.host.isCurrent(scope))return text;
+          // Old modules retain their CSS until explicitly converted. This avoids
+          // overwriting user CSS before its original has been preserved.
+          if(moduleContext.legacy)return rendered;
+          const prefs=await this.moduleBridge.preferences(scope,moduleContext);
+          const custom=await this.moduleBridge.customStyle(scope,moduleContext,prefs);
+          if(!await this.host.isCurrent(scope))return text;
+          return require('./card-themes.js').decorate(rendered,prefs.theme,custom,await hash(scopeKey(scope)));
+        } catch {return text;}
       };
       await this.api.addRisuScriptHandler('display', this.display);
     }
@@ -1369,7 +1415,7 @@ async function importBackup(repo, scope, data, {
   expected = null,
   anchor = null
 } = {}) {
-  fields(data, ['format', 'schemaVersion', 'scope', 'head', 'revisions', 'transactions', 'displayBindings','effectPresets'], ['format', 'schemaVersion', 'scope', 'head', 'revisions', 'transactions']);
+  fields(data, ['format', 'schemaVersion', 'scope', 'head', 'revisions', 'transactions', 'displayBindings','effectPresets','chatSettings'], ['format', 'schemaVersion', 'scope', 'head', 'revisions', 'transactions']);
   assert(data.format === 'universal-rpg-backup' && data.schemaVersion === 1, 'UNSUPPORTED_SCHEMA', '이 백업 형식·버전은 지원하지 않습니다.');
   assert(Array.isArray(data.revisions) && data.revisions.length <= 10000, 'INVALID_BACKUP', '백업 버전 목록이 잘못되었습니다.');
   const selected = data.revisions.find(r => r.id === data.head?.revision);
@@ -1378,6 +1424,11 @@ async function importBackup(repo, scope, data, {
   assert((await hash(selected.state)) === selected.checksum, 'STORAGE_CORRUPT', '백업 체크섬이 다릅니다.');
   assert(scopeKey(selected.state.scope) === scopeKey(scope), 'SCOPE_MISMATCH', '다른 대화의 백업입니다.');
   const state = clone(selected.state);
+  if(data.chatSettings) {
+    const choices=require('./module-settings.js');
+    assert(choices.books.includes(data.chatSettings.rulebook)&&Number.isInteger(data.chatSettings.theme)&&choices.themes[data.chatSettings.theme],'INVALID_BACKUP','채팅의 룰북 지침·테마 설정이 잘못되었습니다.');
+    if(data.chatSettings.useDefaultGuide!==undefined)assert(typeof data.chatSettings.useDefaultGuide==='boolean','INVALID_BACKUP','진행 지침 선택이 잘못되었습니다.');
+  }
   const presets={...await repo.read('urpg/effect-presets')||{}};
   if(data.effectPresets){safeData(data.effectPresets);for(const [id,p] of Object.entries(data.effectPresets)){assert(p&&typeof p.name==='string'&&p.name.length<=300,'INVALID_BACKUP','효과 세팅 이름을 확인하세요.');presets[id]={id,name:p.name,...require('./effect-model.js').normalize(p)};}}
   // Restore only presentation bindings for outcomes in this selected ledger.
@@ -1390,6 +1441,7 @@ async function importBackup(repo, scope, data, {
     origin: { type: 'backup_import', sourceRevision: selected.id }
   }));
   if(data.effectPresets)await repo.write('urpg/effect-presets',presets);
+  if(data.chatSettings)await repo.write((await repo.key(scope))+'/chat-settings',{version:1,rulebook:data.chatSettings.rulebook,theme:data.chatSettings.theme,useDefaultGuide:!!data.chatSettings.useDefaultGuide});
   return imported;
 }
 module.exports = {
@@ -1398,6 +1450,97 @@ module.exports = {
   validateWorld,
   importBackup
 };
+
+},
+"./card-themes.js":function(module,exports,require){
+'use strict';
+const {themes}=require('./module-settings.js');
+const cssCache=new Map();
+// Scope styles to the cards themselves. No wrapper around prose, no global
+// background CSS, and no change to marker placement or saved message text.
+function scopeCSS(css,className) {
+  return css.replace(/\/\*[\s\S]*?\*\//g,'').replace(/([^{}]+)\{/g,(whole,head)=>{
+    if(head.trim().startsWith('@')||/^\s*(?:from|to|[\d.]+%)\s*$/.test(head))return whole;
+    return head.split(/,(?![^()]*\))/).map(selector=>{
+      if(selector.includes('.urpgdice-card'))return selector.replace('.urpgdice-card','.urpgdice-card.'+className);
+      if(selector.trim()===':root')return '.'+className;
+      return '.'+className+' '+selector.trim();
+    }).join(',')+'{';
+  });
+}
+function style(theme=0,custom='',scope='preview') {
+  theme=Number(theme);if(!themes[theme])theme=0;
+  const className='nyorurpg-theme-'+theme+'-'+String(scope).replace(/[^a-zA-Z0-9-]/g,'');
+  let css=cssCache.get(className);
+  if(css===undefined){css=scopeCSS(require('./chat-style.js')+require('./theme-data.js')[theme],className);cssCache.set(className,css);if(cssCache.size>24)cssCache.delete(cssCache.keys().next().value);}
+  // Only stylesheet text is imported from an edited module background. Other
+  // custom background HTML is kept in the module by the migration routine.
+  const extra=[...String(custom).matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(m=>m[1]).join('\n');
+  return {className,css:css+(extra?'\n'+scopeCSS(extra,className):'')};
+}
+function decorate(html,theme=0,custom='',scope='preview') {
+  if(typeof html!=='string'||!html.includes('class="urpgdice-card'))return html;
+  const {className,css}=style(theme,custom,scope);
+  html=html.replace(/<style>\/\* NYORURPG_CARDS_V1 \*\/[\s\S]*?<\/style>/g,'').replace(/\snyorurpg-theme-\d+-[a-zA-Z0-9-]+/g,'');
+  html=html.replace(/class="urpgdice-card\b/g,'class="urpgdice-card '+className);
+  // Risu's encodeStyle recognizes a plain <style> tag, without attributes.
+  return '<style>/* NYORURPG_CARDS_V1 */'+css.replace(/<\/style/gi,'<\\/style')+'</style>'+html;
+}
+function preview(theme) {
+  const card=require('./render.js').cardHTML({actor:'나',side:'아군',label:'기술 사용',targetName:'훈련용 표적',roll:72,target:45,outcome:'success'});
+  return decorate(card,theme);
+}
+module.exports={scopeCSS,style,decorate,preview};
+
+},
+"./chat-presentation-ui.js":function(module,exports,require){
+'use strict';
+const {escapeHTML:e,assert}=require('./util.js');
+const settings=require('./module-settings.js');
+async function refresh(ui) {
+  ui.moduleContext=await ui.app.moduleBridge.context(ui.info.scope);
+  ui.chatPresentation=await ui.app.moduleBridge.preferences(ui.info.scope,ui.moduleContext);
+  ui.moduleEdits=[];
+  for(const module of ui.moduleContext.modules) {
+    const record=await ui.app.moduleBridge.migrationRecord(module);
+    if(record)ui.moduleEdits.push(record);
+  }
+}
+function render(ui) {
+  const prefs=ui.chatPresentation||{rulebook:ui.currentRulebook(),theme:0},context=ui.moduleContext;
+  const custom=ui.moduleEdits?.some(r=>r.customProtocol);
+  return '<section class="panel chat-presentation"><h2>이 채팅의 카드 테마</h2><label>디자인<select id="card-theme">'+settings.themes.map((name,i)=>'<option value="'+i+'" '+(prefs.theme===i?'selected':'')+'>'+e(name)+'</option>').join('')+'</select></label>'
+    +'<div class="card-theme-preview" id="card-theme-preview" aria-label="결과 카드 예시">'+require('./card-themes.js').preview(prefs.theme)+'</div><p class="muted">디자인 예시입니다. 선택하면 바로 저장됩니다. 게임 수치와 판정은 바뀌지 않습니다.</p>'
+    +(context?.legacy?'<div class="notice">기존 모듈의 지침·테마가 사용 중입니다. 아래에서 한 번 전환하면 이 화면의 선택을 사용합니다.</div><button type="button" id="convert-bridge" class="primary">기존 모듈을 연결 전용으로 전환</button><p class="muted">기존 모듈 ID와 활성화 연결을 유지하며 원본을 보관합니다. 전환 후 Risu를 새로 고침하세요. 같은 모듈을 쓰는 다른 채팅도 전환되며, 각 채팅의 기존 선택은 따로 가져옵니다.</p>':'')
+    +(context&&!context.active?'<p class="notice">이 채팅에서 NyoruRPG 연결 모듈을 켜야 지침과 결과 카드가 적용됩니다.</p>':'')
+    +'<details class="spaced"><summary>진행 지침 · 기존 설정</summary><label class="spaced">현재 채팅에서 사용할 룰북 지침<select id="chat-rulebook" '+(context?.legacy?'disabled':'')+'>'+settings.books.map((id,i)=>'<option value="'+id+'" '+(prefs.rulebook===id?'selected':'')+'>'+e(settings.labels[i])+'</option>').join('')+'</select></label><p class="muted">기존 모듈에서 고른 지침을 이어받습니다. 시스템을 새로 적용하면 그 룰북의 지침을 사용합니다. 이 선택만으로 저장된 게임의 규칙을 바꾸지는 않습니다.</p>'
+    +(custom?'<label><input id="use-default-guide" type="checkbox" '+(prefs.useDefaultGuide?'checked':'')+'> 보관한 사용자 수정 지침 대신 최신 기본 지침 사용</label><p class="muted">직접 수정한 모듈 지침은 원문으로 보관되어 있습니다. 기본 지침 사용을 해제하면 다시 적용됩니다.</p>':'')
+    +(ui.moduleEdits?.some(r=>r.customStyle)?'<p class="muted">직접 수정한 배경 CSS는 다른 장식에 쓰였을 수 있어 모듈에도 보존했습니다. 카드에는 보관한 CSS를 함께 적용합니다.</p>':'')
+    +(ui.moduleEdits?.length&&!context?.legacy?'<button type="button" id="restore-bridge">이전 모듈로 되돌리기</button><p class="muted">게임 수치는 그대로 두고 보관한 기존 모듈을 복원합니다. 복원 후 Risu를 새로 고침하세요.</p>':'')+'</details></section>';
+}
+function bind(ui,on) {
+  const save=async patch=>{
+    const scope=ui.info.scope;
+    assert(await ui.app.host.isCurrent(scope),'SCOPE_MISMATCH','설정 중 채팅이 바뀌었습니다.');
+    ui.chatPresentation=await ui.app.moduleBridge.save(scope,patch);
+  };
+  document.getElementById('card-theme')?.addEventListener('change',event=>ui.act(async()=>{
+    const value=Number(event.target.value);await save({theme:value});
+    const preview=document.getElementById('card-theme-preview');if(preview)preview.innerHTML=require('./card-themes.js').preview(value);
+    ui.notify('카드 테마를 저장했습니다.');
+  }));
+  document.getElementById('chat-rulebook')?.addEventListener('change',event=>ui.act(async()=>{await save({rulebook:event.target.value});ui.notify('이 채팅의 진행 지침을 저장했습니다.');}));
+  document.getElementById('use-default-guide')?.addEventListener('change',event=>ui.act(async()=>{await save({useDefaultGuide:event.target.checked});ui.notify('진행 지침 설정을 저장했습니다.');}));
+  on('convert-bridge',async()=>{
+    ui.capture();const result=await ui.app.moduleBridge.migrate(ui.info.scope);
+    await refresh(ui);ui.render();
+    ui.notify('모듈 '+result.count+'개 전환 완료'+(result.custom?' · 사용자 수정 '+result.custom+'개 보존':'')+' · Risu를 새로 고침하세요.');
+  });
+  on('restore-bridge',async()=>{
+    ui.capture();await ui.app.moduleBridge.restore(ui.info.scope);await refresh(ui);ui.render();ui.notify('기존 모듈을 복원했습니다. Risu를 새로 고침하세요.');
+  });
+}
+module.exports={refresh,render,bind};
 
 },
 "./chat-style.js":function(module,exports,require){
@@ -2367,7 +2510,7 @@ const empty=()=>({apiKey:'',headers:{}});
 function credentials(value) {
   assert(value && typeof value.apiKey==='string' && value.headers && typeof value.headers==='object' && !Array.isArray(value.headers) && Object.values(value.headers).every(v=>typeof v==='string'),
     'CREDENTIALS_FORMAT','API 키·인증 헤더의 저장 형식을 확인하세요.');
-  return {apiKey:value.apiKey,headers:clone(value.headers)};
+  return {apiKey:value.apiKey,headers:clone(value.headers),...(value.serviceAccount?{serviceAccount:require('./vertex-auth.js').account(value.serviceAccount)}:{})};
 }
 function destination(connection) {
   let url;
@@ -2407,7 +2550,7 @@ class CredentialStore {
   }
   async save(connection,input) {
     const secrets=credentials(input);
-    const record=secrets.apiKey || Object.keys(secrets.headers).length?{version:1,destination:destination(connection),...secrets}:null;
+    const record=secrets.apiKey || secrets.serviceAccount || Object.keys(secrets.headers).length?{version:1,destination:destination(connection),...secrets}:null;
     try {
       const local=await this.open();if(!local)return false;
       if(record)await local.setItem(this.storageKey,record);
@@ -7354,9 +7497,9 @@ class RisuHost {
           add(prefix + ':description', '유저 캐릭터 · ' + (persona.name || '이름 없음') + (bound ? ' (채팅에 고정)' : ''),
             '이름: ' + (persona.name || '') + '\n' + (persona.personaPrompt || ''));
           if (includeLegacy) add(prefix + ':note', '유저 캐릭터 메모 · ' + (persona.name || ''), persona.note);
-          lore(persona.embeddedModule?.lorebook, prefix + ':lore', '유저 캐릭터 로어북');
+          if(!require('./module-bridge.js').owned(persona.embeddedModule))lore(persona.embeddedModule?.lorebook, prefix + ':lore', '유저 캐릭터 로어북');
         } else warnings.push('현재 유저 캐릭터를 읽지 못했습니다. 페르소나 선택과 데이터 읽기 권한을 확인하세요.');
-        engineActive = false;
+        engineActive = require('./module-bridge.js').activeModules(db,c,t).length>0;
         const active = new Set([...(db?.enabledModules || []), ...(c.modules || []), ...(t.modules || []), ...(typeof db?.moduleIntergration === 'string' ? db.moduleIntergration.split(',').map(x => x.trim()) : [])]);
         for (const m of Object.values(db?.modules || {})) if (active.has(m.id) || active.has(m.namespace)) {
           if(m.id==='9635d1ce-5cd1-4d7a-a169-28ea99412c66')hunterModule=true;
@@ -14619,6 +14762,38 @@ function edit(w,args,ctx) {
 module.exports={snapshot,edit};
 
 },
+"./legacy-module-fingerprints.js":function(module,exports,require){
+'use strict';
+// Known local release originals, used only to preserve user-edited modules.
+module.exports={
+  "protocols": [
+    "ead7717bbf896eb40bc2661bcf51a9b04e008fc473f99e418a5628437720ac05",
+    "c8960053c5781432ab7e889da5e8d0f3bc4d3b2e8b5e58daccc5f4818968683e",
+    "4f979c13ab99cb0d751ce5c900eb818c3784a090807a4fa2442555d11c0445fa",
+    "629b59a67b45df89f95f968449083d43bfe6d1fe36b0e1b368be1a5f173d141a",
+    "040e587f115f5346cc58447c96ea36aadd2c59c251e7098c288549f8f00bd158",
+    "eff87715ae70fda29a3e5f6fd91dd91314d1d0c135c897afcf78f7916f3f8395",
+    "ff58262fe3057fcae4a5adf8f007bedcc8bbb57bef372186c51ac4df51e50ac5",
+    "302bb4e0088aee10920db197d29735b3cbbb322ac4707f27356259c7b6efce06",
+    "77e57f4cc3c1d9461b8b7d38d42755dcbb304ca3f43d1af2a1c3546052fe19be",
+    "17d55693e7cef7e03f1ac863498d3b99d55442ed1fdd28181647105b4161a1db",
+    "b8eb5866273fe6d503086b7afea0fe93ddbb8a8769b0bb5b31b08baabf5593c2",
+    "554d3edf4406b101c51f9a8b625f08ad830c37bc6909c67ee2767ed1875d3118",
+    "61ea8b0a6d1c2a80f32cbd505839372ec86965e1ff9a9e71beb474ef9f2a86bc",
+    "735304889604fbfb4343c74def9a72c99ccc89454ce4f0c2d38f053ba6521a29",
+    "ab579bfbb342333c68139131e1ab4133c6bd77869e4b12523d0a3d72a93c0a92",
+    "83fd15337218261dc65be044f6d73c11714f30f841b304e5b7729d1d055a6497",
+    "c4b6c6246caf83aceaed07afb63da73d01d2de1afe0aa87662d6faa3d20b0ce3",
+    "b1a9c117c7504404f7ca390f0d3b28fcc48378102f97a9af7185b4500bb68edf",
+    "ded695d5bc32cadae5d0b6766994c33bd63ec77c40cae3922e05f1e91ea07147"
+  ],
+  "styles": [
+    "e39616969191c12469972d9687bc286a9090064d8419d9fab000ff93dac48572",
+    "aa5d3f69a3c19067f0ccfd24b4ede2513c523b47d624152f1cab861998f3d5b1"
+  ]
+};
+
+},
 "./lifecycle.js":function(module,exports,require){
 'use strict';
 
@@ -14914,10 +15089,167 @@ function render(ui) {
 module.exports={render};
 
 },
+"./module-bridge.js":function(module,exports,require){
+'use strict';
+const {assert,clone,hash}=require('./util.js');
+const settings=require('./module-settings.js');
+const {MCP_IDENTIFIER,LEGACY_MCP_IDENTIFIER}=require('./mcp-identity.js');
+const PREFIX='urpg/module-bridge/v1/';
+const owned=m=>!!m&&(m.namespace==='universal-rpg'||[MCP_IDENTIFIER,LEGACY_MCP_IDENTIFIER].includes(m.mcp?.url));
+const isBridge=m=>(m.lorebook||[]).some(b=>String(b.content||'').includes(settings.BRIDGE));
+const ownBook=b=>typeof b?.content==='string'&&settings.region().test(b.content);
+const normalize=text=>String(text||'').replace(/\r\n/g,'\n').replace(/\[NYORURPG_PROTOCOL v[^\]]+\]/g,'[NYORURPG_PROTOCOL]').trim();
+function activeModules(db,character,chat) {
+  const ids=new Set([...(db.enabledModules||[]),...(character.modules||[]),...(chat.modules||[]),...String(db.moduleIntergration||'').split(',').map(s=>s.trim()).filter(Boolean)]);
+  const modules=Object.values(db.modules||{}).filter(m=>ids.has(m.id)||ids.has(m.namespace));
+  const persona=(db.personas||[]).find(p=>p.id===chat.bindedPersona)||(db.personas||[])[db.selectedPersona];
+  if(persona?.embeddedModule)modules.push(persona.embeddedModule);
+  return modules.filter(owned).filter((m,i,all)=>all.findIndex(x=>x.id===m.id)===i);
+}
+// Preserve entry positions, unrelated lore, regexes, scripts, assets and IDs.
+function convertModule(original,{preserveBackground=false}={}) {
+  const module=clone(original);
+  if(/^NyoruRPG\s+\d+\.\d+\.\d+$/.test(module.name||''))module.name='NyoruRPG 연결 v1';
+  if(String(module.description||'').startsWith('NyoruRPG · 룰북 지침과 카드 테마를 모듈 토글에서'))module.description='NyoruRPG 연결 모듈입니다. 룰북 지침과 카드 테마는 플러그인의 시스템 구축에서 설정합니다.';
+  module.lorebook=(module.lorebook||[]).map(b=>ownBook(b)?{...b,content:b.content.replace(settings.region(),'[NYORURPG_MODULE]\n'+settings.BRIDGE+'\n[/NYORURPG_MODULE]')}:b);
+  // A custom directive outside the owned region is deliberately left in place.
+  module.customModuleToggle=String(module.customModuleToggle||'').split(/\r?\n/).filter(line=>!Object.values(settings.keys).some(key=>line.startsWith(key+'='))).join('\n').replace(/=◈ NyoruRPG=group\s*==groupEnd\s*/g,'');
+  if(!preserveBackground)module.backgroundEmbedding=String(module.backgroundEmbedding||'').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi,'').trim();
+  return module;
+}
+const readIndex=(value,max)=>/^\d+$/.test(String(value).trim())&&Number(value)<max?Number(value):null;
+class ModuleBridge {
+  constructor(app){this.app=app;}
+  async context(scope) {
+    const {character,chat}=await this.app.host.locate(scope);
+    assert(typeof this.app.api.getDatabase==='function','MODULE_ACCESS','연결 모듈을 읽을 권한이 필요합니다.');
+    const db=await this.app.api.getDatabase(['modules','enabledModules','moduleIntergration','personas','selectedPersona']);
+    assert(db&&typeof db==='object','MODULE_ACCESS','연결 모듈을 읽지 못했습니다.');
+    assert(await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','모듈을 읽는 중 채팅이 바뀌었습니다.');
+    const modules=activeModules(db,character,chat);
+    return {active:modules.length>0,modules,legacy:modules.some(m=>!isBridge(m)),db};
+  }
+  async preferences(scope,context) {
+    const key=(await this.app.repo.key(scope))+'/chat-settings';
+    const saved=await this.app.repo.read(key);
+    if(saved)return saved;
+    context||=await this.context(scope);
+    const current=await this.app.repo.current(scope);
+    let book=current?.state?.meta.hunters?'hunters':current?.state?.meta.rulebook?.id||'common',theme=0;
+    if(context.legacy)book='common'; // An unset legacy select meant option zero.
+    else for(const module of context.modules)if(await this.migrationRecord(module)){book='common';break;}
+    // Old chat-local toggles take priority over global toggles inside Risu's own
+    // read-only parser. Their keys survive removal of the old toggle controls.
+    if(context.active&&typeof this.app.api.parseRisuChat==='function') {
+      const values=await Promise.all([settings.keys.rulebook,settings.keys.theme].map(name=>this.app.api.parseRisuChat('{{getglobalvar::toggle_'+name+'}}',{runVar:false,processRegex:false,rmVar:false})));
+      const b=readIndex(values[0],settings.books.length),t=readIndex(values[1],settings.themes.length);
+      if(b!==null)book=settings.books[b];
+      if(t!==null)theme=t;
+    }
+    assert(await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','설정을 읽는 중 채팅이 바뀌었습니다.');
+    const result={version:1,rulebook:book,theme};
+    // A merely opened settings window in an unrelated chat creates no settings.
+    if(context.active)return this.app.repo.exclusive(async()=>{
+      const existing=await this.app.repo.read(key);if(existing)return existing;
+      assert(await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','설정을 저장하는 중 채팅이 바뀌었습니다.');
+      await this.app.repo.write(key,result);return result;
+    });
+    return result;
+  }
+  async save(scope,patch) {
+    assert(await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','설정 중 채팅이 바뀌었습니다.');
+    const previous=await this.preferences(scope);
+    assert(patch.rulebook===undefined||settings.books.includes(patch.rulebook),'RULEBOOK','지원하는 룰북을 선택하세요.');
+    assert(patch.theme===undefined||readIndex(patch.theme,settings.themes.length)!==null,'THEME','지원하는 테마를 선택하세요.');
+    return this.app.repo.exclusive(async()=>{
+      assert(await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','설정 중 채팅이 바뀌었습니다.');
+      const key=(await this.app.repo.key(scope))+'/chat-settings';
+      const next={...(await this.app.repo.read(key)||previous),...patch};
+      await this.app.repo.write(key,next);return next;
+    });
+  }
+  async migrationRecord(module) {return this.app.repo.read(PREFIX+'modules/'+module.id);}
+  async restore(scope) {
+    const context=await this.context(scope),originals=new Map();
+    for(const module of context.modules) {
+      const record=await this.migrationRecord(module);
+      if(record&&isBridge(module)) {
+        assert(JSON.stringify(module)===JSON.stringify(record.converted||convertModule(record.original)),'MODULE_CHANGED','전환 후 모듈이 직접 편집됐습니다. 그 편집을 덮어쓰지 않도록 자동 복원을 중단합니다.');
+        originals.set(module.id,record.original);
+      }
+    }
+    assert(originals.size,'MODULE_BACKUP','복원할 기존 모듈이 없습니다.');
+    const modules=Array.isArray(context.db.modules)?context.db.modules.map(m=>originals.get(m.id)||m):Object.fromEntries(Object.entries(context.db.modules).map(([id,m])=>[id,originals.get(m.id)||m]));
+    assert(await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','복원 중 채팅이 바뀌었습니다.');
+    await this.app.api.setDatabaseLite({modules});
+    return originals.size;
+  }
+  async migrate(scope) {
+    const context=await this.context(scope);
+    assert(context.active,'MODULE_DISABLED','먼저 이 채팅의 기존 NyoruRPG 모듈을 켜세요.');
+    assert(typeof this.app.api.setDatabaseLite==='function','MODULE_WRITE','이 호스트에서는 모듈을 직접 전환할 수 없습니다. 새 연결 모듈을 가져온 뒤 기존 모듈을 끄세요.');
+    await this.preferences(scope,context);
+    const converted=new Map();let custom=0;
+    for(const module of context.modules.filter(m=>!isBridge(m))) {
+      assert(Object.values(context.db.modules||{}).some(m=>m.id===module.id),'EMBEDDED_MODULE','페르소나 안의 모듈은 직접 변환하지 않습니다. 별도 연결 모듈로 교체하세요.');
+      assert((module.lorebook||[]).some(ownBook),'MODULE_FORMAT','기존 지침 위치를 찾지 못했습니다. 원본을 보존하고 새 연결 모듈로 교체하세요.');
+      const content=(module.lorebook||[]).filter(ownBook).map(b=>b.content.match(settings.region()).join('\n')).join('\n');
+      const known=require('./legacy-module-fingerprints.js');
+      const customProtocol=known.protocols.includes(await hash(normalize(content)))?'':content;
+      const customStyle=known.styles.includes(await hash(normalize(module.backgroundEmbedding)))?'':module.backgroundEmbedding||'';
+      // Arbitrary user background CSS can style non-card HTML or scripts. Keep
+      // that host-owned extension intact; plugin-owned stock CSS is removable.
+      const next=convertModule(module,{preserveBackground:!!customStyle});
+      // Original module is saved before any host write, including all custom
+      // fields. It is separate from game definitions, revisions and inventories.
+      await this.app.repo.write(PREFIX+'modules/'+module.id,{original:module,converted:next,customProtocol,customStyle});
+      if(customProtocol||customStyle)custom++;
+      converted.set(module.id,next);
+    }
+    if(!converted.size)return {count:0,custom:0};
+    const latest=await this.context(scope);
+    for(const id of converted.keys())assert(JSON.stringify(latest.modules.find(m=>m.id===id))===JSON.stringify(context.modules.find(m=>m.id===id)),'MODULE_CHANGED','전환 중 모듈이 편집되거나 해제됐습니다. 원본은 보관했으며 다시 시도할 수 있습니다.');
+    const modules=Array.isArray(latest.db.modules)?latest.db.modules.map(m=>converted.get(m.id)||m):Object.fromEntries(Object.entries(latest.db.modules).map(([id,m])=>[id,converted.get(m.id)||m]));
+    await this.app.api.setDatabaseLite({modules});
+    const written=await this.context(scope);
+    for(const [id,module] of converted)assert(JSON.stringify(written.modules.find(m=>m.id===id))===JSON.stringify(module),'MODULE_WRITE','모듈 전환 저장을 확인하지 못했습니다. 원본은 플러그인에 보관되어 있습니다.');
+    return {count:converted.size,custom};
+  }
+  async parseTemplate(text,prefs,scope) {
+    text=String(text||'').replace(/\{\{getglobalvar::toggle_nyorurpg_(rulebook|theme)\}\}/g,(_,key)=>String(key==='theme'?prefs.theme:settings.books.indexOf(prefs.rulebook)));
+    if(text.includes('{{')) {
+      assert(typeof this.app.api.parseRisuChat==='function','MODULE_TEMPLATE','사용자 수정 지침의 변수를 읽을 수 없습니다.');
+      text=await this.app.api.parseRisuChat(text,{runVar:false,processRegex:false,rmVar:false});
+    }
+    assert(await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','지침 준비 중 채팅이 바뀌었습니다.');
+    return text;
+  }
+  async protocol(scope,context,prefs) {
+    for(const module of context.modules) {
+      const record=await this.migrationRecord(module);
+      if(record?.customProtocol&&!prefs.useDefaultGuide) {
+        const text=await this.parseTemplate(record.customProtocol,prefs,scope);
+        return text.replace('[NYORURPG_MODULE]','[NYORURPG_MODULE]\n'+settings.BRIDGE);
+      }
+    }
+    return settings.pluginProtocol(require('./version.js').VERSION,prefs.rulebook);
+  }
+  async customStyle(scope,context,prefs) {
+    const styles=[];
+    for(const module of context.modules) {
+      const record=await this.migrationRecord(module);
+      if(record?.customStyle)styles.push(await this.parseTemplate(record.customStyle,prefs,scope));
+    }
+    return styles.join('\n');
+  }
+}
+module.exports={ModuleBridge,owned,isBridge,activeModules,convertModule,normalize,readIndex};
+
+},
 "./module-guidance.js":function(module,exports,require){
 'use strict';
-// Only the module selects rulebook instructions. The request hook repeats the
-// short call boundary beside this response's receipts, without changing books.
+// The bridge fills the existing module lore position with the selected guide.
+// The short reminder remains beside this response's receipts, as before.
 const REQUEST='Resolve an action before narrating its mechanical outcome, including actions you introduce later in this reply. A lookup or character registration does not execute skills, attacks, recovery or rewards. Read all returned steps, including automatic turns and links; never call already resolved actions again. Call for new actions as the scene advances. If the user pauses RP to discuss tools/settings, answer without advancing the scene or resting characters.';
 const BASE=require('./tool-catalog.js').IDENTITY_GUIDE+'\n'+
   "The main AI directs RP; NyoruRPG stores and calculates mechanics. Preserve the bot's style and player agency. "+REQUEST+'\n'+
@@ -14971,6 +15303,11 @@ const toggles='=◈ NyoruRPG=group\n'+keys.rulebook+'=📖 룰북 지침=select=
 const when=(key,index,body)=>'{{#if {{? {{getglobalvar::toggle_'+key+'}}='+index+'}}}}\n'+body+'\n{{/if}}';
 const region=()=>/\[NYORURPG_MODULE\][\s\S]*?\[\/NYORURPG_MODULE\]/g;
 const marker=()=>/\[NYORURPG_RULEBOOK\|([^\]\r\n]*)\]/g;
+// Stable host anchor. Mutable instructions live in the plugin; @@depth and the
+// lore entry's insertion order remain the host's responsibility.
+const BRIDGE='[NYORURPG_BRIDGE v1]';
+const bridgeProtocol=()=> '@@probability 100\n@@mcp\n@@depth 0\n[NYORURPG_MODULE]\n'+BRIDGE+'\n[/NYORURPG_MODULE]\n';
+const pluginProtocol=(version,book)=>'[NYORURPG_MODULE]\n'+BRIDGE+'\n[NYORURPG_PROTOCOL v'+version+']\n'+require('./module-guidance.js').BASE+'\n\n'+books.map(id=>id===book?require('./module-guidance.js').body(id):'').join('\n\n')+'\n[/NYORURPG_MODULE]';
 
 function protocol(version) {
   const guide=require('./module-guidance.js');
@@ -14979,10 +15316,10 @@ function protocol(version) {
     books.map((id,i)=>when(keys.rulebook,i,guide.body(id))).join('\n\n')+'\n[/NYORURPG_MODULE]\n';
 }
 const isState=m=>m.role==='system'&&typeof m.content==='string'&&m.content.startsWith('[UNIVERSAL_RPG_STATE]');
-// Source capture excludes our instructions; the model request keeps the host's
-// already-rendered CBS branch. The plugin never reads or overrides this toggle.
+// Exclude only our system instructions. Assistant/tool payloads and opaque
+// provider signatures are never rewritten by this bridge.
 function cleanMessages(messages) {
-  return messages.map(m=>m.role==='system'&&typeof m.content==='string'?{...m,content:m.content.replace(region(),'').replace(marker(),'').trim()}:m)
+  return messages.map(m=>m.role==='system'&&typeof m.content==='string'&&(region().test(m.content)||marker().test(m.content))?{...m,content:m.content.replace(region(),'').replace(marker(),'')}:m)
     .filter(m=>!isState(m)&&!(m.role==='system'&&m.content===''));
 }
 function requestMessages(messages) {
@@ -14990,7 +15327,22 @@ function requestMessages(messages) {
     ...m,content:m.content.replace(marker(),'').trim()
   }:m);
 }
-module.exports={keys,themes,books,labels,toggles,when,protocol,cleanMessages,requestMessages};
+function inject(messages,protocol,{active,legacy=false}={}) {
+  if(!active)return {messages:cleanMessages(messages),injected:false};
+  const regions=messages.flatMap((m,index)=>m.role==='system'&&typeof m.content==='string'?[...m.content.matchAll(region())].map(match=>({index,offset:match.index,text:match[0]})):[]);
+  // While an old module is still active, keep its rendered CBS/custom text.
+  // A separately imported bridge must not silently discard that user content.
+  const chosen=(legacy?regions.find(r=>!r.text.includes(BRIDGE)):null)||regions.find(r=>r.text.includes(BRIDGE))||regions[0];
+  if(!chosen)return {messages:cleanMessages(messages),injected:false};
+  const old=legacy&&!chosen.text.includes(BRIDGE);
+  const result=messages.filter(m=>!isState(m)).map(m=>{
+    if(m.role!=='system'||typeof m.content!=='string'||!region().test(m.content))return m;
+    const originalIndex=messages.indexOf(m);
+    return {...m,content:m.content.replace(region(),(text,offset)=>originalIndex===chosen.index&&offset===chosen.offset?(old?text:protocol):'').replace(marker(),'')};
+  }).filter(m=>m.role!=='system'||m.content!=='');
+  return {messages:result,injected:true,legacy:old};
+}
+module.exports={keys,themes,books,labels,toggles,when,protocol,cleanMessages,requestMessages,region,BRIDGE,bridgeProtocol,pluginProtocol,inject};
 
 },
 "./murim-assistant.js":function(module,exports,require){
@@ -16391,9 +16743,15 @@ const PERSONA=`뉴뉴(Nyunyu)는 Nyang-010이라는 고양이형 가정용 안�
 const GUIDE={
   core:`NyoruRPG는 RP를 대신 쓰는 AI가 아니라 저장된 규칙을 일관되게 계산하는 보조 도구입니다. 최초 인물·기술 준비에는 기본 API를 사용하고, 저장된 명중·피해·비용 계산에는 보조 AI를 다시 부르지 않습니다. 실제 등장 인물은 비전투 장면에서도 등록합니다. 결과 카드 표식은 해당 최종 서술 문단 옆에 배치하며 추론이나 답변 끝에 몰지 않습니다. 기술 호출은 결과를 읽은 뒤 이어갑니다. 자동 NPC 단계는 이미 실행한 결과입니다. 같은 공격·비용을 다시 호출하지 않습니다. 오류를 게임 내 실패나 성공으로 꾸미지 않습니다.`,
   navigation:`플러그인 삼선 메뉴는 전체 화면을, 채팅의 ◈ 버튼은 읽기 전용 미니 상태를 엽니다. 카테고리는 룰북별로 달라집니다. 기술/장비는 편집 → 기본 정보·효과·사용 조건 등의 탭에서 고치고 저장합니다. 효과는 하나의 목록에서 추가하고 선택한 하나를 편집합니다. 구축 초안 편집은 아직 적용 전 자료이고, 플레이 편집은 현재 게임만 바꿉니다. 재구축으로 현재 HP·경험치·수량을 초기화하지 않습니다. 저장·복구에 게임 백업과 호스트 진단이 있습니다. 모바일 실제 표시나 저장 동작을 직접 봤다고 주장하지 않습니다.`,
-  effects:`곱하기 1.25는 25% 증가, 25는 25배입니다. 주는 피해와 받는 피해, 적용 대상, 물리·마법·속성 범위를 구분합니다. 자신에게 유지/명중 시 전달은 사용자에게 인챈트를 유지하다 맞힌 상대에게 효과를 전달하는 방식입니다. 자기에게 받는 피해 증가를 직접 적용하는 것과 다릅니다. 지속 턴은 해당 효과의 턴 기준이고 중첩/갱신/교체를 선택합니다. 기술 사용 조건에는 실제 유지 중이어야 하는 기술 또는 상태 이름을 넣습니다. 패시브는 상시, 자동 발동은 HP 임계치 등 조건 진입에 발동합니다. 추가 타격마다 따로 명중을 판정합니다. 명중 후 연계는 저장된 후속 기술을 쓰며 동료의 일반 턴을 소모하지 않습니다. 아이템도 효과를 조합할 수 있고 투척이면 명중 판정합니다.`,
+  // Units must survive short follow-ups such as "그걸 25%로 바꿔줘" with no effect keyword.
+  units:`수치 제작·수정 단위: 퍼센트 증감, 배수, 고정 수치, 확률은 다릅니다. 아래 단위는 새 기술과 기존 기술·아이템의 수정 제안 모두에 적용합니다.
+피해·받는 피해·능력치·최대 자원·소모량 등의 곱셈 보정(mode:"multiply")은 1이 원래 값입니다. p% 증가=1+p/100, p% 감소=1-p/100, 원래 값의 p%로 변경=p/100입니다. 25% 증가→value:1.25, 25% 감소→0.75, 원래 값의 25%→0.25, 25배→25. +25%를 value:25로 쓰거나 -25%를 -25배로 쓰지 마세요. 기술 multiplier와 무림 outer/inner도 실제 배수입니다.
+예: 받는 속성 피해 25% 증가→{type:"resistance",target:"elemental",mode:"multiply",value:1.25}, MP 소모 25% 감소→{type:"cost",target:"mp",mode:"multiply",value:0.75}. 적용 대상·기간 등 나머지 조건은 요청과 기존 설정을 따릅니다. 고정 수치 +25/-25는 mode:"add",value:25/-25이며 퍼센트 증감과 다릅니다.
+백분율을 그대로 저장하는 필드는 예외입니다. chance(발동 확률), healthBelow, automatic.threshold(HP 임계 비율)는 25%=25입니다. lifesteal/reflect/penetration/share/protect/counter의 value도 비율(%)이므로 25%=25입니다. applyResource의 mode:"multiply"는 최대 자원의 비율을 증감하므로 최대 HP의 25% 회복은 value:25, 25% 소비는 -25입니다. 모든 %를 무조건 1.25 또는 0.25로 바꾸지 마세요.
+제안을 반환하기 전에 원래 값 100을 기준으로 설명과 저장 수치를 맞추세요. 25% 증가면 125, 감소면 75, 원래 값의 25%면 25, 25배면 2500이어야 합니다. 사용자에게는 의미가 분명하게 "25% 증가 · 1.25배"처럼 설명하세요. 단위가 없는 숫자나 기존 value:25만 보고 잘못된 배율이라고 추정하여 고치지 마세요. 사용자가 명시한 실제 25배는 유지합니다.`,
+  effects:`주는 피해와 받는 피해, 적용 대상, 물리·마법·속성 범위를 구분합니다. 자신에게 유지/명중 시 전달은 사용자에게 인챈트를 유지하다 맞힌 상대에게 효과를 전달하는 방식입니다. 자기에게 받는 피해 증가를 직접 적용하는 것과 다릅니다. 지속 턴은 해당 효과의 턴 기준이고 중첩/갱신/교체를 선택합니다. 기술 사용 조건에는 실제 유지 중이어야 하는 기술 또는 상태 이름을 넣습니다. 패시브는 상시, 자동 발동은 HP 임계치 등 조건 진입에 발동합니다. 추가 타격마다 따로 명중을 판정합니다. 명중 후 연계는 저장된 후속 기술을 쓰며 동료의 일반 턴을 소모하지 않습니다. 아이템도 효과를 조합할 수 있고 투척이면 명중 판정합니다.`,
   combat:`d100은 높은 눈 성공입니다. 저장된 난이도·능력치·상대 보정을 따릅니다. 회피 판정 후 남는 피해를 방어로 경감하며 광역 회피는 해당 능력이 필요합니다. 장비는 보너스 자리여서 기술 사용의 무기 제한이 아닙니다. 전투 방식의 턴테이블 기본 ON, 지휘관 모드는 모든 아군을 직접 조작, 행동 모드는 사용자 차례에 멈춥니다. OFF는 인물별 행동 턴입니다. 한 번의 기회는 전투마다 1회, 게임오버 없음은 치료소 복귀와 현재 경험치 소실입니다. 이 두 완충 옵션은 공통/헌터용이며 에렌샤는 아바타 부활을 따릅니다. 무기 마모는 기본 가한 피해/50, 방어구는 실제 피격 피해/10이며 장비별 편집 가능합니다. 내구도 0은 보너스 정지, 수리는 별도 비용입니다.`,
-  api:`AI 연결은 기본/시스템 정밀 구축/검사로 나뉩니다. 기본 API 사용 체크로 같은 모델·인증을 공유합니다. 뉴뉴는 기본 API를 씁니다. API 키는 기기별 LocalPluginStorage에 저장합니다. Vertex Express는 API 키, 일반 Vertex는 프로젝트·리전·OAuth 액세스 토큰이며 토큰 자동 갱신은 없습니다. 놓치지마 검사는 기본 OFF, 새 입력 전에 직전 최종 서술과 실행 기록을 비교합니다. 확정된 주사위를 다시 굴리거나 서술에 맞춰 HP를 덮어쓰지 않습니다. 다른 플러그인보다 먼저 실행되는 것은 호스트가 허용해야 합니다. 호스트 진단의 toolReturned는 플러그인 반환이지 메인 모델 수신 확인이 아닙니다. 긴 prepare는 보조 AI 준비일 수 있습니다. 시간 초과 원인이나 제한 시간을 근거 없이 단정하지 않습니다. 경량 모델의 실제 성공률·속도는 시험하지 않았습니다.`,
+  api:`AI 연결은 기본/시스템 정밀 구축/검사로 나뉩니다. 기본 API 사용 체크로 같은 모델·인증을 공유합니다. 뉴뉴는 기본 API를 씁니다. API 키와 서비스 계정 JSON 키는 기기별 LocalPluginStorage에 저장합니다. Vertex Express는 API 키입니다. 일반 Vertex는 서비스 계정 JSON 파일 등록 또는 OAuth 액세스 토큰 직접 입력을 지원합니다. JSON 등록은 프로젝트를 자동 입력하며 토큰을 요청 시 자동 발급·갱신합니다. JSON 키는 모델 프롬프트나 게임 백업에 넣지 않고 Google 공식 API 주소에서 사용합니다. 직접 입력한 OAuth 토큰은 수동 교체합니다. JSON 모드와 추가 본문 JSON은 인증 파일 등록과 별개입니다. 놓치지마 검사는 기본 OFF, 새 입력 전에 직전 최종 서술과 실행 기록을 비교합니다. 확정된 주사위를 다시 굴리거나 서술에 맞춰 HP를 덮어쓰지 않습니다. 다른 플러그인보다 먼저 실행되는 것은 호스트가 허용해야 합니다. 호스트 진단의 toolReturned는 플러그인 반환이지 메인 모델 수신 확인이 아닙니다. 긴 prepare는 보조 AI 준비일 수 있습니다. 시간 초과 원인이나 제한 시간을 근거 없이 단정하지 않습니다. 경량 모델의 실제 성공률·속도는 시험하지 않았습니다.`,
   d100:`공통 d100은 STR/CON/DEX/INT/WIS/CHA, 레벨·HP/MP/SP와 기술별 숙련 성장입니다. 능력치/성장/장비/효과를 합쳐 판정합니다. 스탯 탭에서 기술을 추가·편집하며 숙련도 성장 구간별 효과와 등급을 설정합니다. 단계별 누적 배율은 1을 기준으로 증가분이 누적되는 구조이므로 실제 저장 성장 규칙을 보고 계산합니다.`,
   hunters:`얼터네이티브 헌터는 STR/CON/AGI/INT/SEN과 원본 헌터 성장·상태창을 사용합니다. 공통 DND 능력치로 바꿔 설명하지 않습니다. 기술 편집과 숙련 성장, 파티·전투·장비·탐험을 지원합니다. 봇 상태창에는 저장된 기계 수치를 쓰고 날짜·장면·서사 정보는 RP를 따릅니다.`,
   erencha:`에렌샤는 레벨·HP/MP·분야별 숙련도 Grade/Lv, 기술과 원본 재사용 대기를 사용합니다. DND 스탯과 SP는 없습니다. 숙련도·기술 카테고리의 + 추가에서 각각 작성합니다. 사용 횟수 0/빈칸/null은 무제한이며 과거에 1로 저장된 기술은 직접 고쳐야 합니다. 본명·게임 닉네임은 하나의 인물로 연결합니다. 퀘스트는 수락·진행·완료를 각각 기록하고 상태에서 확인합니다. 턴테이블 ON이면 적·아군 자동 턴이 있습니다. 공격자와 피격자는 각 step의 이름으로 읽습니다.`,
@@ -16401,7 +16759,7 @@ const GUIDE={
   romance:`로맨스 판타지는 통찰·표현·매력·의지·처세·담력, 방향별 호감/신뢰/경계, 명예·카르마입니다. 일상마다 VS를 만들지 않습니다. 대결은 이유가 있어야 하며 능력치와 관계·명예가 결과와 이유를 결정합니다. 마음의 거울은 다른 인물이 선택 인물을 어떻게 보는지 표시합니다. 설계는 사용자 수락으로 시작하고, 실제 확보한 준비를 갱신하며 AI가 다음 단계를 미리 결정하지 않습니다. 대결 성장과 실제 활동 성장이 있습니다.`,
   dating:`미연시는 학업·운동·예술·화술·배려·용기와 상대별 호감/경계·성향·카르마를 사용합니다. 유저만 1~100을 굴려 상대 난이도와 비교하며 상대 난이도는 100을 넘을 수 있습니다. 같은 제안 반복은 경계에 영향을 줍니다. 강행의 의도와 결과는 분리합니다. 훈련 난이도는 30+현재 스탯+같은 날 같은 훈련 반복당10, 시간과 체력을 소비합니다. 식사20/음료10 회복, 실제 활동 완료로도 성장합니다.`
 };
-function select(book,text){const keys=new Set(['core','navigation',!book||book==='common'?'d100':book]);if(/효과|기술|스킬|아이템|장비|인챈트|패시브|숙련|skill|effect/i.test(text))keys.add('effects');if(/전투|주사위|판정|피해|방어|턴|내구|combat|설정/i.test(text))keys.add('combat');if(/api|연결|모델|검사|타임|콜백|설정|저장|오류/i.test(text))keys.add('api');return [...keys].map(k=>GUIDE[k]||'').filter(Boolean).join('\n');}
+function select(book,text){const keys=new Set(['core','navigation','units',!book||book==='common'?'d100':book]);if(/효과|기술|스킬|아이템|장비|인챈트|패시브|숙련|skill|effect/i.test(text))keys.add('effects');if(/전투|주사위|판정|피해|방어|턴|내구|combat|설정/i.test(text))keys.add('combat');if(/api|연결|모델|검사|타임|콜백|설정|저장|오류|vertex|버텍스|인증|토큰|서비스.?계정/i.test(text))keys.add('api');return [...keys].map(k=>GUIDE[k]||'').filter(Boolean).join('\n');}
 module.exports={PERSONA,select};
 
 },
@@ -16658,9 +17016,10 @@ function validateConnection(input) {
   assert(u.protocol === 'https:' || u.protocol === 'http:' && p.allowLocalHTTP && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname), 'PROVIDER_CONFIG', 'HTTPS 주소 또는 명시적으로 허용한 로컬 HTTP만 지원합니다.');
   assert(['native', 'browser'].includes(p.transport), 'PROVIDER_CONFIG', '전송 방식을 확인하세요.');
   if(p.format==='gemini-vertex'){
-    assert(['api-key','access-token'].includes(p.vertexAuth),'PROVIDER_CONFIG','Vertex 인증 방식을 선택하세요.');
+    assert(['api-key','access-token','service-account'].includes(p.vertexAuth),'PROVIDER_CONFIG','Vertex 인증 방식을 선택하세요.');
     assert(typeof p.vertexProject==='string'&&/^[a-zA-Z0-9._:-]*$/.test(p.vertexProject)&&typeof p.vertexLocation==='string'&&/^[a-z0-9-]+$/.test(p.vertexLocation),'PROVIDER_CONFIG','Vertex 프로젝트 ID와 리전을 확인하세요.');
-    assert(p.vertexAuth!=='access-token'||p.vertexProject,'PROVIDER_CONFIG','Vertex OAuth 연결에는 프로젝트 ID가 필요합니다.');
+    assert(p.vertexAuth==='api-key'||p.vertexProject,'PROVIDER_CONFIG','Vertex OAuth 연결에는 프로젝트 ID가 필요합니다.');
+    if(p.vertexAuth==='service-account')assert(u.protocol==='https:'&&!u.port&&/^(?:[a-z0-9-]+-)?aiplatform\.googleapis\.com$/.test(u.hostname),'PROVIDER_CONFIG','서비스 계정 JSON 인증은 Google Vertex AI 공식 API 주소에서 사용하세요.');
   }
   for (const k of ['keyless', 'allowLocalHTTP', 'jsonMode']) assert(typeof p[k] === 'boolean', 'PROVIDER_CONFIG', '참/거짓 설정 오류입니다.');
   assert(Number.isInteger(p.maxOutputTokens) && p.maxOutputTokens >= 256 && p.maxOutputTokens <= 128000, 'PROVIDER_CONFIG', '출력 토큰은 256–128000 범위입니다.');
@@ -16782,7 +17141,7 @@ function buildRequest(messages, input, secrets = {}, options = {}) {
     headers['anthropic-version'] = '2023-06-01';
   }
   if (p.format === 'gemini' && key) headers['x-goog-api-key'] = key;
-  if(p.format==='gemini-vertex'&&key)headers[p.vertexAuth==='access-token'?'authorization':'x-goog-api-key']=p.vertexAuth==='access-token'?'Bearer '+key:key;
+  if(p.format==='gemini-vertex'&&key)headers[p.vertexAuth!=='api-key'?'authorization':'x-goog-api-key']=p.vertexAuth!=='api-key'?'Bearer '+key:key;
   let authCount = key ? 1 : 0;
   for (const [k, v] of Object.entries(custom)) {
     const name = k.toLowerCase();
@@ -16938,7 +17297,7 @@ function parseResponse(data, format) {
 }
 function redact(text, secrets = {}) {
   text=String(text ?? '');
-  const values=[secrets.apiKey,...Object.values(secrets.headers || {})].filter(s=>typeof s==='string' && s);
+  const values=[secrets.apiKey,secrets.serviceAccount?.private_key,...Object.values(secrets.headers || {})].filter(s=>typeof s==='string' && s);
   for(const s of [...values,...values.map(s=>s.replace(/^(?:Bearer|Basic)\s+/i,''))].sort((a,b)=>b.length-a.length)) {
     const variants=[s,JSON.stringify(s).slice(1,-1)];
     try {const encoded=encodeURIComponent(s);variants.push(encoded,encoded.replace(/%[0-9A-F]{2}/g,x=>x.toLowerCase()));} catch {}
@@ -16946,6 +17305,7 @@ function redact(text, secrets = {}) {
   }
   // Transport messages can contain redirected URLs or serialized headers that
   // were never part of the configured endpoint. Do not retain their secrets.
+  text=text.replace(/-----BEGIN (?:RSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA )?PRIVATE KEY-----/g,'[비밀 키 가림]').replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,'[인증 서명 가림]');
   text=text.replace(/\b(Bearer|Basic)\s+[^\s"',;]+/gi,'$1 [가림]').replace(/\\\//g,'/');
   text=text.replace(/https?:\/\/[^\s<>"'`]+/gi,raw=>{
     try {const url=new URL(raw);return url.protocol+'//'+url.host+url.pathname+(url.search?'?[가림]':'')+(url.hash?'#[가림]':'');}
@@ -16959,14 +17319,20 @@ class Provider {
     this.browserFetch = options.fetch || globalThis.fetch;
     this.controllers = new Set();
     this.schemaCapabilities = new Map();
+    this.vertexAuth = new (require('./vertex-auth.js').VertexAuth)();
     this.disposed = false;
   }
   async request(messages, connection, secrets = {}, signal, options = {}) {
     const p = validateConnection(connection), key = JSON.stringify([endpoint(p),p.model,p.format]);
+    fields(secrets,['apiKey','headers','serviceAccount']);
+    const serviceAccount=p.format==='gemini-vertex'&&p.vertexAuth==='service-account';
+    const account=serviceAccount?require('./vertex-auth.js').account(secrets.serviceAccount):null;
+    // Preflight without sending a request. The placeholder is replaced before fetch.
+    let requestSecrets={apiKey:serviceAccount?'pending-service-account-token':secrets.apiKey||'',headers:secrets.headers||{}};
     // Build the hinted request once before checking the session cache so a bad
     // local schema is rejected before sending any request, even after fallback.
-    let req = buildRequest(messages,p,secrets,options);
-    const plainRequest=()=>buildRequest(options.outputSchema ? [...messages,{role:'user',content:'JSON schema:\n'+JSON.stringify(options.outputSchema)}] : messages,p,secrets);
+    let req = buildRequest(messages,p,requestSecrets,options);
+    const plainRequest=()=>buildRequest(options.outputSchema ? [...messages,{role:'user',content:'JSON schema:\n'+JSON.stringify(options.outputSchema)}] : messages,p,requestSecrets);
     if (options.outputSchema && this.schemaCapabilities.get(key) === false) req = plainRequest();
     let transportAttempts = 0;
     const stopped=reason=>new RPGError('CANCELLED',reason==='disposed' ? '플러그인이 종료되었습니다.' : '요청을 취소했습니다.');
@@ -16991,6 +17357,10 @@ class Provider {
     const run = async () => {
       const fetcher = p.transport === 'native' ? this.api.nativeFetch.bind(this.api) : this.browserFetch;
       assert(typeof fetcher === 'function', 'TRANSPORT_MISSING', '전송 기능이 없습니다.');
+      if(serviceAccount){
+        const token=await this.vertexAuth.token(account,{fetcher,transport:p.transport,timeoutMs:p.timeoutMs},controller.signal);
+        assertWaiting();requestSecrets={...requestSecrets,apiKey:token};req.headers.authorization='Bearer '+token;
+      }
       while (true) {
         assertWaiting();
         const structured = req.body.response_format?.type === 'json_schema' ? (req.body.response_format.json_schema.strict ? 'strict' : 'schema')
@@ -17011,6 +17381,7 @@ class Provider {
         assert(!response.redirected,'PROVIDER_HTTP','API 요청 실패: HTTP ' + response.status);
         if (response.url) assert(new URL(response.url).origin === new URL(req.url).origin,'REDIRECT_BLOCKED','다른 서버의 응답을 차단했습니다.');
         if (!response.ok) {
+          if(serviceAccount&&response.status===401)this.vertexAuth.invalidate(requestSecrets.apiKey);
           // An explicit, pre-generation unsupported-parameter rejection is the
           // sole automatic retry. Network/timeout/auth/rate/schema errors never
           // replay an ambiguous or potentially billed request.
@@ -17044,7 +17415,7 @@ class Provider {
       const failure=controller.signal.aborted || this.disposed ? stopped(interruptionReason()) : e;
       const local=failure instanceof RPGError;
       const message=local ? failure.message : 'API 연결 실패: '+(typeof failure==='string' ? failure : failure?.message || failure?.name || '서버 응답을 받지 못했습니다.');
-      const error = new RPGError(local ? failure.code : 'PROVIDER_NETWORK',redact(message,secrets),local ? failure.details : null);
+      const error = new RPGError(local ? failure.code : 'PROVIDER_NETWORK',redact(redact(message,requestSecrets),secrets),local ? failure.details : null);
       error.transportAttempts = transportAttempts;
       throw error;
     } finally {
@@ -17079,6 +17450,7 @@ class Provider {
   dispose() {
     this.disposed = true;
     this.schemaCapabilities.clear();
+    this.vertexAuth.clear();
     for (const c of this.controllers) c.abort({reason:'disposed'});
   }
 }
@@ -17524,7 +17896,9 @@ async function renderStoredText(text, enabled, repo, cache = new Map(), context 
   // retry. Existing long references remain independently renderable below.
   try {text=await displayResponseText(text,repo,context,cache);}catch{}
   const matches = [...text.matchAll(referencePattern())], bundles = new Map();
+  const currentScopeHash=context?.scope?await hash(scopeKey(context.scope)):null;
   if (enabled) for (const [, scopeHash, txId] of matches) {
+    if(currentScopeHash&&scopeHash!==currentScopeHash)continue;
     const key = scopeHash + ':' + txId;
     if (bundles.has(key)) continue;
     bundles.set(key, (async () => {
@@ -17565,7 +17939,7 @@ async function renderStoredText(text, enabled, repo, cache = new Map(), context 
   return renderText(text, enabled).replace(shortPattern(),'');
 }
 function stripMarkers(text) { return text.replace(referencePattern(), '').replace(shortPattern(), '').replace(/\[URPG1:[A-Za-z0-9+/=]{1,64000}\]/g, ''); }
-module.exports = { renderText, renderStoredText, stripMarkers, presentation, displayForAction, displayForTransaction, displayFromTransaction, storedDisplayForTransaction, bindResponseDisplay, exportDisplayBindings, restoreDisplayBindings, resolveShortMarkers, completeInlineText, CSS };
+module.exports = { cardHTML, renderText, renderStoredText, stripMarkers, presentation, displayForAction, displayForTransaction, displayFromTransaction, storedDisplayForTransaction, bindResponseDisplay, exportDisplayBindings, restoreDisplayBindings, resolveShortMarkers, completeInlineText, CSS };
 
 },
 "./repository.js":function(module,exports,require){
@@ -17899,6 +18273,7 @@ class Repository {
   async export(scope) {
     return {
       effectPresets: await this.read('urpg/effect-presets')||{},
+      chatSettings: await this.read((await this.key(scope))+'/chat-settings'),
       format: 'universal-rpg-backup',
       schemaVersion: 1,
       scope: clone(scope),
@@ -22727,6 +23102,12 @@ function trigger(w,o,context){if(!o.terrain||o.terrain.triggered||o.resources.hp
 module.exports={schema,attach,trigger};
 
 },
+"./theme-data.js":function(module,exports,require){
+'use strict';
+// Generated from src/themes by the build.
+module.exports=["","/* Beige / rosy brown / midnight green. Flower and heart silhouettes. */\n.urpgdice-card { --urpgdice-surface: #f7f4d5; --urpgdice-ink: #105666; --urpgdice-burst: #ead1bc; --urpgdice-edge: #d3968c; --urpgdice-text: #105666; --urpgdice-muted: #105666; --urpgdice-label: #105666; --urpgdice-result: #105666; --urpgdice-detail: #f7f4d5; --urpgdice-detail-text: #105666; --urpgdice-badge: #105666; --urpgdice-badge-text: #f7f4d5; }\n.urpgdice-card.urpgdice-unfavorable { --urpgdice-surface: #d3968c; --urpgdice-ink: #105666; --urpgdice-burst: #e7b9a7; --urpgdice-edge: #105666; --urpgdice-text: #105666; --urpgdice-muted: #105666; --urpgdice-label: #105666; --urpgdice-result: #105666; --urpgdice-detail: #d3968c; --urpgdice-detail-text: #105666; --urpgdice-badge: #105666; --urpgdice-badge-text: #d3968c; }\n.urpgdice-card.urpgdice-critical.urpgdice-favorable { --urpgdice-surface: #f7f4d5; --urpgdice-ink: #105666; --urpgdice-burst: #d3968c; --urpgdice-edge: #105666; --urpgdice-text: #105666; --urpgdice-muted: #105666; --urpgdice-label: #105666; --urpgdice-result: #105666; --urpgdice-detail: #f7f4d5; --urpgdice-detail-text: #105666; --urpgdice-badge: #105666; --urpgdice-badge-text: #f7f4d5; }\n.urpgdice-card.urpgdice-critical.urpgdice-unfavorable { --urpgdice-surface: #105666; --urpgdice-ink: #f7f4d5; --urpgdice-burst: #287183; --urpgdice-edge: #d3968c; --urpgdice-text: #f7f4d5; --urpgdice-muted: #f7f4d5; --urpgdice-label: #f7f4d5; --urpgdice-result: #f7f4d5; --urpgdice-detail: #105666; --urpgdice-detail-text: #f7f4d5; --urpgdice-badge: #f7f4d5; --urpgdice-badge-text: #105666; }\n\n.urpgdice-card { --urpgdice-stamp-angle: 0deg; border-radius: 22px; border-width: 1px; }\n.urpgdice-card .urpgdice-side { border-radius: 10px; padding: 0 9px; }\n.urpgdice-card .urpgdice-score { font-family: Georgia,'Times New Roman',serif; }\n.urpgdice-card .urpgdice-result { font-family: Georgia,'Times New Roman',serif; font-size: clamp(27px,8.2cqi,60px); font-weight: 700; letter-spacing: -1.8px; transform: none; }\n.urpgdice-card > .urpgdice-detail { border-top-style: dashed; }\n.urpgdice-card .urpgdice-banner::before,\n.urpgdice-card.urpgdice-critical .urpgdice-banner::before { inset: 0 -8px 0 24%; border: 0; border-radius: 0; clip-path: none; transform: none; background: var(--urpgdice-burst); -webkit-mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20200%20100%22%3E%3Cg%20fill%3D%22white%22%20transform%3D%22translate(125%2050)%22%3E%3Cellipse%20ry%3D%2246%22%20rx%3D%2219%22%2F%3E%3Cellipse%20ry%3D%2246%22%20rx%3D%2219%22%20transform%3D%22rotate(60)%22%2F%3E%3Cellipse%20ry%3D%2246%22%20rx%3D%2219%22%20transform%3D%22rotate(120)%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20200%20100%22%3E%3Cg%20fill%3D%22white%22%20transform%3D%22translate(125%2050)%22%3E%3Cellipse%20ry%3D%2246%22%20rx%3D%2219%22%2F%3E%3Cellipse%20ry%3D%2246%22%20rx%3D%2219%22%20transform%3D%22rotate(60)%22%2F%3E%3Cellipse%20ry%3D%2246%22%20rx%3D%2219%22%20transform%3D%22rotate(120)%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); -webkit-mask-size: contain; mask-size: contain; -webkit-mask-position: right center; mask-position: right center; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; pointer-events: none; }\n.urpgdice-card.urpgdice-critical .urpgdice-banner::before { -webkit-mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20200%20100%22%3E%3Cpath%20fill%3D%22white%22%20d%3D%22M125%2094C100%2076%2076%2057%2076%2032C76%205%20109%201%20125%2024C141%201%20174%205%20174%2032C174%2057%20150%2076%20125%2094Z%22%2F%3E%3C%2Fsvg%3E\"); mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20200%20100%22%3E%3Cpath%20fill%3D%22white%22%20d%3D%22M125%2094C100%2076%2076%2057%2076%2032C76%205%20109%201%20125%2024C141%201%20174%205%20174%2032C174%2057%20150%2076%20125%2094Z%22%2F%3E%3C%2Fsvg%3E\"); }\n.urpgdice-card.urpgdice-critical .urpgdice-result { transform: none; }\n\n/* Fine stationery / engraved ornaments, confined to the summary behind the text. */\n.urpgdice-card { position: relative; }\n.urpgdice-card::after { content: ''; position: absolute; inset: 5px; border: 1px solid var(--urpgdice-edge); border-radius: 17px; opacity: .38; pointer-events: none; }\n.urpgdice-card > .urpgdice-summary::before { content: ''; position: absolute; inset: 0; background: var(--urpgdice-ink); opacity: .24; pointer-events: none; -webkit-mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20600%20130%22%20preserveAspectRatio%3D%22none%22%3E%3Cg%20fill%3D%22none%22%20stroke%3D%22white%22%20stroke-width%3D%221.5%22%3E%3Cpath%20d%3D%22M-10%2095C28%20119%2069%20103%20106%20115S167%20127%20202%20113M23%20112C20%20101%2026%2091%2036%2086M70%20109C64%2099%2068%2088%2080%2083M110%20116C113%20104%20123%2099%20133%2099M440%209C477%2029%20514%209%20547%2024S584%2040%20612%2016M470%2020C471%2031%20481%2039%20491%2037M526%2017C523%2029%20529%2039%20540%2043%22%2F%3E%3Cpath%20d%3D%22M280%20118Q295%20104%20310%20118Q323%20127%20336%20115M291%20117Q298%20123%20305%20117%22%2F%3E%3C%2Fg%3E%3Cg%20fill%3D%22white%22%3E%3Cpath%20d%3D%22M30%2093Q13%2086%2020%2074Q34%2077%2030%2093ZM36%2088Q38%2069%2052%2072Q53%2084%2036%2088ZM74%2088Q56%2079%2065%2069Q79%2073%2074%2088ZM120%20105Q116%2088%20129%2085Q138%2098%20120%20105ZM154%20123Q158%20105%20172%20110Q173%20123%20154%20123ZM480%2032Q484%2047%20496%2043Q497%2031%20480%2032ZM532%2035Q549%2035%20549%2048Q535%2052%20532%2035Z%22%2F%3E%3Cellipse%20cx%3D%22390%22%20cy%3D%2223%22%20rx%3D%224%22%20ry%3D%228%22%20transform%3D%22rotate(-35%20390%2023)%22%2F%3E%3Cellipse%20cx%3D%22408%22%20cy%3D%2235%22%20rx%3D%223%22%20ry%3D%226%22%20transform%3D%22rotate(25%20408%2035)%22%2F%3E%3Cellipse%20cx%3D%22572%22%20cy%3D%22102%22%20rx%3D%224%22%20ry%3D%228%22%20transform%3D%22rotate(40%20572%20102)%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20600%20130%22%20preserveAspectRatio%3D%22none%22%3E%3Cg%20fill%3D%22none%22%20stroke%3D%22white%22%20stroke-width%3D%221.5%22%3E%3Cpath%20d%3D%22M-10%2095C28%20119%2069%20103%20106%20115S167%20127%20202%20113M23%20112C20%20101%2026%2091%2036%2086M70%20109C64%2099%2068%2088%2080%2083M110%20116C113%20104%20123%2099%20133%2099M440%209C477%2029%20514%209%20547%2024S584%2040%20612%2016M470%2020C471%2031%20481%2039%20491%2037M526%2017C523%2029%20529%2039%20540%2043%22%2F%3E%3Cpath%20d%3D%22M280%20118Q295%20104%20310%20118Q323%20127%20336%20115M291%20117Q298%20123%20305%20117%22%2F%3E%3C%2Fg%3E%3Cg%20fill%3D%22white%22%3E%3Cpath%20d%3D%22M30%2093Q13%2086%2020%2074Q34%2077%2030%2093ZM36%2088Q38%2069%2052%2072Q53%2084%2036%2088ZM74%2088Q56%2079%2065%2069Q79%2073%2074%2088ZM120%20105Q116%2088%20129%2085Q138%2098%20120%20105ZM154%20123Q158%20105%20172%20110Q173%20123%20154%20123ZM480%2032Q484%2047%20496%2043Q497%2031%20480%2032ZM532%2035Q549%2035%20549%2048Q535%2052%20532%2035Z%22%2F%3E%3Cellipse%20cx%3D%22390%22%20cy%3D%2223%22%20rx%3D%224%22%20ry%3D%228%22%20transform%3D%22rotate(-35%20390%2023)%22%2F%3E%3Cellipse%20cx%3D%22408%22%20cy%3D%2235%22%20rx%3D%223%22%20ry%3D%226%22%20transform%3D%22rotate(25%20408%2035)%22%2F%3E%3Cellipse%20cx%3D%22572%22%20cy%3D%22102%22%20rx%3D%224%22%20ry%3D%228%22%20transform%3D%22rotate(40%20572%20102)%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); -webkit-mask-size: 100% 100%; mask-size: 100% 100%; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; }\n.urpgdice-card.urpgdice-critical > .urpgdice-summary::before { opacity: .34; }\n","/* Seal brown / gold / dun / cadet gray / bistre. Sword and crown. */\n.urpgdice-card { --urpgdice-surface: #e0d0b6; --urpgdice-ink: #442c1b; --urpgdice-burst: #cc9e4c; --urpgdice-edge: #cc9e4c; --urpgdice-text: #442c1b; --urpgdice-muted: #442c1b; --urpgdice-label: #442c1b; --urpgdice-result: #442c1b; --urpgdice-detail: #e0d0b6; --urpgdice-detail-text: #442c1b; --urpgdice-badge: #442c1b; --urpgdice-badge-text: #e0d0b6; }\n.urpgdice-card.urpgdice-unfavorable { --urpgdice-surface: #6b2717; --urpgdice-ink: #e0d0b6; --urpgdice-burst: #8e4b31; --urpgdice-edge: #cc9e4c; --urpgdice-text: #e0d0b6; --urpgdice-muted: #e0d0b6; --urpgdice-label: #e0d0b6; --urpgdice-result: #e0d0b6; --urpgdice-detail: #6b2717; --urpgdice-detail-text: #e0d0b6; --urpgdice-badge: #e0d0b6; --urpgdice-badge-text: #6b2717; }\n.urpgdice-card.urpgdice-critical.urpgdice-favorable { --urpgdice-surface: #cc9e4c; --urpgdice-ink: #442c1b; --urpgdice-burst: #e0d0b6; --urpgdice-edge: #6b2717; --urpgdice-text: #442c1b; --urpgdice-muted: #442c1b; --urpgdice-label: #442c1b; --urpgdice-result: #442c1b; --urpgdice-detail: #cc9e4c; --urpgdice-detail-text: #442c1b; --urpgdice-badge: #442c1b; --urpgdice-badge-text: #cc9e4c; }\n.urpgdice-card.urpgdice-critical.urpgdice-unfavorable { --urpgdice-surface: #442c1b; --urpgdice-ink: #e0d0b6; --urpgdice-burst: #6b2717; --urpgdice-edge: #cc9e4c; --urpgdice-text: #e0d0b6; --urpgdice-muted: #e0d0b6; --urpgdice-label: #e0d0b6; --urpgdice-result: #e0d0b6; --urpgdice-detail: #442c1b; --urpgdice-detail-text: #e0d0b6; --urpgdice-badge: #e0d0b6; --urpgdice-badge-text: #442c1b; }\n\n.urpgdice-card { --urpgdice-stamp-angle: 0deg; border-width: 3px; border-style: double; border-radius: 2px; }\n.urpgdice-card .urpgdice-side { border: 1px solid var(--urpgdice-edge); padding: 0 8px; }\n.urpgdice-card .urpgdice-score { font-family: Georgia,'Times New Roman',serif; }\n.urpgdice-card .urpgdice-result { font-family: Georgia,'Times New Roman',serif; font-style: normal; font-size: clamp(27px,8.2cqi,60px); letter-spacing: -1.8px; transform: none; }\n.urpgdice-card > .urpgdice-detail { border-top: 3px double var(--urpgdice-edge); }\n.urpgdice-card:not(.urpgdice-critical) .urpgdice-banner::before { background: #8b9ea5; }\n.urpgdice-card .urpgdice-banner::before,\n.urpgdice-card.urpgdice-critical .urpgdice-banner::before { inset: 0 -8px 0 24%; border: 0; border-radius: 0; clip-path: none; transform: none; background: var(--urpgdice-burst); -webkit-mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20220%2070%22%3E%3Cg%20fill%3D%22white%22%3E%3Cpath%20fill-rule%3D%22evenodd%22%20d%3D%22M209%2035L182%2023H64V47H182Z%20M76%2033H180V37H76Z%22%2F%3E%3Cpath%20d%3D%22M58%208H67L73%2015L66%2022V48L73%2055L67%2062H58L52%2055L58%2048V22L52%2015Z%22%2F%3E%3Crect%20x%3D%2223%22%20y%3D%2229%22%20width%3D%2235%22%20height%3D%2212%22%20rx%3D%222%22%2F%3E%3Ccircle%20cx%3D%2215%22%20cy%3D%2235%22%20r%3D%229%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20220%2070%22%3E%3Cg%20fill%3D%22white%22%3E%3Cpath%20fill-rule%3D%22evenodd%22%20d%3D%22M209%2035L182%2023H64V47H182Z%20M76%2033H180V37H76Z%22%2F%3E%3Cpath%20d%3D%22M58%208H67L73%2015L66%2022V48L73%2055L67%2062H58L52%2055L58%2048V22L52%2015Z%22%2F%3E%3Crect%20x%3D%2223%22%20y%3D%2229%22%20width%3D%2235%22%20height%3D%2212%22%20rx%3D%222%22%2F%3E%3Ccircle%20cx%3D%2215%22%20cy%3D%2235%22%20r%3D%229%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); -webkit-mask-size: contain; mask-size: contain; -webkit-mask-position: right center; mask-position: right center; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; pointer-events: none; }\n.urpgdice-card.urpgdice-critical .urpgdice-banner::before { -webkit-mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20200%20100%22%3E%3Cpath%20fill%3D%22white%22%20d%3D%22M72%2027L97%2047L122%209L147%2047L175%2027L163%2080H84Z%20M84%2086H163V95H84Z%22%2F%3E%3Cg%20fill%3D%22white%22%3E%3Ccircle%20cx%3D%2272%22%20cy%3D%2223%22%20r%3D%225%22%2F%3E%3Ccircle%20cx%3D%22122%22%20cy%3D%225%22%20r%3D%225%22%2F%3E%3Ccircle%20cx%3D%22175%22%20cy%3D%2223%22%20r%3D%225%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20200%20100%22%3E%3Cpath%20fill%3D%22white%22%20d%3D%22M72%2027L97%2047L122%209L147%2047L175%2027L163%2080H84Z%20M84%2086H163V95H84Z%22%2F%3E%3Cg%20fill%3D%22white%22%3E%3Ccircle%20cx%3D%2272%22%20cy%3D%2223%22%20r%3D%225%22%2F%3E%3Ccircle%20cx%3D%22122%22%20cy%3D%225%22%20r%3D%225%22%2F%3E%3Ccircle%20cx%3D%22175%22%20cy%3D%2223%22%20r%3D%225%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); }\n.urpgdice-card.urpgdice-critical .urpgdice-result { transform: none; }\n\n/* Header ornaments stay clear of the name and central result. */\n.urpgdice-card .urpgdice-top { padding-right: 66px; }\n.urpgdice-card > .urpgdice-summary::after { content: '✦'; position: absolute; top: 9px; right: 17px; color: var(--urpgdice-ink); font: 13px/1 Georgia,serif; pointer-events: none; }\n.urpgdice-card.urpgdice-critical > .urpgdice-summary::after { content: '✦ ✦ ✦'; letter-spacing: 3px; }\n\n.urpgdice-card:not(.urpgdice-critical) .urpgdice-banner::before { inset: -5px -4px -5px 30%; transform: translateX(10%); -webkit-mask-position: center; mask-position: center; -webkit-mask-size: 100% 100%; mask-size: 100% 100%; }\n\n/* Fine stationery / engraved ornaments, confined to the summary behind the text. */\n.urpgdice-card { position: relative; }\n.urpgdice-card::after { content: ''; position: absolute; inset: 5px; border: 1px solid var(--urpgdice-edge); border-radius: 0; opacity: .38; pointer-events: none; }\n.urpgdice-card > .urpgdice-summary::before { content: ''; position: absolute; inset: 0; background: var(--urpgdice-ink); opacity: .16; pointer-events: none; -webkit-mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20600%20130%22%20preserveAspectRatio%3D%22none%22%3E%3Cg%20fill%3D%22none%22%20stroke%3D%22white%22%20stroke-width%3D%221.2%22%3E%3Ccircle%20cx%3D%22314%22%20cy%3D%2268%22%20r%3D%2252%22%2F%3E%3Ccircle%20cx%3D%22314%22%20cy%3D%2268%22%20r%3D%2243%22%2F%3E%3Cpath%20d%3D%22M314%208V23M314%20113V128M255%2068H269M359%2068H373M274%2028L284%2038M344%2098L354%20108M274%20108L284%2098M344%2038L354%2028M314%2026L350%2089H278ZM314%20110L278%2047H350Z%22%2F%3E%3Cpath%20d%3D%22M8%2030V8H43M557%208H592V30M8%20100V122H43M557%20122H592V100M15%2028V15H32M568%2015H585V28M15%20102V115H32M568%20115H585V102%22%2F%3E%3Cpath%20d%3D%22M91%20121H224M401%20121H533%22%2F%3E%3C%2Fg%3E%3Cg%20fill%3D%22white%22%3E%3Cpath%20d%3D%22M58%208L63%2013L58%2018L53%2013ZM542%208L547%2013L542%2018L537%2013ZM58%20112L63%20117L58%20122L53%20117ZM542%20112L547%20117L542%20122L537%20117Z%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20600%20130%22%20preserveAspectRatio%3D%22none%22%3E%3Cg%20fill%3D%22none%22%20stroke%3D%22white%22%20stroke-width%3D%221.2%22%3E%3Ccircle%20cx%3D%22314%22%20cy%3D%2268%22%20r%3D%2252%22%2F%3E%3Ccircle%20cx%3D%22314%22%20cy%3D%2268%22%20r%3D%2243%22%2F%3E%3Cpath%20d%3D%22M314%208V23M314%20113V128M255%2068H269M359%2068H373M274%2028L284%2038M344%2098L354%20108M274%20108L284%2098M344%2038L354%2028M314%2026L350%2089H278ZM314%20110L278%2047H350Z%22%2F%3E%3Cpath%20d%3D%22M8%2030V8H43M557%208H592V30M8%20100V122H43M557%20122H592V100M15%2028V15H32M568%2015H585V28M15%20102V115H32M568%20115H585V102%22%2F%3E%3Cpath%20d%3D%22M91%20121H224M401%20121H533%22%2F%3E%3C%2Fg%3E%3Cg%20fill%3D%22white%22%3E%3Cpath%20d%3D%22M58%208L63%2013L58%2018L53%2013ZM542%208L547%2013L542%2018L537%2013ZM58%20112L63%20117L58%20122L53%20117ZM542%20112L547%20117L542%20122L537%20117Z%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); -webkit-mask-size: 100% 100%; mask-size: 100% 100%; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; }\n.urpgdice-card.urpgdice-critical > .urpgdice-summary::before { opacity: .24; }\n","/* Neon magenta / violet / electric blue / cyan. Circuits and radiation. */\n.urpgdice-card { --urpgdice-surface: #3a0ca3; --urpgdice-ink: #4cc9f0; --urpgdice-burst: #4361ee; --urpgdice-edge: #4cc9f0; --urpgdice-text: #def8ff; --urpgdice-muted: #def8ff; --urpgdice-label: #def8ff; --urpgdice-result: #4cc9f0; --urpgdice-detail: #3a0ca3; --urpgdice-detail-text: #def8ff; --urpgdice-badge: #4cc9f0; --urpgdice-badge-text: #3a0ca3; }\n.urpgdice-card.urpgdice-unfavorable { --urpgdice-surface: #3a0ca3; --urpgdice-ink: #ff007f; --urpgdice-burst: #6725bd; --urpgdice-edge: #ff007f; --urpgdice-text: #def8ff; --urpgdice-muted: #def8ff; --urpgdice-label: #def8ff; --urpgdice-result: #ff007f; --urpgdice-detail: #3a0ca3; --urpgdice-detail-text: #def8ff; --urpgdice-badge: #ff007f; --urpgdice-badge-text: #3a0ca3; }\n.urpgdice-card.urpgdice-critical.urpgdice-favorable { --urpgdice-surface: #101d30; --urpgdice-ink: #4cc9f0; --urpgdice-burst: #4cc9f0; --urpgdice-edge: #4cc9f0; --urpgdice-text: #effbff; --urpgdice-muted: #effbff; --urpgdice-label: #effbff; --urpgdice-result: #effbff; --urpgdice-detail: #101d30; --urpgdice-detail-text: #effbff; --urpgdice-badge: #4cc9f0; --urpgdice-badge-text: #101d30; }\n.urpgdice-card.urpgdice-critical.urpgdice-unfavorable { --urpgdice-surface: #2a1129; --urpgdice-ink: #ff6fb8; --urpgdice-burst: #ff007f; --urpgdice-edge: #ff007f; --urpgdice-text: #fff0f7; --urpgdice-muted: #fff0f7; --urpgdice-label: #fff0f7; --urpgdice-result: #fff0f7; --urpgdice-detail: #2a1129; --urpgdice-detail-text: #fff0f7; --urpgdice-badge: #ff007f; --urpgdice-badge-text: #2a1129; }\n\n.urpgdice-card { --urpgdice-stamp-angle: 0deg; position: relative; border-radius: 0; border-left-width: 4px; clip-path: polygon(0 0,calc(100% - 18px) 0,100% 18px,100% 100%,0 100%); }\n.urpgdice-card::after { content: ''; position: absolute; pointer-events: none; top: -1px; right: -1px; width: 19px; height: 19px; background: var(--urpgdice-edge); clip-path: polygon(0 0,3px 0,100% calc(100% - 3px),100% 100%); }\n.urpgdice-card .urpgdice-top { padding-bottom: 3px; border-bottom: 1px solid var(--urpgdice-edge); }\n.urpgdice-card .urpgdice-side { font-family: Consolas,monospace; }\n.urpgdice-card .urpgdice-score { font-family: Consolas,'Courier New',monospace; }\n.urpgdice-card .urpgdice-number { font-size: clamp(32px,9cqi,68px); letter-spacing: -3px; }\n.urpgdice-card .urpgdice-target { font-size: clamp(25px,6.5cqi,46px); letter-spacing: -2px; }\n.urpgdice-card .urpgdice-result { font-family: Consolas,'Courier New',monospace; font-style: normal; font-size: clamp(25px,7.8cqi,56px); letter-spacing: -2px; transform: none; }\n.urpgdice-card > .urpgdice-detail { border-top-style: dashed; }\n/* Repeat fine circuit traces across the entire card, including expanded details. */\n.urpgdice-card { isolation: isolate; }\n.urpgdice-card::before { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; background: var(--urpgdice-burst); opacity: .5; -webkit-mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20200%20100%22%3E%3Cg%20fill%3D%22none%22%20stroke%3D%22white%22%20stroke-width%3D%222.5%22%3E%3Cpath%20d%3D%22M1%2018H42L63%2039H106L126%2019H191M9%2084H50L70%2064H144L163%2083H193M72%201V17L90%2035M91%2099V81L108%2064M133%200V31L151%2049H200M0%2050H31L48%2033M173%201V31M22%20100V87%22%2F%3E%3Crect%20x%3D%22109%22%20y%3D%2235%22%20width%3D%2231%22%20height%3D%2220%22%20rx%3D%222%22%2F%3E%3Ccircle%20cx%3D%225%22%20cy%3D%2218%22%20r%3D%224%22%2F%3E%3Ccircle%20cx%3D%22191%22%20cy%3D%2219%22%20r%3D%224%22%2F%3E%3Ccircle%20cx%3D%2210%22%20cy%3D%2284%22%20r%3D%224%22%2F%3E%3Ccircle%20cx%3D%22193%22%20cy%3D%2283%22%20r%3D%224%22%2F%3E%3Ccircle%20cx%3D%22173%22%20cy%3D%224%22%20r%3D%224%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20200%20100%22%3E%3Cg%20fill%3D%22none%22%20stroke%3D%22white%22%20stroke-width%3D%222.5%22%3E%3Cpath%20d%3D%22M1%2018H42L63%2039H106L126%2019H191M9%2084H50L70%2064H144L163%2083H193M72%201V17L90%2035M91%2099V81L108%2064M133%200V31L151%2049H200M0%2050H31L48%2033M173%201V31M22%20100V87%22%2F%3E%3Crect%20x%3D%22109%22%20y%3D%2235%22%20width%3D%2231%22%20height%3D%2220%22%20rx%3D%222%22%2F%3E%3Ccircle%20cx%3D%225%22%20cy%3D%2218%22%20r%3D%224%22%2F%3E%3Ccircle%20cx%3D%22191%22%20cy%3D%2219%22%20r%3D%224%22%2F%3E%3Ccircle%20cx%3D%2210%22%20cy%3D%2284%22%20r%3D%224%22%2F%3E%3Ccircle%20cx%3D%22193%22%20cy%3D%2283%22%20r%3D%224%22%2F%3E%3Ccircle%20cx%3D%22173%22%20cy%3D%224%22%20r%3D%224%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); -webkit-mask-size: 240px 120px; mask-size: 240px 120px; -webkit-mask-repeat: repeat; mask-repeat: repeat; }\n.urpgdice-card > .urpgdice-detail { background: transparent; }\n.urpgdice-card .urpgdice-banner::before { display: none; }\n/* Dark critical surfaces keep luminous text legible over the cropped black emblem. */\n.urpgdice-card.urpgdice-critical .urpgdice-result { transform: none; -webkit-text-stroke: 0; }\n.urpgdice-card.urpgdice-critical .urpgdice-banner::before { content: ''; display: block; position: absolute; z-index: -1; inset: auto; right: -25px; top: calc(50% - clamp(22px,8cqi,56px)); width: clamp(44px,16cqi,104px); height: clamp(44px,16cqi,112px); background: #000; clip-path: none; pointer-events: none; -webkit-mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%2279%200%20100%20100%22%3E%3Cg%20fill%3D%22white%22%20transform%3D%22translate(129%2050)%22%3E%3Ccircle%20r%3D%229%22%2F%3E%3Cpath%20d%3D%22M-8-14L-22-39A45%2045%200%200%201%2022-39L8-14A16%2016%200%200%200-8-14Z%22%2F%3E%3Cpath%20d%3D%22M-8-14L-22-39A45%2045%200%200%201%2022-39L8-14A16%2016%200%200%200-8-14Z%22%20transform%3D%22rotate(120)%22%2F%3E%3Cpath%20d%3D%22M-8-14L-22-39A45%2045%200%200%201%2022-39L8-14A16%2016%200%200%200-8-14Z%22%20transform%3D%22rotate(240)%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); mask-image: url(\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%2279%200%20100%20100%22%3E%3Cg%20fill%3D%22white%22%20transform%3D%22translate(129%2050)%22%3E%3Ccircle%20r%3D%229%22%2F%3E%3Cpath%20d%3D%22M-8-14L-22-39A45%2045%200%200%201%2022-39L8-14A16%2016%200%200%200-8-14Z%22%2F%3E%3Cpath%20d%3D%22M-8-14L-22-39A45%2045%200%200%201%2022-39L8-14A16%2016%200%200%200-8-14Z%22%20transform%3D%22rotate(120)%22%2F%3E%3Cpath%20d%3D%22M-8-14L-22-39A45%2045%200%200%201%2022-39L8-14A16%2016%200%200%200-8-14Z%22%20transform%3D%22rotate(240)%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E\"); -webkit-mask-size: contain; mask-size: contain; -webkit-mask-position: center; mask-position: center; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; }\n\n.urpgdice-card.urpgdice-critical::before { background: var(--urpgdice-edge); opacity: .16; }\n"];
+
+},
 "./tool-catalog.js":function(module,exports,require){
 'use strict';
 
@@ -22934,6 +23315,7 @@ async function call(app,name,args,trace={}) {
     enter('scope');
     assert(!app.unloaded,'UNLOADED','플러그인이 종료되었습니다.');
     const scope=await app.currentScope();
+    assert((await app.moduleBridge.context(scope)).active,'MODULE_DISABLED','이 채팅에서 NyoruRPG 연결 모듈을 켜세요. 다른 채팅의 게임은 실행하지 않습니다.');
     if(boundary)await app.host.verifyTransaction(boundary);
     const validationState=app.tx&&scopeKey(app.tx.scope)===scopeKey(scope)
       ?(await app.repo.transaction(scope,app.tx.id)).state:(await app.repo.current(scope))?.state;
@@ -23189,6 +23571,7 @@ class UI {
       }
       if (!await this.app.host.savedPrompts(this.info.scope)) await this.app.host.refreshPrompts(this.info.scope);
       this.sources = await this.app.host.sources(this.info.scope);
+      try{await require('./chat-presentation-ui.js').refresh(this);}catch(error){this.moduleContext={active:false,error:error.message,modules:[]};this.chatPresentation=null;this.moduleEdits=[];}
       const key = scopeKey(this.info.scope);
       if (this.selectionScope !== key) {
         this.clearEditors();
@@ -23266,6 +23649,9 @@ class UI {
     return this.rulebookPrompts?.[id] ?? (['social-v1','erencha-v1','murim-v1'].includes(this.job?.pipeline) && this.job.rulebookId===id?this.job.userInstruction:this.info?.state?.meta.rulebook?.id===id?this.info.state.meta.rulebook.instructions:'') ?? '';
   }
   rulebookSelection() {
+    return this.rulebookConfiguration()+require('./chat-presentation-ui.js').render(this);
+  }
+  rulebookConfiguration() {
     const selected=this.selectedRulebook(),social=['romance','dating'].includes(selected),hunters=selected==='hunters';
     const help=selected==='murim'?require('./murim-ui.js').help():selected==='erencha'?require('./erencha-ui.js').help():hunters?require('./hunter-ui.js').help():social?require('./social-ui.js').help(selected):'지금까지 사용한 능력치·장비·전투 규칙으로 진행합니다.';
     return '<section class="panel"><h2>시스템 룰북</h2><label>사용할 규칙<select id="system-rulebook" '+(this.busy?'disabled':'')+'>'+[['common','공통 d100 RPG'],['hunters','얼터네이티브 헌터'],['romance','로맨스 판타지'],['dating','미연시'],['erencha','에렌샤 온라인'],['murim','무림']].map(([id,name])=>'<option value="'+id+'" '+(selected===id?'selected':'')+'>'+name+'</option>').join('')+'</select></label><p class="muted">'+e(help)+'</p>'+((social||hunters||selected==='erencha'||selected==='murim')?'<label>봇 설정 해석·추가 요청 (선택)<textarea id="social-instructions" rows="4" placeholder="'+e(selected==='murim'?'예: 외공을 단련하는 낭인. 문파와 비전은 원문을 따라 줘.':selected==='erencha'?'예: 요리와 상업 숙련도를 중심으로 시작하고 싶어.':hunters?'예: 사용자 인물은 원문 설정의 랭크와 기술을 기준으로 준비해 줘.':'예: 궁정 사교를 중심으로, 명예는 개인의 평판으로 해석해 줘.')+'">'+e(this.rulebookPrompt())+'</textarea></label><p class="muted">'+(selected==='murim'?'경지·기술·비전과 재능은 설정에서 한 번 준비합니다. 이후 성장과 재능은 재구축으로 초기화하지 않습니다.':selected==='erencha'?'원본에 없는 숙련도·자원·기술 값만 보완합니다. 캐릭터 레벨과 숙련도 등급은 별개입니다.':hunters?'비워 두면 원본 헌터 규칙과 내장 인물을 사용합니다. 사용자 인물과 선택한 자료의 추가 설정을 반영합니다.':'비워 두면 기본 룰북을 사용합니다. 인물·관계·초기값과 체력 설정에 반영합니다.')+'</p>':'')+(this.info?.state && this.currentRulebook()!==selected?'<p class="muted">다른 룰북을 적용하면 새 규칙의 초기 상태로 시작합니다. 이전 게임은 저장·복구의 버전 기록에 남습니다.</p>':'')+'</section>';
@@ -23484,6 +23870,7 @@ class UI {
   bind() {
     const on = (id, fn) => document.getElementById(id)?.addEventListener('click', () => this.act(fn));
     require('./api-settings-ui.js').bind(this);
+    require('./chat-presentation-ui.js').bind(this,on);
     require('./nyunyu-ui.js').bind(this);
     require('./skill-authoring.js').bind(this);
     require('./rules-ui.js').bind(this,on);
@@ -23577,6 +23964,7 @@ class UI {
         await this.app.compiler.apply(this.info.scope,this.job.id,{
           bindingAcknowledged:true,agency:'inherit',anchor
         });
+        await this.app.moduleBridge.save(this.info.scope,{rulebook:this.selectedRulebook()});
         this.clearEditors();
         this.rulebookChoice=null;
         this.notify('시스템을 적용했습니다.');
@@ -23835,8 +24223,112 @@ module.exports = {
 },
 "./version.js":function(module,exports,require){
 'use strict';
-module.exports={VERSION:'0.21.1'};
+module.exports={VERSION:'0.22.2'};
+
+},
+"./vertex-auth.js":function(module,exports,require){
+'use strict';
+const {assert,hash,RPGError}=require('./util.js');
+const TOKEN_URL='https://oauth2.googleapis.com/token';
+const SCOPE='https://www.googleapis.com/auth/cloud-platform';
+const MAX_FILE_SIZE=65536;
+const cancelled=()=>new RPGError('CANCELLED','요청을 취소했습니다.');
+function waiting(signal){if(signal?.aborted)throw cancelled();}
+function account(input){
+  let value=input;
+  if(typeof input==='string'){
+    assert(input.length<=MAX_FILE_SIZE,'VERTEX_ACCOUNT','서비스 계정 JSON 파일이 너무 큽니다.');
+    try{value=JSON.parse(input.replace(/^\uFEFF/,''));}catch{throw new RPGError('VERTEX_ACCOUNT','서비스 계정 JSON 파일을 읽지 못했습니다. Google Cloud에서 받은 키 파일을 선택하세요.');}
+  }
+  assert(value&&value.type==='service_account','VERTEX_ACCOUNT','type이 service_account인 Google 서비스 계정 키 JSON을 선택하세요.');
+  assert(typeof value.project_id==='string'&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value.project_id),'VERTEX_ACCOUNT','서비스 계정 JSON에 올바른 project_id가 필요합니다.');
+  assert(typeof value.client_email==='string'&&value.client_email.length<=254&&/^[^\s@]+@[^\s@]+\.gserviceaccount\.com$/.test(value.client_email),'VERTEX_ACCOUNT','서비스 계정 JSON에 올바른 client_email이 필요합니다.');
+  assert(typeof value.private_key==='string'&&value.private_key.length<=16000,'VERTEX_ACCOUNT','서비스 계정 JSON에 private_key가 필요합니다.');
+  const pem=value.private_key.replace(/\r\n/g,'\n').trim();
+  assert(/^-----BEGIN PRIVATE KEY-----\s+[A-Za-z0-9+/=\s]+\s+-----END PRIVATE KEY-----$/.test(pem),'VERTEX_ACCOUNT','서비스 계정의 PEM 비밀 키 형식이 올바르지 않습니다.');
+  assert(value.private_key_id==null||typeof value.private_key_id==='string'&&/^[A-Za-z0-9_-]{1,200}$/.test(value.private_key_id),'VERTEX_ACCOUNT','서비스 계정의 private_key_id 형식을 확인하세요.');
+  // Copy only the key fields. A file cannot choose a token server or delegate a user.
+  return {type:'service_account',project_id:value.project_id,client_email:value.client_email,private_key:pem,...(value.private_key_id?{private_key_id:value.private_key_id}:{})};
+}
+async function signingKey(value){
+  assert(globalThis.crypto?.subtle,'CRYPTO_UNAVAILABLE','이 환경에서는 서비스 계정 서명 기능을 사용할 수 없습니다.');
+  try{
+    const binary=atob(value.private_key.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g,''));
+    const bytes=Uint8Array.from(binary,c=>c.charCodeAt(0));
+    return await globalThis.crypto.subtle.importKey('pkcs8',bytes,{name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['sign']);
+  }catch{throw new RPGError('VERTEX_ACCOUNT','서비스 계정의 RSA 비밀 키를 읽지 못했습니다. Google Cloud의 JSON 키 파일을 다시 선택하세요.');}
+}
+async function importAccount(input){const value=account(input);await signingKey(value);return value;}
+function base64url(input){
+  const bytes=typeof input==='string'?new TextEncoder().encode(input):new Uint8Array(input);
+  let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);
+  return btoa(binary).replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
+}
+async function issue(value,{fetcher,transport,timeoutMs},signal){
+  waiting(signal);
+  const key=await signingKey(value),issuedAt=Math.floor(Date.now()/1000);
+  const header={alg:'RS256',typ:'JWT',...(value.private_key_id?{kid:value.private_key_id}:{})};
+  const claims={iss:value.client_email,scope:SCOPE,aud:TOKEN_URL,iat:issuedAt,exp:issuedAt+3600};
+  const unsigned=base64url(JSON.stringify(header))+'.'+base64url(JSON.stringify(claims));
+  let signature;
+  try{signature=await globalThis.crypto.subtle.sign('RSASSA-PKCS1-v1_5',key,new TextEncoder().encode(unsigned));}
+  catch{throw new RPGError('VERTEX_AUTH','서비스 계정 인증 서명을 만들지 못했습니다.');}
+  waiting(signal);
+  const body=new URLSearchParams({grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer',assertion:unsigned+'.'+base64url(signature)}).toString();
+  const started=Date.now();
+  let response,raw;
+  try{
+    response=await fetcher(TOKEN_URL,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body,redirect:'error',credentials:'omit',referrerPolicy:'no-referrer',signal,...(transport==='native'?{requestTimeoutMs:Math.min(timeoutMs,2147483647)}:{}),logFetch:false});
+    waiting(signal);
+    assert(!response.redirected&&(!response.url||new URL(response.url).origin===new URL(TOKEN_URL).origin),'VERTEX_AUTH','Google 인증 서버의 응답 주소가 다릅니다.');
+    raw=await response.text();
+  }catch(error){
+    waiting(signal);
+    if(error instanceof RPGError)throw error;
+    // A transport exception may include the signed assertion. Never echo it.
+    throw new RPGError('VERTEX_AUTH_NETWORK','Google 인증 서버에 연결하지 못했습니다. 전송 방식과 네트워크를 확인하세요.');
+  }
+  waiting(signal);
+  let data;try{if(raw.length<=65536)data=JSON.parse(raw);}catch{}
+  if(!response.ok){
+    const hint=data?.error==='invalid_grant'?'서비스 계정 키가 유효한지와 기기의 날짜·시간을 확인하세요.':data?.error==='invalid_client'?'서비스 계정이 삭제되거나 키가 폐기되지 않았는지 확인하세요.':'서비스 계정 키와 Google Cloud 설정을 확인하세요.';
+    throw new RPGError('VERTEX_AUTH','Google 토큰 발급 실패 (HTTP '+response.status+'). '+hint);
+  }
+  assert(data&&typeof data.access_token==='string'&&data.access_token.length>0&&data.access_token.length<16000&&!/[\s]/.test(data.access_token)&&/^Bearer$/i.test(data.token_type)&&Number.isFinite(data.expires_in)&&data.expires_in>0,'VERTEX_AUTH','Google 인증 응답에서 유효한 토큰·만료 시간을 읽지 못했습니다.');
+  return {token:data.access_token,expiresAt:started+Math.min(data.expires_in,3600)*1000};
+}
+function until(promise,signal){
+  waiting(signal);
+  if(!signal)return promise;
+  return new Promise((resolve,reject)=>{
+    const abort=()=>reject(cancelled());signal.addEventListener('abort',abort,{once:true});
+    promise.then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));
+  });
+}
+class VertexAuth {
+  constructor(){this.cache=new Map();}
+  async token(input,transport,signal){
+    const value=account(input),id=await hash(value);waiting(signal);
+    let entry=this.cache.get(id);
+    if(entry?.token&&entry.expiresAt>Date.now()+60000)return entry.token;
+    if(!entry){
+      // Only credential fingerprints and short-lived tokens are cached, never PEMs.
+      for(const [key,old] of this.cache)if(!old.pending&&(old.expiresAt<=Date.now()||this.cache.size>=8))this.cache.delete(key);
+      entry={token:'',expiresAt:0,pending:null,users:0};this.cache.set(id,entry);
+    }
+    if(!entry.pending){
+      entry.controller=new AbortController();const controller=entry.controller;
+      entry.pending=issue(value,transport,controller.signal).then(result=>{waiting(controller.signal);Object.assign(entry,result);return result.token;}).finally(()=>{entry.pending=null;entry.controller=null;});
+    }
+    entry.users++;
+    try{return await until(entry.pending,signal);}
+    finally{entry.users--;if(!entry.users&&entry.pending){entry.controller.abort();if(this.cache.get(id)===entry)this.cache.delete(id);}}
+  }
+  invalidate(token){for(const entry of this.cache.values())if(entry.token===token)entry.expiresAt=0;}
+  clear(){for(const entry of this.cache.values())entry.controller?.abort();this.cache.clear();}
+}
+module.exports={account,importAccount,VertexAuth,MAX_FILE_SIZE};
 
 }};const __cache={};function require(id){if(__cache[id])return __cache[id].exports;if(!__modules[id])throw new Error("Unknown local module "+id);const m={exports:{}};__cache[id]=m;__modules[id](m,m.exports,require);return m.exports;}
-const {App}=require("./app.js"),{UI}=require("./ui.js");const app=new App(Risuai),ui=new UI(app,"/* NyoruRPG UI · refined draft. Palette unchanged; only layering, spacing and sizing tokens added. */\r\n:root{\r\n  color-scheme:dark;font:14px/1.65 Inter,'Pretendard','Noto Sans KR',system-ui,'Malgun Gothic',sans-serif;\r\n  --bg:#252422;--sidebar:#211f1d;--surface:#302e2b;--panel:#34312e;--field:#282624;--inset:#292725;\r\n  --text:#fffcf2;--muted:#ccc5b9;--border:#554f48;--border-strong:#797168;\r\n  --button:#403d39;--hover:#504a43;--primary:#eb5e28;--primary-text:#252422;--primary-hover:#f47d51;\r\n  --accent:#ffb28e;--accent-bg:#49352d;--accent-border:#a77862;--focus:#f6b896;\r\n  --good:#bcd9bc;--good-bg:#293a2e;--good-border:#57705b;\r\n  --danger:#ffb6b2;--danger-bg:#4b2d2c;--danger-border:#ab6c66;--shadow:#0004;\r\n  --hl:#ffffff0a;--meter:linear-gradient(90deg,var(--primary),var(--accent));\r\n  --h-sm:30px;--h-md:36px;--side:244px;--ease:.15s ease;\r\n  --line:var(--border);background:var(--bg);color:var(--text)\r\n}\r\n:root[data-theme=\"light\"]{\r\n  color-scheme:light;--bg:#faf7ef;--sidebar:#f4eddf;--surface:#fffdf7;--panel:#fffaf0;--field:#fffdf8;--inset:#f5f0e6;\r\n  --text:#403d39;--muted:#71695f;--border:#d8cebf;--border-strong:#aca08f;\r\n  --button:#f3ecdf;--hover:#eadfcd;--primary:#f4bfbf;--primary-text:#403d39;--primary-hover:#f6b896;\r\n  --accent:#3b627d;--accent-bg:#e2edf2;--accent-border:#8caebf;--focus:#3b627d;\r\n  --good:#3e6249;--good-bg:#e6efdf;--good-border:#a3b795;\r\n  --danger:#9d3839;--danger-bg:#f9e5e1;--danger-border:#ce9890;--shadow:#403d391a;\r\n  --hl:#ffffffb3;--meter:linear-gradient(90deg,var(--accent-border),var(--accent))\r\n}\r\n*{box-sizing:border-box}body{margin:0;min-width:0;-webkit-font-smoothing:antialiased}button,input,textarea,select{font:inherit}\r\n\r\n/* Buttons: two fixed heights (sm/md) shared by every control. */\r\nbutton{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:var(--h-md);padding:5px 14px;border:1px solid var(--border);border-radius:8px;background:var(--button);color:var(--text);font-size:13px;font-weight:550;line-height:1.4;cursor:pointer;box-shadow:inset 0 1px 0 var(--hl);transition:background-color var(--ease),border-color var(--ease),color var(--ease)}\r\nbutton:hover:not(:disabled){background:var(--hover);border-color:var(--border-strong)}button:active:not(:disabled){transform:translateY(1px)}button:disabled{opacity:.42;cursor:default}\r\nbutton.primary{background:var(--primary);color:var(--primary-text);border-color:transparent;font-weight:700}button.primary:hover:not(:disabled){background:var(--primary-hover);border-color:transparent}\r\nbutton.subtle{background:transparent;box-shadow:none}\r\nbutton.danger,button.danger:hover:not(:disabled){color:var(--danger);border-color:var(--danger-border);background:var(--danger-bg)}\r\n.top-actions button,.panel-head>button,.play-card-head button,.play-list-row>button,.play-gear button,.fx-heading button,.fx-groups button,.fx-detail button,.source-preview-button,td button{min-height:var(--h-sm);padding:3px 11px;font-size:12px}\r\n:focus-visible{outline:2px solid var(--focus);outline-offset:2px}\r\n\r\n/* Fields */\r\ninput,textarea,select{width:100%;max-width:100%;min-width:0;padding:9px 12px;border:1px solid var(--border-strong);border-radius:8px;background:var(--field);color:var(--text);font-size:14px;font-weight:400;transition:border-color var(--ease),box-shadow var(--ease)}\r\ninput:hover,textarea:hover,select:hover{border-color:var(--accent-border)}\r\ninput:focus-visible,textarea:focus-visible,select:focus-visible{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}\r\ninput::placeholder,textarea::placeholder{color:var(--muted);opacity:1}\r\ninput[type=checkbox]{width:20px;height:20px;padding:0;accent-color:var(--accent);vertical-align:middle;flex-shrink:0}\r\ntextarea{min-height:110px;resize:vertical;line-height:1.7}\r\nlabel{display:block;font-size:12.5px;font-weight:550;color:var(--muted)}label input,label select,label textarea{margin-top:6px}label+label{margin-top:14px}.fields>label+label{margin-top:0}\r\n\r\n/* Type */\r\nh1,h2,h3,p{overflow-wrap:anywhere}h2{margin:0 0 16px;font-size:18px;line-height:1.45;font-weight:700;letter-spacing:-.2px}h3{margin:0 0 10px;font-size:15px;line-height:1.55;font-weight:650}p{margin:10px 0 16px}\r\n.muted,small{color:var(--muted)}small{font-size:12px}.spaced{margin-top:18px}.hidden,[hidden]{display:none!important}\r\n.panel>h2,h2:has(+.cards),.panel-head{display:flex;align-items:center;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--border)}\r\n.panel>h2::before,h2:has(+.cards)::before,.panel-head>h2::before{content:'';flex-shrink:0;width:3px;height:1.05em;border-radius:2px;background:var(--accent)}\r\n.panel-head{justify-content:space-between;margin:0 0 16px}.panel-head>h2{display:flex;align-items:center;gap:10px;min-width:0;margin:0}.panel-head>button{flex-shrink:0}\r\n.cards+h2{margin-top:8px}\r\n\r\n/* Shell */\r\n.shell{display:grid;grid-template-columns:var(--side) minmax(0,1fr);height:100vh;height:100dvh;overflow:hidden}\r\n.sidebar{position:sticky;top:0;display:flex;flex-direction:column;gap:20px;height:100vh;height:100dvh;min-width:0;padding:22px 12px 16px;background:var(--sidebar);border-right:1px solid var(--border)}\r\n.sidebar-brand{padding:0 8px}.brand{display:flex;align-items:center;gap:10px}\r\n.brand-mark{display:grid;place-items:center;flex-shrink:0;width:32px;height:32px;border:1px solid var(--accent-border);border-radius:9px;background:var(--accent-bg);color:var(--accent);font-size:16px;line-height:1}\r\n.brand h1{margin:0;font-size:18px;line-height:1.3;font-weight:750;letter-spacing:-.4px}\r\n.nav{display:flex;flex-direction:column;gap:14px;min-height:0;overflow-y:auto;scrollbar-width:thin}.nav-group{display:grid;gap:2px}\r\n.nav-label{padding:0 12px 4px;color:var(--muted);font-size:10.5px;font-weight:650;letter-spacing:.08em;opacity:.8}\r\n.nav button{position:relative;justify-content:flex-start;width:100%;min-height:38px;padding:0 12px;border:0;background:transparent;box-shadow:none;color:var(--muted);font-size:13.5px;font-weight:500;text-align:left}\r\n.nav button:hover{background:var(--button);color:var(--text)}\r\n.nav button.selected{background:var(--accent-bg);color:var(--accent);font-weight:650}\r\n.nav button.selected::before{content:'';position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:var(--accent)}\r\n.theme-picker{display:flex;gap:3px;margin-top:auto;padding:3px;border:1px solid var(--border);border-radius:10px;background:var(--field)}\r\n.theme-picker button{flex:1;min-height:30px;padding:0 6px;border:0;background:transparent;box-shadow:none;color:var(--muted);font-size:12px;white-space:nowrap}\r\n.theme-picker button[aria-pressed=\"true\"]{background:var(--button);color:var(--text);box-shadow:0 1px 3px var(--shadow),inset 0 1px 0 var(--hl)}\r\n.content{width:100%;height:100%;min-width:0;min-height:0;max-width:1450px;margin:0 auto;padding:0 32px 90px;overflow-y:auto}\r\n.top{position:sticky;top:0;z-index:30;display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:24px;padding:22px 0 16px;background:var(--bg);border-bottom:1px solid var(--border)}\r\n.context-block{flex:1;min-width:0}.chat-context{margin:0 0 8px;font-size:22px;line-height:1.35;font-weight:750;letter-spacing:-.5px}\r\n.context-status{display:flex;flex-wrap:wrap;align-items:center;gap:6px;color:var(--muted);font-size:12px}\r\n.context-status span{display:inline-flex;align-items:center;min-height:22px;padding:0 9px;border:1px solid var(--border);border-radius:99px;background:var(--inset)}\r\n.context-status span:first-child{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent)}\r\n.top-actions{flex-shrink:0}.row,.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.toolbar{margin-bottom:14px}.row>*{min-width:0}\r\n\r\n/* Surfaces */\r\n.panel{min-width:0;margin:0 0 18px;padding:22px 24px;background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:inset 0 1px 0 var(--hl),0 1px 2px var(--shadow)}\r\n.card{min-width:0;padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:12px;transition:border-color var(--ease)}.card:hover{border-color:var(--border-strong)}.card+.card{margin-top:12px}\r\n.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-bottom:22px}.cards>.card{margin:0}\r\n.grid,.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 18px}.wide{grid-column:1/-1}.split{display:grid;grid-template-columns:1.15fr 1fr;gap:20px;align-items:start}.split>.panel{min-width:0}\r\n.badge,.tag{display:inline-flex;align-items:center;min-height:22px;padding:0 9px;border:1px solid var(--border-strong);border-radius:99px;background:var(--inset);color:var(--muted);font-size:11px;font-weight:600;line-height:1.4;white-space:nowrap}.badge{font-size:12px}\r\n.number,.stat strong,td{font-variant-numeric:tabular-nums}\r\n.stat{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-top:12px;font-size:13px}.stat span{color:var(--muted)}.stat strong,.stat b{font-weight:650}\r\n.bar,.play-meter{height:7px;margin:7px 0 14px;overflow:hidden;border-radius:99px;background:var(--inset);box-shadow:inset 0 0 0 1px var(--border)}.bar span,.play-meter>span{display:block;height:100%;border-radius:inherit;background:var(--meter)}\r\n.metric{margin:5px 0;color:var(--accent);font-size:28px;line-height:1.2;font-weight:700}\r\n.notice{margin:0 0 18px;padding:13px 16px;border:1px solid var(--accent-border);border-left-width:3px;border-radius:10px;background:var(--accent-bg);line-height:1.7;overflow-wrap:anywhere}\r\n.success{border-color:var(--good-border);background:var(--good-bg);color:var(--good)}.error{border-color:var(--danger-border);background:var(--danger-bg);color:var(--danger)}\r\n#feedback{position:fixed;right:24px;bottom:20px;z-index:80;width:max-content;max-width:min(670px,calc(100vw - 32px));max-height:32vh;margin:0;padding:12px 18px;overflow:auto;box-shadow:0 8px 28px var(--shadow);white-space:pre-wrap}#feedback:empty{display:none}\r\n.empty{margin-bottom:18px;padding:56px 24px;border:1px dashed var(--border-strong);border-radius:14px;background:transparent;box-shadow:none;color:var(--muted);text-align:center}\r\n.empty::before{content:'◈';display:block;margin-bottom:10px;color:var(--accent-border);font-size:22px;line-height:1}\r\ndetails>summary{padding:7px 0;color:var(--text);font-weight:550;line-height:1.7;cursor:pointer}summary::marker{color:var(--accent)}details[open]>summary{margin-bottom:10px}\r\n.panel details.spaced{padding-top:8px;border-top:1px solid var(--border)}\r\npre{max-height:420px;padding:14px 16px;overflow:auto;border:1px solid var(--border);border-radius:10px;background:var(--inset);white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,Consolas,monospace}\r\n.scroll{max-width:100%;overflow:auto;border:1px solid var(--border);border-radius:10px;scrollbar-width:thin}table{width:100%;border-collapse:collapse;font-size:13px}\r\nth,td{padding:11px 12px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:var(--inset);color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap}tbody tr:last-child>td{border-bottom:0}tbody tr:hover{background:var(--inset)}\r\nol>li.selected{color:var(--accent);font-weight:650}\r\n\r\n/* Setup & sources */\r\n.sourcelist{max-height:520px;margin:0 0 14px;overflow:auto;border:1px solid var(--border);border-radius:10px;background:var(--surface);scrollbar-width:thin}.source{position:relative;border-bottom:1px solid var(--border)}.source:last-child{border-bottom:0}\r\n.source input[type=checkbox]{position:absolute;left:12px;top:13px;z-index:1;width:26px;height:26px;margin:0;cursor:pointer}.source details{min-width:0}\r\n.source summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:54px;margin:0;padding:12px 12px 12px 50px;list-style:none;font-weight:400;overflow-wrap:anywhere}\r\n.source summary::-webkit-details-marker{display:none}.source summary:hover{background:var(--inset)}.source summary:focus-visible{outline-offset:-3px}.source-name{min-width:0;color:var(--text);font-size:13px}.source-hint{flex-shrink:0;color:var(--muted);font-size:12px}.source-hint:before{content:'▸ ';color:var(--accent)}.source details[open] .source-hint:before{content:'▾ '}.source pre{max-height:260px;margin:0 12px 14px 50px}\r\n.source-choice{display:flex;align-items:center;gap:12px;min-height:54px;padding:12px 12px 12px 50px;cursor:pointer}.source-choice .source-name{flex:1}.source-choice:has(input:checked){background:var(--accent-bg)}\r\n.choice,.partial-catalog{display:flex;align-items:flex-start;gap:10px}.choice{padding:10px 0;color:var(--text);font-weight:400;font-size:13px;cursor:pointer;overflow-wrap:anywhere}.choice input[type=checkbox],.partial-catalog input[type=checkbox]{width:22px;height:22px;margin:0}\r\n.draft-editor{margin-bottom:18px;padding:16px;border:1px solid var(--border);border-radius:10px}.draft-editor>summary{font-weight:650}.draft-json{min-height:360px;tab-size:2;white-space:pre;overflow:auto;font:12px/1.65 ui-monospace,Consolas,monospace}.design-brief{min-height:260px;line-height:1.8}.draft-error{overflow-wrap:anywhere}.draft-error pre{white-space:pre-wrap}.draft-error p{margin:8px 0}\r\n.initial-actors{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;max-height:320px;padding:12px;overflow:auto;border:1px solid var(--border);border-radius:10px}.initial-actors legend{padding:0 6px;color:var(--muted)}\r\n.initial-actors label{display:flex;align-items:flex-start;gap:10px;margin:0;padding:10px;border-radius:8px;background:var(--inset);color:var(--text);font-weight:400;cursor:pointer}.initial-actors input[type=checkbox]{width:22px;height:22px;margin:0}.initial-actors span{min-width:0;overflow-wrap:anywhere}.initial-actors small{display:block;font-size:11px}\r\n.issue-choice{margin:14px 0;padding:16px;border:1px solid var(--accent-border);border-radius:10px;background:var(--accent-bg);overflow-wrap:anywhere}.issue-choice p{margin:8px 0}.issue-choice small{display:block;margin-top:8px}\r\n\r\n/* Editors */\r\n.item-editor-row>td{padding:12px 0 20px}.item-editor{padding:18px;border:1px solid var(--accent-border);border-radius:12px;background:var(--surface)}.item-editor-body{min-width:0;margin:0;padding:0;border:0}.item-editor-body>legend{margin-bottom:18px;padding:0;font-size:16px;font-weight:650}\r\n.item-editor h4{margin:20px 0 12px;font-size:14px}.item-editor textarea{min-height:80px}.item-editor-actions{margin-top:22px}.item-editor .fields+.fields{margin-top:16px}\r\n.item-slots{display:flex;flex-wrap:wrap;gap:12px 18px;margin:22px 0 0;padding:14px;border:1px solid var(--border);border-radius:10px}.item-slots legend{padding:0 6px;color:var(--muted)}.item-slots label{display:flex;align-items:center;gap:8px;margin:0;color:var(--text);font-weight:400;cursor:pointer}.item-slots input{margin:0}\r\n.item-effect{min-width:0;margin:0 0 12px;padding:12px;border:1px solid var(--border);border-radius:10px}.item-effect legend{padding:0 6px;color:var(--muted)}.item-effect-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px}.item-effect-fields>label+label{margin-top:0}.item-effect-footer{justify-content:flex-end;margin-top:12px}.item-effect-footer small{margin-right:auto}.item-ammo>.fields{margin:14px 0}\r\n.editor-workspace{max-width:960px;margin:18px auto;scroll-margin-top:145px}.editor-workspace .item-editor-body>legend{margin-bottom:4px}.editor-brief{margin:0 0 18px;color:var(--muted);font-size:12px}\r\n.editor-tabs{display:flex;flex-wrap:wrap;gap:3px;margin:0 0 18px;padding:3px;border:1px solid var(--border);border-radius:10px;background:var(--inset)}\r\n.editor-tabs button{min-height:32px;padding:0 14px;border-color:transparent;background:transparent;box-shadow:none;color:var(--muted)}\r\n.editor-tabs button[aria-selected=\"true\"]{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent);font-weight:650}\r\n.editor-page{min-height:190px}.editor-page>section+section{margin-top:18px;padding-top:14px;border-top:1px solid var(--border)}.editor-page .fields{gap:12px 18px}.editor-page .fields+.fields{margin-top:14px}.editor-page section>h4:first-child{margin-top:0}\r\n.editor-workspace .item-editor-actions{position:sticky;bottom:0;z-index:4;margin-top:20px;padding:14px 0 4px;border-top:1px solid var(--border);background:var(--surface)}.editor-delete{margin-left:auto;color:var(--muted)}\r\n.fx-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0 10px}.fx-heading h4{margin:0;font-size:14px}.fx-heading h4 small{margin-left:5px;font-weight:400}\r\n.fx-targets{padding-bottom:10px;border-bottom:1px solid var(--border)}.fx-targets>summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;font-weight:650}.fx-targets>summary:before{content:'▸';color:var(--muted)}.fx-targets[open]>summary:before{content:'▾'}.fx-targets>summary span{color:var(--muted);font-size:12px;font-weight:400}\r\n.fx-targets .fx-chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.fx-chips .choice{align-items:center;gap:7px;margin:0;padding:5px 11px;border:1px solid var(--border);border-radius:99px;background:var(--field)}.fx-chips .choice:has(input:checked){border-color:var(--accent-border);background:var(--accent-bg)}.fx-chips input[type=checkbox]{width:18px;height:18px}.fx-activation{max-width:330px;margin:12px 0}.fx-targets .choice{align-items:center}\r\n.fx-list{display:grid;gap:8px}.fx-entry{min-width:0;overflow:hidden;border:1px solid var(--border);border-radius:10px;background:var(--field)}.fx-entry.is-open{border-color:var(--accent-border)}\r\n.fx-summary{justify-content:space-between;gap:14px;width:100%;min-height:0;padding:12px 14px;border:0;border-radius:0;background:transparent;box-shadow:none;text-align:left;font-weight:400}.fx-summary>span:first-child{min-width:0}.fx-summary strong{display:block;font-size:14px}.fx-summary small{display:block;margin-top:2px;line-height:1.7;overflow-wrap:anywhere}.fx-summary .fx-edit-label{flex-shrink:0;color:var(--accent);font-size:12px;white-space:nowrap}.fx-entry.is-open>.fx-summary{background:var(--accent-bg)}\r\n.fx-detail{padding:16px;border-top:1px solid var(--border)}.fx-detail .item-effect{margin:0;padding:0;border:0}.fx-detail .item-effect>legend{display:none}.fx-detail .item-effect-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 18px}\r\n.fx-detail button[data-skill-effect-remove],.fx-detail button[data-item-effect-remove],.fx-detail button[data-erencha-effect-remove],.fx-detail button[data-fx-remove]{margin-top:14px;color:var(--muted)}\r\n.fx-advanced{margin:14px 0 10px;padding-top:6px;border-top:1px solid var(--border)}.fx-advanced>summary,.fx-save-preset>summary{color:var(--muted);font-size:12px}.fx-empty{margin:0;padding:22px 12px;border:1px dashed var(--border);border-radius:10px;color:var(--muted);font-size:13px;text-align:center}\r\n.fx-save-preset{margin-top:14px}.fx-save-preset .toolbar{align-items:flex-end}.fx-save-preset label{flex:1;max-width:420px}\r\n.fx-library{margin:10px 0 16px;padding:14px;border:1px solid var(--accent-border);border-radius:10px;background:var(--surface)}.fx-library>.fx-heading{margin:0 0 8px}.fx-library .fx-search{font-size:12px}.fx-library p{margin:12px 0 0;font-size:12px}\r\n.fx-groups{display:flex;flex-wrap:wrap;gap:5px;margin:12px 0}.fx-groups button{border-radius:99px;background:transparent;box-shadow:none}.fx-groups button[aria-pressed=\"true\"]{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent)}\r\n.fx-library-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;max-height:290px;overflow-y:auto;scrollbar-width:thin}\r\n.fx-pick{display:block;min-height:0;padding:10px 12px;background:var(--field);text-align:left;font-weight:400}.fx-pick strong{font-size:13px}.fx-pick small{display:-webkit-box;margin-top:4px;overflow:hidden;font-size:11px;line-height:1.6;-webkit-line-clamp:2;-webkit-box-orient:vertical}\r\nfooter{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);color:var(--muted);font-size:11px;letter-spacing:.04em}\r\n\r\n/* Play pages */\r\n.play-name{margin:22px 0 16px;font-size:22px;letter-spacing:-.4px}\r\n.play-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:16px 0}\r\n.play-facts>div{min-width:0;padding:10px 14px;border:1px solid var(--border);border-radius:10px;background:var(--inset)}\r\n.play-facts dt{margin-bottom:2px;color:var(--muted);font-size:11.5px}.play-facts dd{margin:0;font-size:18px;font-weight:650;line-height:1.4;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}\r\n.play-wallet dd{color:var(--accent);font-size:22px}\r\n.play-traits{margin:18px 0}.play-traits-three{grid-template-columns:repeat(3,minmax(0,1fr))}.play-traits-three>div:nth-child(2){text-align:center}.play-traits-three>div:nth-child(3){text-align:right}\r\n.play-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:20px 0}\r\n.play-stat{position:relative;display:flex;flex-direction:column;gap:4px;min-width:0;padding:16px 18px;overflow:hidden;border:1px solid var(--border);border-radius:12px;background:var(--surface);transition:border-color var(--ease)}\r\n.play-stat::before{content:'';position:absolute;inset:0 0 auto;height:2px;background:var(--meter);opacity:.75}.play-stat:hover{border-color:var(--border-strong)}\r\n.play-stat>span{color:var(--muted);font-size:12.5px}.play-stat>strong{font-size:28px;line-height:1.25;font-weight:700;font-variant-numeric:tabular-nums}.play-stat>small{line-height:1.6}.play-growth{margin-top:auto;padding-top:10px}.play-growth .play-meter{margin-bottom:0}\r\n.play-relations{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px}\r\n.play-relation{padding:18px;border:1px solid var(--border);border-radius:12px;background:var(--surface)}.play-relation h3{margin:0 0 14px}.play-relation .play-facts{margin:0}.play-relation .play-facts dd{font-size:22px}\r\nbutton.play-person-link{min-height:0;padding:0;border:0;background:none;box-shadow:none;color:var(--text);font-size:16px;font-weight:650;text-align:left}\r\nbutton.play-person-link:hover:not(:disabled){background:none;color:var(--accent);text-decoration:underline;text-underline-offset:4px}\r\n.play-card-head,.play-list-row{display:flex;align-items:center;justify-content:space-between;gap:14px}.play-card-head>*,.play-list-row>*{min-width:0}.play-card-head h3{margin:0}\r\n.play-card-head>button,.play-card-head>.tag,.play-card-head>.row{flex-shrink:0}.play-card-head .row{justify-content:flex-end;gap:6px}\r\n.play-list-row{padding:14px 0;border-bottom:1px solid var(--border)}.play-list-row:last-child{border-bottom:0}.play-list-row small{display:block;margin-top:4px}.play-list-row>button,.play-list-row>.tag{flex-shrink:0}\r\n.play-stakes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.play-stakes p{margin:0;padding:14px 16px;border:1px solid var(--border);border-radius:10px;background:var(--inset)}.play-stakes small{display:block;margin-bottom:6px}\r\n.play-skills,.play-items{display:grid;gap:12px}\r\n.play-skill,.play-item{min-width:0;padding:18px;border:1px solid var(--border);border-radius:12px;background:var(--surface);transition:border-color var(--ease)}.play-skill:hover,.play-item:hover{border-color:var(--border-strong)}\r\n.play-skill h3 small{font-weight:400}.play-skill .play-facts dd{font-size:14px}.play-skill-growth{padding-top:12px;border-top:1px solid var(--border);color:var(--muted);font-size:12px}\r\n.play-item>p:last-child{margin-bottom:0}.play-item .item-editor{margin-top:18px}.play-inline-editor{min-width:0}.play-inline-editor .item-editor{border-color:var(--accent-border)}\r\n.play-equipment{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}\r\n.play-gear{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:14px;row-gap:2px;padding:14px 16px;border:1px solid var(--border);border-left:3px solid var(--accent-border);border-radius:10px;background:var(--surface)}\r\n.play-gear small,.play-gear b{grid-column:1;overflow-wrap:anywhere}.play-gear button{grid-column:2;grid-row:1/3}\r\n.play-turns{display:flex;flex-wrap:wrap;gap:8px;margin:0;padding:0;list-style:none}.play-turns li{display:flex;align-items:center;gap:12px;min-width:150px;padding:12px 16px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}\r\n.play-turns li[aria-current=\"step\"]{border-color:var(--accent-border);background:var(--accent-bg)}.play-turns small{display:block}.play-turn-number{color:var(--accent);font-size:20px;font-weight:700}.play-budget{margin-bottom:0;font-size:12px}\r\n.play-paths{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.play-paths>div{padding:13px 14px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}.play-paths small{display:block;margin-top:3px}\r\n[data-scheme-card]{scroll-margin-top:130px}\r\n\r\n/* Mini window & dialogs */\r\n.mini-shell{max-width:640px;height:100vh;height:100dvh;margin:auto;padding:12px 16px 40px;overflow-y:auto}.mini-shell .top{top:0}.mini-shell .panel{margin-bottom:12px;padding:14px}.mini-shell .play-facts{gap:6px}.mini-shell .play-facts dd{font-size:15px}.mini-shell details{padding:8px 0;border-bottom:1px solid var(--border)}\r\n.download-dialog{max-width:calc(100vw - 24px);padding:22px 24px;border:1px solid var(--border);border-radius:14px;background:var(--surface);color:var(--text);box-shadow:0 12px 40px var(--shadow)}.download-dialog::backdrop{background:#0008}\r\n.download-link{display:inline-flex;align-items:center;min-height:var(--h-md);padding:5px 14px;border-radius:8px;background:var(--primary);color:var(--primary-text);font-size:13px;font-weight:700;text-decoration:none}\r\nbody.editing .page-body{padding-bottom:calc(var(--editor-actions-height,90px) + 24px)}body.editing #feedback{bottom:calc(var(--editor-actions-height,90px) + 12px);max-height:25vh}\r\nbody.editing .item-editor-actions{position:fixed;bottom:0;left:var(--side);right:0;z-index:65;margin:0;padding:12px 24px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--border);background:var(--surface);box-shadow:0 -4px 18px var(--shadow)}\r\n\r\n@media(max-width:1150px){.split{grid-template-columns:minmax(0,1fr)}}\r\n@media(max-width:900px){\r\n  /* max-content rows: auto rows let the overflow-x nav collapse to 0 (original mobile bug). */\r\n  .shell{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:max-content max-content max-content 1fr;align-content:start;overflow-x:hidden;overflow-y:auto}\r\n  .sidebar,.content{display:contents}\r\n  .sidebar-brand{grid-column:1;grid-row:1;display:flex;align-items:center;padding:10px 14px;background:var(--sidebar)}.brand-mark{width:28px;height:28px;border-radius:8px;font-size:14px}.brand h1{font-size:16px}\r\n  .theme-picker{grid-column:2;grid-row:1;align-items:center;gap:0;margin:0;padding:0 14px 0 0;border:0;border-radius:0;background:var(--sidebar)}\r\n  .theme-picker button{flex:none;width:34px;min-height:30px;padding:0;border:1px solid var(--border);border-radius:0;background:var(--field);font-size:0}\r\n  .theme-picker button:first-child{border-radius:8px 0 0 8px}.theme-picker button:last-child{border-left:0;border-radius:0 8px 8px 0}.theme-picker button span{font-size:14px}.theme-picker button[aria-pressed=\"true\"]{background:var(--button)}\r\n  /* One scrollable tab strip; group labels stay visible and the right edge fades until the end. */\r\n  .nav{grid-column:1/-1;grid-row:2;position:sticky;top:0;z-index:50;flex-direction:row;align-items:center;gap:0;padding:6px 12px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--sidebar);border-bottom:1px solid var(--border);-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 36px),#0000);mask-image:linear-gradient(90deg,#000 calc(100% - 36px),#0000)}\r\n  .nav::-webkit-scrollbar{display:none}.nav[data-end=\"true\"]{-webkit-mask-image:none;mask-image:none}\r\n  .nav-group{display:flex;flex-shrink:0;align-items:center;gap:2px}.nav-group+.nav-group{margin-left:8px;padding-left:10px;border-left:1px solid var(--border)}\r\n  .nav-label{display:none}\r\n  .nav button{flex-shrink:0;width:auto;min-height:34px;padding:0 11px;white-space:nowrap}\r\n  .nav button.selected::before{top:auto;bottom:3px;left:11px;right:11px;width:auto;height:2px;border-radius:2px}\r\n  .top{grid-column:1/-1;grid-row:3;top:var(--mobile-nav-height,47px);z-index:45;flex-wrap:nowrap;gap:10px;margin:0;padding:10px 14px}\r\n  .chat-context{margin:0 0 4px;font-size:18px}.context-status{gap:4px;font-size:11px}.context-status span{min-height:20px;padding:0 7px}.top-actions{gap:5px}\r\n  .page-body{grid-column:1/-1;grid-row:4;min-width:0;padding:16px 12px 60px}\r\n  .cards{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}\r\n  body.editing .item-editor-actions{left:0;padding-left:12px;padding-right:12px}.editor-workspace{scroll-margin-top:155px}\r\n}\r\n@media(max-width:600px){\r\n  :root{--h-md:40px}\r\n  .chat-context{font-size:17px}\r\n  .grid,.fields,.cards,.play-relations,.play-equipment,.play-stakes{grid-template-columns:minmax(0,1fr)}.wide{grid-column:auto}\r\n  .panel{padding:16px;border-radius:12px}.card,.play-stat,.play-relation,.play-skill,.play-item{padding:15px}\r\n  .play-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.play-facts{grid-template-columns:repeat(auto-fit,minmax(100px,1fr))}.play-traits-three{gap:8px}.play-traits-three dd{font-size:16px}\r\n  .play-card-head{flex-wrap:wrap}.play-card-head>.row{margin-left:auto}.play-list-row{flex-wrap:wrap}.play-turns li{flex:1}\r\n  .toolbar button{flex:1 1 120px}.source summary{gap:8px}.source pre{margin-left:12px}.source-hint{font-size:11px}\r\n  th,td{padding:10px 8px}.scroll table{min-width:440px}#feedback{right:12px;bottom:12px;max-width:calc(100vw - 24px);padding:12px 15px}\r\n  .editor-workspace{margin:12px 0;padding:14px}.editor-tabs button{padding:0 10px;font-size:12px}.editor-workspace .item-editor-actions{gap:6px}\r\n  .fx-detail{padding:12px}.fx-detail .item-effect-fields,.editor-workspace .fields,.fx-library-grid{grid-template-columns:1fr}.fx-targets>summary span{flex-basis:100%;padding-left:22px}.fx-summary{padding:11px}\r\n}\r\n@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}\r\n\r\n/* In-plugin assistant, using the same palette and editor workflow. */\r\n.nyunyu-chat{max-width:960px}.nyunyu-messages{display:flex;flex-direction:column;gap:12px;margin:20px 0}.nyunyu-message{max-width:94%;padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:var(--inset)}.nyunyu-message.user{align-self:flex-end;background:var(--accent-bg);border-color:var(--accent-border)}.nyunyu-message.assistant{align-self:flex-start}.nyunyu-text{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:6px}.nyunyu-message button{white-space:normal;text-align:left}\r\n");try{await app.install(ui);}catch(error){await app.dispose();document.body.textContent="NyoruRPG 초기화 실패: "+(error.code?error.message:"호스트 기능·권한을 확인하세요.");try{await Risuai.showContainer("fullscreen");}catch{}}
+const {App}=require("./app.js"),{UI}=require("./ui.js");const app=new App(Risuai),ui=new UI(app,"/* NyoruRPG UI · refined draft. Palette unchanged; only layering, spacing and sizing tokens added. */\r\n:root{\r\n  color-scheme:dark;font:14px/1.65 Inter,'Pretendard','Noto Sans KR',system-ui,'Malgun Gothic',sans-serif;\r\n  --bg:#252422;--sidebar:#211f1d;--surface:#302e2b;--panel:#34312e;--field:#282624;--inset:#292725;\r\n  --text:#fffcf2;--muted:#ccc5b9;--border:#554f48;--border-strong:#797168;\r\n  --button:#403d39;--hover:#504a43;--primary:#eb5e28;--primary-text:#252422;--primary-hover:#f47d51;\r\n  --accent:#ffb28e;--accent-bg:#49352d;--accent-border:#a77862;--focus:#f6b896;\r\n  --good:#bcd9bc;--good-bg:#293a2e;--good-border:#57705b;\r\n  --danger:#ffb6b2;--danger-bg:#4b2d2c;--danger-border:#ab6c66;--shadow:#0004;\r\n  --hl:#ffffff0a;--meter:linear-gradient(90deg,var(--primary),var(--accent));\r\n  --h-sm:30px;--h-md:36px;--side:244px;--ease:.15s ease;\r\n  --line:var(--border);background:var(--bg);color:var(--text)\r\n}\r\n:root[data-theme=\"light\"]{\r\n  color-scheme:light;--bg:#faf7ef;--sidebar:#f4eddf;--surface:#fffdf7;--panel:#fffaf0;--field:#fffdf8;--inset:#f5f0e6;\r\n  --text:#403d39;--muted:#71695f;--border:#d8cebf;--border-strong:#aca08f;\r\n  --button:#f3ecdf;--hover:#eadfcd;--primary:#f4bfbf;--primary-text:#403d39;--primary-hover:#f6b896;\r\n  --accent:#3b627d;--accent-bg:#e2edf2;--accent-border:#8caebf;--focus:#3b627d;\r\n  --good:#3e6249;--good-bg:#e6efdf;--good-border:#a3b795;\r\n  --danger:#9d3839;--danger-bg:#f9e5e1;--danger-border:#ce9890;--shadow:#403d391a;\r\n  --hl:#ffffffb3;--meter:linear-gradient(90deg,var(--accent-border),var(--accent))\r\n}\r\n*{box-sizing:border-box}body{margin:0;min-width:0;-webkit-font-smoothing:antialiased}button,input,textarea,select{font:inherit}\r\n\r\n/* Buttons: two fixed heights (sm/md) shared by every control. */\r\nbutton{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:var(--h-md);padding:5px 14px;border:1px solid var(--border);border-radius:8px;background:var(--button);color:var(--text);font-size:13px;font-weight:550;line-height:1.4;cursor:pointer;box-shadow:inset 0 1px 0 var(--hl);transition:background-color var(--ease),border-color var(--ease),color var(--ease)}\r\nbutton:hover:not(:disabled){background:var(--hover);border-color:var(--border-strong)}button:active:not(:disabled){transform:translateY(1px)}button:disabled{opacity:.42;cursor:default}\r\nbutton.primary{background:var(--primary);color:var(--primary-text);border-color:transparent;font-weight:700}button.primary:hover:not(:disabled){background:var(--primary-hover);border-color:transparent}\r\nbutton.subtle{background:transparent;box-shadow:none}\r\nbutton.danger,button.danger:hover:not(:disabled){color:var(--danger);border-color:var(--danger-border);background:var(--danger-bg)}\r\n.top-actions button,.panel-head>button,.play-card-head button,.play-list-row>button,.play-gear button,.fx-heading button,.fx-groups button,.fx-detail button,.source-preview-button,td button{min-height:var(--h-sm);padding:3px 11px;font-size:12px}\r\n:focus-visible{outline:2px solid var(--focus);outline-offset:2px}\r\n\r\n/* Fields */\r\ninput,textarea,select{width:100%;max-width:100%;min-width:0;padding:9px 12px;border:1px solid var(--border-strong);border-radius:8px;background:var(--field);color:var(--text);font-size:14px;font-weight:400;transition:border-color var(--ease),box-shadow var(--ease)}\r\ninput:hover,textarea:hover,select:hover{border-color:var(--accent-border)}\r\ninput:focus-visible,textarea:focus-visible,select:focus-visible{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}\r\ninput::placeholder,textarea::placeholder{color:var(--muted);opacity:1}\r\ninput[type=checkbox]{width:20px;height:20px;padding:0;accent-color:var(--accent);vertical-align:middle;flex-shrink:0}\r\ntextarea{min-height:110px;resize:vertical;line-height:1.7}\r\nlabel{display:block;font-size:12.5px;font-weight:550;color:var(--muted)}label input,label select,label textarea{margin-top:6px}label+label{margin-top:14px}.fields>label+label{margin-top:0}\r\n\r\n/* Type */\r\nh1,h2,h3,p{overflow-wrap:anywhere}h2{margin:0 0 16px;font-size:18px;line-height:1.45;font-weight:700;letter-spacing:-.2px}h3{margin:0 0 10px;font-size:15px;line-height:1.55;font-weight:650}p{margin:10px 0 16px}\r\n.muted,small{color:var(--muted)}small{font-size:12px}.spaced{margin-top:18px}.hidden,[hidden]{display:none!important}\r\n.panel>h2,h2:has(+.cards),.panel-head{display:flex;align-items:center;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--border)}\r\n.panel>h2::before,h2:has(+.cards)::before,.panel-head>h2::before{content:'';flex-shrink:0;width:3px;height:1.05em;border-radius:2px;background:var(--accent)}\r\n.panel-head{justify-content:space-between;margin:0 0 16px}.panel-head>h2{display:flex;align-items:center;gap:10px;min-width:0;margin:0}.panel-head>button{flex-shrink:0}\r\n.cards+h2{margin-top:8px}\r\n\r\n/* Shell */\r\n.shell{display:grid;grid-template-columns:var(--side) minmax(0,1fr);height:100vh;height:100dvh;overflow:hidden}\r\n.sidebar{position:sticky;top:0;display:flex;flex-direction:column;gap:20px;height:100vh;height:100dvh;min-width:0;padding:22px 12px 16px;background:var(--sidebar);border-right:1px solid var(--border)}\r\n.sidebar-brand{padding:0 8px}.brand{display:flex;align-items:center;gap:10px}\r\n.brand-mark{display:grid;place-items:center;flex-shrink:0;width:32px;height:32px;border:1px solid var(--accent-border);border-radius:9px;background:var(--accent-bg);color:var(--accent);font-size:16px;line-height:1}\r\n.brand h1{margin:0;font-size:18px;line-height:1.3;font-weight:750;letter-spacing:-.4px}\r\n.nav{display:flex;flex-direction:column;gap:14px;min-height:0;overflow-y:auto;scrollbar-width:thin}.nav-group{display:grid;gap:2px}\r\n.nav-label{padding:0 12px 4px;color:var(--muted);font-size:10.5px;font-weight:650;letter-spacing:.08em;opacity:.8}\r\n.nav button{position:relative;justify-content:flex-start;width:100%;min-height:38px;padding:0 12px;border:0;background:transparent;box-shadow:none;color:var(--muted);font-size:13.5px;font-weight:500;text-align:left}\r\n.nav button:hover{background:var(--button);color:var(--text)}\r\n.nav button.selected{background:var(--accent-bg);color:var(--accent);font-weight:650}\r\n.nav button.selected::before{content:'';position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:var(--accent)}\r\n.theme-picker{display:flex;gap:3px;margin-top:auto;padding:3px;border:1px solid var(--border);border-radius:10px;background:var(--field)}\r\n.theme-picker button{flex:1;min-height:30px;padding:0 6px;border:0;background:transparent;box-shadow:none;color:var(--muted);font-size:12px;white-space:nowrap}\r\n.theme-picker button[aria-pressed=\"true\"]{background:var(--button);color:var(--text);box-shadow:0 1px 3px var(--shadow),inset 0 1px 0 var(--hl)}\r\n.content{width:100%;height:100%;min-width:0;min-height:0;max-width:1450px;margin:0 auto;padding:0 32px 90px;overflow-y:auto}\r\n.top{position:sticky;top:0;z-index:30;display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:24px;padding:22px 0 16px;background:var(--bg);border-bottom:1px solid var(--border)}\r\n.context-block{flex:1;min-width:0}.chat-context{margin:0 0 8px;font-size:22px;line-height:1.35;font-weight:750;letter-spacing:-.5px}\r\n.context-status{display:flex;flex-wrap:wrap;align-items:center;gap:6px;color:var(--muted);font-size:12px}\r\n.context-status span{display:inline-flex;align-items:center;min-height:22px;padding:0 9px;border:1px solid var(--border);border-radius:99px;background:var(--inset)}\r\n.context-status span:first-child{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent)}\r\n.top-actions{flex-shrink:0}.row,.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.toolbar{margin-bottom:14px}.row>*{min-width:0}\r\n\r\n/* Surfaces */\r\n.panel{min-width:0;margin:0 0 18px;padding:22px 24px;background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:inset 0 1px 0 var(--hl),0 1px 2px var(--shadow)}\r\n.card{min-width:0;padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:12px;transition:border-color var(--ease)}.card:hover{border-color:var(--border-strong)}.card+.card{margin-top:12px}\r\n.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-bottom:22px}.cards>.card{margin:0}\r\n.grid,.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 18px}.wide{grid-column:1/-1}.split{display:grid;grid-template-columns:1.15fr 1fr;gap:20px;align-items:start}.split>.panel{min-width:0}\r\n.badge,.tag{display:inline-flex;align-items:center;min-height:22px;padding:0 9px;border:1px solid var(--border-strong);border-radius:99px;background:var(--inset);color:var(--muted);font-size:11px;font-weight:600;line-height:1.4;white-space:nowrap}.badge{font-size:12px}\r\n.number,.stat strong,td{font-variant-numeric:tabular-nums}\r\n.stat{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-top:12px;font-size:13px}.stat span{color:var(--muted)}.stat strong,.stat b{font-weight:650}\r\n.bar,.play-meter{height:7px;margin:7px 0 14px;overflow:hidden;border-radius:99px;background:var(--inset);box-shadow:inset 0 0 0 1px var(--border)}.bar span,.play-meter>span{display:block;height:100%;border-radius:inherit;background:var(--meter)}\r\n.metric{margin:5px 0;color:var(--accent);font-size:28px;line-height:1.2;font-weight:700}\r\n.notice{margin:0 0 18px;padding:13px 16px;border:1px solid var(--accent-border);border-left-width:3px;border-radius:10px;background:var(--accent-bg);line-height:1.7;overflow-wrap:anywhere}\r\n.success{border-color:var(--good-border);background:var(--good-bg);color:var(--good)}.error{border-color:var(--danger-border);background:var(--danger-bg);color:var(--danger)}\r\n#feedback{position:fixed;right:24px;bottom:20px;z-index:80;width:max-content;max-width:min(670px,calc(100vw - 32px));max-height:32vh;margin:0;padding:12px 18px;overflow:auto;box-shadow:0 8px 28px var(--shadow);white-space:pre-wrap}#feedback:empty{display:none}\r\n.empty{margin-bottom:18px;padding:56px 24px;border:1px dashed var(--border-strong);border-radius:14px;background:transparent;box-shadow:none;color:var(--muted);text-align:center}\r\n.empty::before{content:'◈';display:block;margin-bottom:10px;color:var(--accent-border);font-size:22px;line-height:1}\r\ndetails>summary{padding:7px 0;color:var(--text);font-weight:550;line-height:1.7;cursor:pointer}summary::marker{color:var(--accent)}details[open]>summary{margin-bottom:10px}\r\n.panel details.spaced{padding-top:8px;border-top:1px solid var(--border)}\r\npre{max-height:420px;padding:14px 16px;overflow:auto;border:1px solid var(--border);border-radius:10px;background:var(--inset);white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,Consolas,monospace}\r\n.scroll{max-width:100%;overflow:auto;border:1px solid var(--border);border-radius:10px;scrollbar-width:thin}table{width:100%;border-collapse:collapse;font-size:13px}\r\nth,td{padding:11px 12px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:var(--inset);color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap}tbody tr:last-child>td{border-bottom:0}tbody tr:hover{background:var(--inset)}\r\nol>li.selected{color:var(--accent);font-weight:650}\r\n\r\n/* Setup & sources */\r\n.sourcelist{max-height:520px;margin:0 0 14px;overflow:auto;border:1px solid var(--border);border-radius:10px;background:var(--surface);scrollbar-width:thin}.source{position:relative;border-bottom:1px solid var(--border)}.source:last-child{border-bottom:0}\r\n.source input[type=checkbox]{position:absolute;left:12px;top:13px;z-index:1;width:26px;height:26px;margin:0;cursor:pointer}.source details{min-width:0}\r\n.source summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:54px;margin:0;padding:12px 12px 12px 50px;list-style:none;font-weight:400;overflow-wrap:anywhere}\r\n.source summary::-webkit-details-marker{display:none}.source summary:hover{background:var(--inset)}.source summary:focus-visible{outline-offset:-3px}.source-name{min-width:0;color:var(--text);font-size:13px}.source-hint{flex-shrink:0;color:var(--muted);font-size:12px}.source-hint:before{content:'▸ ';color:var(--accent)}.source details[open] .source-hint:before{content:'▾ '}.source pre{max-height:260px;margin:0 12px 14px 50px}\r\n.source-choice{display:flex;align-items:center;gap:12px;min-height:54px;padding:12px 12px 12px 50px;cursor:pointer}.source-choice .source-name{flex:1}.source-choice:has(input:checked){background:var(--accent-bg)}\r\n.choice,.partial-catalog{display:flex;align-items:flex-start;gap:10px}.choice{padding:10px 0;color:var(--text);font-weight:400;font-size:13px;cursor:pointer;overflow-wrap:anywhere}.choice input[type=checkbox],.partial-catalog input[type=checkbox]{width:22px;height:22px;margin:0}\r\n.draft-editor{margin-bottom:18px;padding:16px;border:1px solid var(--border);border-radius:10px}.draft-editor>summary{font-weight:650}.draft-json{min-height:360px;tab-size:2;white-space:pre;overflow:auto;font:12px/1.65 ui-monospace,Consolas,monospace}.design-brief{min-height:260px;line-height:1.8}.draft-error{overflow-wrap:anywhere}.draft-error pre{white-space:pre-wrap}.draft-error p{margin:8px 0}\r\n.initial-actors{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;max-height:320px;padding:12px;overflow:auto;border:1px solid var(--border);border-radius:10px}.initial-actors legend{padding:0 6px;color:var(--muted)}\r\n.initial-actors label{display:flex;align-items:flex-start;gap:10px;margin:0;padding:10px;border-radius:8px;background:var(--inset);color:var(--text);font-weight:400;cursor:pointer}.initial-actors input[type=checkbox]{width:22px;height:22px;margin:0}.initial-actors span{min-width:0;overflow-wrap:anywhere}.initial-actors small{display:block;font-size:11px}\r\n.issue-choice{margin:14px 0;padding:16px;border:1px solid var(--accent-border);border-radius:10px;background:var(--accent-bg);overflow-wrap:anywhere}.issue-choice p{margin:8px 0}.issue-choice small{display:block;margin-top:8px}\r\n\r\n/* Editors */\r\n.item-editor-row>td{padding:12px 0 20px}.item-editor{padding:18px;border:1px solid var(--accent-border);border-radius:12px;background:var(--surface)}.item-editor-body{min-width:0;margin:0;padding:0;border:0}.item-editor-body>legend{margin-bottom:18px;padding:0;font-size:16px;font-weight:650}\r\n.item-editor h4{margin:20px 0 12px;font-size:14px}.item-editor textarea{min-height:80px}.item-editor-actions{margin-top:22px}.item-editor .fields+.fields{margin-top:16px}\r\n.item-slots{display:flex;flex-wrap:wrap;gap:12px 18px;margin:22px 0 0;padding:14px;border:1px solid var(--border);border-radius:10px}.item-slots legend{padding:0 6px;color:var(--muted)}.item-slots label{display:flex;align-items:center;gap:8px;margin:0;color:var(--text);font-weight:400;cursor:pointer}.item-slots input{margin:0}\r\n.item-effect{min-width:0;margin:0 0 12px;padding:12px;border:1px solid var(--border);border-radius:10px}.item-effect legend{padding:0 6px;color:var(--muted)}.item-effect-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px}.item-effect-fields>label+label{margin-top:0}.item-effect-footer{justify-content:flex-end;margin-top:12px}.item-effect-footer small{margin-right:auto}.item-ammo>.fields{margin:14px 0}\r\n.editor-workspace{max-width:960px;margin:18px auto;scroll-margin-top:145px}.editor-workspace .item-editor-body>legend{margin-bottom:4px}.editor-brief{margin:0 0 18px;color:var(--muted);font-size:12px}\r\n.editor-tabs{display:flex;flex-wrap:wrap;gap:3px;margin:0 0 18px;padding:3px;border:1px solid var(--border);border-radius:10px;background:var(--inset)}\r\n.editor-tabs button{min-height:32px;padding:0 14px;border-color:transparent;background:transparent;box-shadow:none;color:var(--muted)}\r\n.editor-tabs button[aria-selected=\"true\"]{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent);font-weight:650}\r\n.editor-page{min-height:190px}.editor-page>section+section{margin-top:18px;padding-top:14px;border-top:1px solid var(--border)}.editor-page .fields{gap:12px 18px}.editor-page .fields+.fields{margin-top:14px}.editor-page section>h4:first-child{margin-top:0}\r\n.editor-workspace .item-editor-actions{position:sticky;bottom:0;z-index:4;margin-top:20px;padding:14px 0 4px;border-top:1px solid var(--border);background:var(--surface)}.editor-delete{margin-left:auto;color:var(--muted)}\r\n.fx-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0 10px}.fx-heading h4{margin:0;font-size:14px}.fx-heading h4 small{margin-left:5px;font-weight:400}\r\n.fx-targets{padding-bottom:10px;border-bottom:1px solid var(--border)}.fx-targets>summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;font-weight:650}.fx-targets>summary:before{content:'▸';color:var(--muted)}.fx-targets[open]>summary:before{content:'▾'}.fx-targets>summary span{color:var(--muted);font-size:12px;font-weight:400}\r\n.fx-targets .fx-chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.fx-chips .choice{align-items:center;gap:7px;margin:0;padding:5px 11px;border:1px solid var(--border);border-radius:99px;background:var(--field)}.fx-chips .choice:has(input:checked){border-color:var(--accent-border);background:var(--accent-bg)}.fx-chips input[type=checkbox]{width:18px;height:18px}.fx-activation{max-width:330px;margin:12px 0}.fx-targets .choice{align-items:center}\r\n.fx-list{display:grid;gap:8px}.fx-entry{min-width:0;overflow:hidden;border:1px solid var(--border);border-radius:10px;background:var(--field)}.fx-entry.is-open{border-color:var(--accent-border)}\r\n.fx-summary{justify-content:space-between;gap:14px;width:100%;min-height:0;padding:12px 14px;border:0;border-radius:0;background:transparent;box-shadow:none;text-align:left;font-weight:400}.fx-summary>span:first-child{min-width:0}.fx-summary strong{display:block;font-size:14px}.fx-summary small{display:block;margin-top:2px;line-height:1.7;overflow-wrap:anywhere}.fx-summary .fx-edit-label{flex-shrink:0;color:var(--accent);font-size:12px;white-space:nowrap}.fx-entry.is-open>.fx-summary{background:var(--accent-bg)}\r\n.fx-detail{padding:16px;border-top:1px solid var(--border)}.fx-detail .item-effect{margin:0;padding:0;border:0}.fx-detail .item-effect>legend{display:none}.fx-detail .item-effect-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 18px}\r\n.fx-detail button[data-skill-effect-remove],.fx-detail button[data-item-effect-remove],.fx-detail button[data-erencha-effect-remove],.fx-detail button[data-fx-remove]{margin-top:14px;color:var(--muted)}\r\n.fx-advanced{margin:14px 0 10px;padding-top:6px;border-top:1px solid var(--border)}.fx-advanced>summary,.fx-save-preset>summary{color:var(--muted);font-size:12px}.fx-empty{margin:0;padding:22px 12px;border:1px dashed var(--border);border-radius:10px;color:var(--muted);font-size:13px;text-align:center}\r\n.fx-save-preset{margin-top:14px}.fx-save-preset .toolbar{align-items:flex-end}.fx-save-preset label{flex:1;max-width:420px}\r\n.fx-library{margin:10px 0 16px;padding:14px;border:1px solid var(--accent-border);border-radius:10px;background:var(--surface)}.fx-library>.fx-heading{margin:0 0 8px}.fx-library .fx-search{font-size:12px}.fx-library p{margin:12px 0 0;font-size:12px}\r\n.fx-groups{display:flex;flex-wrap:wrap;gap:5px;margin:12px 0}.fx-groups button{border-radius:99px;background:transparent;box-shadow:none}.fx-groups button[aria-pressed=\"true\"]{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent)}\r\n.fx-library-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;max-height:290px;overflow-y:auto;scrollbar-width:thin}\r\n.fx-pick{display:block;min-height:0;padding:10px 12px;background:var(--field);text-align:left;font-weight:400}.fx-pick strong{font-size:13px}.fx-pick small{display:-webkit-box;margin-top:4px;overflow:hidden;font-size:11px;line-height:1.6;-webkit-line-clamp:2;-webkit-box-orient:vertical}\r\nfooter{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);color:var(--muted);font-size:11px;letter-spacing:.04em}\r\n\r\n/* Play pages */\r\n.play-name{margin:22px 0 16px;font-size:22px;letter-spacing:-.4px}\r\n.play-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:16px 0}\r\n.play-facts>div{min-width:0;padding:10px 14px;border:1px solid var(--border);border-radius:10px;background:var(--inset)}\r\n.play-facts dt{margin-bottom:2px;color:var(--muted);font-size:11.5px}.play-facts dd{margin:0;font-size:18px;font-weight:650;line-height:1.4;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}\r\n.play-wallet dd{color:var(--accent);font-size:22px}\r\n.play-traits{margin:18px 0}.play-traits-three{grid-template-columns:repeat(3,minmax(0,1fr))}.play-traits-three>div:nth-child(2){text-align:center}.play-traits-three>div:nth-child(3){text-align:right}\r\n.play-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:20px 0}\r\n.play-stat{position:relative;display:flex;flex-direction:column;gap:4px;min-width:0;padding:16px 18px;overflow:hidden;border:1px solid var(--border);border-radius:12px;background:var(--surface);transition:border-color var(--ease)}\r\n.play-stat::before{content:'';position:absolute;inset:0 0 auto;height:2px;background:var(--meter);opacity:.75}.play-stat:hover{border-color:var(--border-strong)}\r\n.play-stat>span{color:var(--muted);font-size:12.5px}.play-stat>strong{font-size:28px;line-height:1.25;font-weight:700;font-variant-numeric:tabular-nums}.play-stat>small{line-height:1.6}.play-growth{margin-top:auto;padding-top:10px}.play-growth .play-meter{margin-bottom:0}\r\n.play-relations{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px}\r\n.play-relation{padding:18px;border:1px solid var(--border);border-radius:12px;background:var(--surface)}.play-relation h3{margin:0 0 14px}.play-relation .play-facts{margin:0}.play-relation .play-facts dd{font-size:22px}\r\nbutton.play-person-link{min-height:0;padding:0;border:0;background:none;box-shadow:none;color:var(--text);font-size:16px;font-weight:650;text-align:left}\r\nbutton.play-person-link:hover:not(:disabled){background:none;color:var(--accent);text-decoration:underline;text-underline-offset:4px}\r\n.play-card-head,.play-list-row{display:flex;align-items:center;justify-content:space-between;gap:14px}.play-card-head>*,.play-list-row>*{min-width:0}.play-card-head h3{margin:0}\r\n.play-card-head>button,.play-card-head>.tag,.play-card-head>.row{flex-shrink:0}.play-card-head .row{justify-content:flex-end;gap:6px}\r\n.play-list-row{padding:14px 0;border-bottom:1px solid var(--border)}.play-list-row:last-child{border-bottom:0}.play-list-row small{display:block;margin-top:4px}.play-list-row>button,.play-list-row>.tag{flex-shrink:0}\r\n.play-stakes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.play-stakes p{margin:0;padding:14px 16px;border:1px solid var(--border);border-radius:10px;background:var(--inset)}.play-stakes small{display:block;margin-bottom:6px}\r\n.play-skills,.play-items{display:grid;gap:12px}\r\n.play-skill,.play-item{min-width:0;padding:18px;border:1px solid var(--border);border-radius:12px;background:var(--surface);transition:border-color var(--ease)}.play-skill:hover,.play-item:hover{border-color:var(--border-strong)}\r\n.play-skill h3 small{font-weight:400}.play-skill .play-facts dd{font-size:14px}.play-skill-growth{padding-top:12px;border-top:1px solid var(--border);color:var(--muted);font-size:12px}\r\n.play-item>p:last-child{margin-bottom:0}.play-item .item-editor{margin-top:18px}.play-inline-editor{min-width:0}.play-inline-editor .item-editor{border-color:var(--accent-border)}\r\n.play-equipment{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}\r\n.play-gear{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:14px;row-gap:2px;padding:14px 16px;border:1px solid var(--border);border-left:3px solid var(--accent-border);border-radius:10px;background:var(--surface)}\r\n.play-gear small,.play-gear b{grid-column:1;overflow-wrap:anywhere}.play-gear button{grid-column:2;grid-row:1/3}\r\n.play-turns{display:flex;flex-wrap:wrap;gap:8px;margin:0;padding:0;list-style:none}.play-turns li{display:flex;align-items:center;gap:12px;min-width:150px;padding:12px 16px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}\r\n.play-turns li[aria-current=\"step\"]{border-color:var(--accent-border);background:var(--accent-bg)}.play-turns small{display:block}.play-turn-number{color:var(--accent);font-size:20px;font-weight:700}.play-budget{margin-bottom:0;font-size:12px}\r\n.play-paths{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.play-paths>div{padding:13px 14px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}.play-paths small{display:block;margin-top:3px}\r\n[data-scheme-card]{scroll-margin-top:130px}\r\n\r\n/* Mini window & dialogs */\r\n.mini-shell{max-width:640px;height:100vh;height:100dvh;margin:auto;padding:12px 16px 40px;overflow-y:auto}.mini-shell .top{top:0}.mini-shell .panel{margin-bottom:12px;padding:14px}.mini-shell .play-facts{gap:6px}.mini-shell .play-facts dd{font-size:15px}.mini-shell details{padding:8px 0;border-bottom:1px solid var(--border)}\r\n.download-dialog{max-width:calc(100vw - 24px);padding:22px 24px;border:1px solid var(--border);border-radius:14px;background:var(--surface);color:var(--text);box-shadow:0 12px 40px var(--shadow)}.download-dialog::backdrop{background:#0008}\r\n.download-link{display:inline-flex;align-items:center;min-height:var(--h-md);padding:5px 14px;border-radius:8px;background:var(--primary);color:var(--primary-text);font-size:13px;font-weight:700;text-decoration:none}\r\nbody.editing .page-body{padding-bottom:calc(var(--editor-actions-height,90px) + 24px)}body.editing #feedback{bottom:calc(var(--editor-actions-height,90px) + 12px);max-height:25vh}\r\nbody.editing .item-editor-actions{position:fixed;bottom:0;left:var(--side);right:0;z-index:65;margin:0;padding:12px 24px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--border);background:var(--surface);box-shadow:0 -4px 18px var(--shadow)}\r\n\r\n@media(max-width:1150px){.split{grid-template-columns:minmax(0,1fr)}}\r\n@media(max-width:900px){\r\n  /* max-content rows: auto rows let the overflow-x nav collapse to 0 (original mobile bug). */\r\n  .shell{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:max-content max-content max-content 1fr;align-content:start;overflow-x:hidden;overflow-y:auto}\r\n  .sidebar,.content{display:contents}\r\n  .sidebar-brand{grid-column:1;grid-row:1;display:flex;align-items:center;padding:10px 14px;background:var(--sidebar)}.brand-mark{width:28px;height:28px;border-radius:8px;font-size:14px}.brand h1{font-size:16px}\r\n  .theme-picker{grid-column:2;grid-row:1;align-items:center;gap:0;margin:0;padding:0 14px 0 0;border:0;border-radius:0;background:var(--sidebar)}\r\n  .theme-picker button{flex:none;width:34px;min-height:30px;padding:0;border:1px solid var(--border);border-radius:0;background:var(--field);font-size:0}\r\n  .theme-picker button:first-child{border-radius:8px 0 0 8px}.theme-picker button:last-child{border-left:0;border-radius:0 8px 8px 0}.theme-picker button span{font-size:14px}.theme-picker button[aria-pressed=\"true\"]{background:var(--button)}\r\n  /* One scrollable tab strip; group labels stay visible and the right edge fades until the end. */\r\n  .nav{grid-column:1/-1;grid-row:2;position:sticky;top:0;z-index:50;flex-direction:row;align-items:center;gap:0;padding:6px 12px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--sidebar);border-bottom:1px solid var(--border);-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 36px),#0000);mask-image:linear-gradient(90deg,#000 calc(100% - 36px),#0000)}\r\n  .nav::-webkit-scrollbar{display:none}.nav[data-end=\"true\"]{-webkit-mask-image:none;mask-image:none}\r\n  .nav-group{display:flex;flex-shrink:0;align-items:center;gap:2px}.nav-group+.nav-group{margin-left:8px;padding-left:10px;border-left:1px solid var(--border)}\r\n  .nav-label{display:none}\r\n  .nav button{flex-shrink:0;width:auto;min-height:34px;padding:0 11px;white-space:nowrap}\r\n  .nav button.selected::before{top:auto;bottom:3px;left:11px;right:11px;width:auto;height:2px;border-radius:2px}\r\n  .top{grid-column:1/-1;grid-row:3;top:var(--mobile-nav-height,47px);z-index:45;flex-wrap:nowrap;gap:10px;margin:0;padding:10px 14px}\r\n  .chat-context{margin:0 0 4px;font-size:18px}.context-status{gap:4px;font-size:11px}.context-status span{min-height:20px;padding:0 7px}.top-actions{gap:5px}\r\n  .page-body{grid-column:1/-1;grid-row:4;min-width:0;padding:16px 12px 60px}\r\n  .cards{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}\r\n  body.editing .item-editor-actions{left:0;padding-left:12px;padding-right:12px}.editor-workspace{scroll-margin-top:155px}\r\n}\r\n@media(max-width:600px){\r\n  :root{--h-md:40px}\r\n  .chat-context{font-size:17px}\r\n  .grid,.fields,.cards,.play-relations,.play-equipment,.play-stakes{grid-template-columns:minmax(0,1fr)}.wide{grid-column:auto}\r\n  .panel{padding:16px;border-radius:12px}.card,.play-stat,.play-relation,.play-skill,.play-item{padding:15px}\r\n  .play-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.play-facts{grid-template-columns:repeat(auto-fit,minmax(100px,1fr))}.play-traits-three{gap:8px}.play-traits-three dd{font-size:16px}\r\n  .play-card-head{flex-wrap:wrap}.play-card-head>.row{margin-left:auto}.play-list-row{flex-wrap:wrap}.play-turns li{flex:1}\r\n  .toolbar button{flex:1 1 120px}.source summary{gap:8px}.source pre{margin-left:12px}.source-hint{font-size:11px}\r\n  th,td{padding:10px 8px}.scroll table{min-width:440px}#feedback{right:12px;bottom:12px;max-width:calc(100vw - 24px);padding:12px 15px}\r\n  .editor-workspace{margin:12px 0;padding:14px}.editor-tabs button{padding:0 10px;font-size:12px}.editor-workspace .item-editor-actions{gap:6px}\r\n  .fx-detail{padding:12px}.fx-detail .item-effect-fields,.editor-workspace .fields,.fx-library-grid{grid-template-columns:1fr}.fx-targets>summary span{flex-basis:100%;padding-left:22px}.fx-summary{padding:11px}\r\n}\r\n@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}\r\n\r\n/* In-plugin assistant, using the same palette and editor workflow. */\r\n.nyunyu-chat{max-width:960px}.nyunyu-messages{display:flex;flex-direction:column;gap:12px;margin:20px 0}.nyunyu-message{max-width:94%;padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:var(--inset)}.nyunyu-message.user{align-self:flex-end;background:var(--accent-bg);border-color:var(--accent-border)}.nyunyu-message.assistant{align-self:flex-start}.nyunyu-text{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:6px}.nyunyu-message button{white-space:normal;text-align:left}\r\n/* Card theme previews share the chat renderer; no iframe or simulated play. */\r\n.card-theme-preview { margin: 18px 0 8px; max-width: 760px; container-type: inline-size; }\r\n.chat-presentation > label { max-width: 360px; }\r\n.chat-presentation details > label { margin-top: 14px; }\r\n");try{await app.install(ui);}catch(error){await app.dispose();document.body.textContent="NyoruRPG 초기화 실패: "+(error.code?error.message:"호스트 기능·권한을 확인하세요.");try{await Risuai.showContainer("fullscreen");}catch{}}
 })();
