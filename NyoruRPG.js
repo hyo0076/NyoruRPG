@@ -1,7 +1,7 @@
 //@name universal-rpg-engine
-//@display-name NyoruRPG 0.22.3 · 자동 진행
+//@display-name NyoruRPG 0.22.4 · 자동 진행
 //@api 3.0
-//@version 0.22.3
+//@version 0.22.4
 //@update-url https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js
 (async()=>{
 "use strict";
@@ -954,10 +954,18 @@ class App {
           // Old modules retain their CSS until explicitly converted. This avoids
           // overwriting user CSS before its original has been preserved.
           if(moduleContext.legacy)return rendered;
-          const prefs=await this.moduleBridge.preferences(scope,moduleContext);
-          const custom=await this.moduleBridge.customStyle(scope,moduleContext,prefs);
+          let styled=rendered;
+          try {
+            const prefs=await this.moduleBridge.preferences(scope,moduleContext);
+            const custom=await this.moduleBridge.customStyle(scope,moduleContext,prefs);
+            styled=require('./card-themes.js').decorate(rendered,prefs.theme,custom,await hash(scopeKey(scope)));
+          } catch(error) {
+            // Styling is optional. Never discard resolved result cards just
+            // because theme preferences or user CSS could not be loaded.
+            this.host.record('cardThemeFailed',{code:error.code||'THEME_UNAVAILABLE'});
+          }
           if(!await this.host.isCurrent(scope))return text;
-          return require('./card-themes.js').decorate(rendered,prefs.theme,custom,await hash(scopeKey(scope)));
+          return styled;
         } catch {return text;}
       };
       await this.api.addRisuScriptHandler('display', this.display);
@@ -1514,10 +1522,10 @@ function render(ui) {
     +'<div class="card-theme-preview" id="card-theme-preview" aria-label="결과 카드 예시">'+require('./card-themes.js').preview(prefs.theme)+'</div><p class="muted">디자인 예시입니다. 선택하면 바로 저장됩니다. 게임 수치와 판정은 바뀌지 않습니다.</p>'
     +(context?.legacy?'<div class="notice">기존 모듈의 지침·테마가 사용 중입니다. 아래에서 한 번 전환하면 이 화면의 선택을 사용합니다.</div><button type="button" id="convert-bridge" class="primary">기존 모듈을 연결 전용으로 전환</button><p class="muted">기존 모듈 ID와 활성화 연결을 유지하며 원본을 보관합니다. 전환 후 Risu를 새로 고침하세요. 같은 모듈을 쓰는 다른 채팅도 전환되며, 각 채팅의 기존 선택은 따로 가져옵니다.</p>':'')
     +(context&&!context.active?'<p class="notice">이 채팅에서 NyoruRPG 연결 모듈을 켜야 지침과 결과 카드가 적용됩니다.</p>':'')
-    +'<details class="spaced"><summary>진행 지침 · 기존 설정</summary><label class="spaced">현재 채팅에서 사용할 룰북 지침<select id="chat-rulebook" '+(context?.legacy?'disabled':'')+'>'+settings.books.map((id,i)=>'<option value="'+id+'" '+(prefs.rulebook===id?'selected':'')+'>'+e(settings.labels[i])+'</option>').join('')+'</select></label><p class="muted">기존 모듈에서 고른 지침을 이어받습니다. 시스템을 새로 적용하면 그 룰북의 지침을 사용합니다. 이 선택만으로 저장된 게임의 규칙을 바꾸지는 않습니다.</p>'
+    +(ui.moduleEdits?.length?'<details class="spaced"><summary>보관한 사용자 설정</summary>'
     +(custom?'<label><input id="use-default-guide" type="checkbox" '+(prefs.useDefaultGuide?'checked':'')+'> 보관한 사용자 수정 지침 대신 최신 기본 지침 사용</label><p class="muted">직접 수정한 모듈 지침은 원문으로 보관되어 있습니다. 기본 지침 사용을 해제하면 다시 적용됩니다.</p>':'')
     +(ui.moduleEdits?.some(r=>r.customStyle)?'<p class="muted">직접 수정한 배경 CSS는 다른 장식에 쓰였을 수 있어 모듈에도 보존했습니다. 카드에는 보관한 CSS를 함께 적용합니다.</p>':'')
-    +(ui.moduleEdits?.length&&!context?.legacy?'<button type="button" id="restore-bridge">이전 모듈로 되돌리기</button><p class="muted">게임 수치는 그대로 두고 보관한 기존 모듈을 복원합니다. 복원 후 Risu를 새로 고침하세요.</p>':'')+'</details></section>';
+    +(!context?.legacy?'<button type="button" id="restore-bridge">이전 모듈로 되돌리기</button><p class="muted">게임 수치는 그대로 두고 보관한 기존 모듈을 복원합니다. 복원 후 Risu를 새로 고침하세요.</p>':'')+'</details>':'')+'</section>';
 }
 function bind(ui,on) {
   const save=async patch=>{
@@ -1530,7 +1538,6 @@ function bind(ui,on) {
     const preview=document.getElementById('card-theme-preview');if(preview)preview.innerHTML=require('./card-themes.js').preview(value);
     ui.notify('카드 테마를 저장했습니다.');
   }));
-  document.getElementById('chat-rulebook')?.addEventListener('change',event=>ui.act(async()=>{await save({rulebook:event.target.value});ui.notify('이 채팅의 진행 지침을 저장했습니다.');}));
   document.getElementById('use-default-guide')?.addEventListener('change',event=>ui.act(async()=>{await save({useDefaultGuide:event.target.checked});ui.notify('진행 지침 설정을 저장했습니다.');}));
   on('convert-bridge',async()=>{
     ui.capture();const result=await ui.app.moduleBridge.migrate(ui.info.scope);
@@ -7547,36 +7554,18 @@ class RisuHost {
   }
   async refreshPrompts(scope) {
     const sources = [], warnings = [];
-    const readIds = new Set();
     const add = (id, label, content) => {
       if (typeof content === 'string' && content.trim()) sources.push({id, label, content, condition:null});
     };
-    // These are fixed read macros, never source-supplied expressions. Disable
-    // variable writes and the editprocess/script pipeline. Cache explicit reads
-    // so request-time variables cannot mark a compiled profile stale every turn.
-    const macros = [['main','메인 시스템 프롬프트','{{mainprompt}}'], ['jailbreak','탈옥 프롬프트','{{jb}}'],
-      ['global-note','글로벌 노트','{{globalnote}}'], ['author-note','기본 작가 노트','{{authornote}}']];
-    if (typeof this.api.parseRisuChat === 'function') {
-      let timer;
-      try {
-        const results = await Promise.race([
-          Promise.allSettled(macros.map(([, , text]) => this.api.parseRisuChat(text, {runVar:false,processRegex:false,rmVar:false}))),
-          new Promise((_,reject) => {timer=setTimeout(()=>reject(new Error('timeout')),3000);})
-        ]);
-        results.forEach((r,i) => {
-          if (r.status === 'fulfilled' && typeof r.value === 'string' && !macros.some(m => r.value.includes(m[2]))) {
-            readIds.add('prompt:' + macros[i][0]);
-            add('prompt:' + macros[i][0], '프롬프트 · ' + macros[i][1] + ' (읽은 내용)', r.value);
-          } else warnings.push(macros[i][1] + ': 이 호스트에서 직접 읽지 못했습니다.');
-        });
-      } catch { warnings.push('프롬프트 직접 읽기에 실패했습니다. 최근 RP 요청의 시스템 메시지를 사용할 수 있습니다.'); }
-      finally { clearTimeout(timer); }
-    } else warnings.push('이 호스트는 프롬프트 직접 읽기를 제공하지 않습니다. 최근 RP 요청의 시스템 메시지를 사용할 수 있습니다.');
+    // Official v3 exposes no parseRisuChat method. Its RPC proxy makes even
+    // missing methods look callable, so typeof cannot be a capability test.
+    // Keep captured host-rendered prompts and previously saved source entries.
+    warnings.push('프롬프트는 최근 RP 요청에서 읽은 내용과 저장된 자료를 사용합니다.');
     const latest = this.latestPrompts.get(scopeKey(scope));
     add('prompt:last-request', '프롬프트 · 최근 RP 요청의 시스템 메시지', latest);
     const prior = await this.savedPrompts(scope);
     for (const p of prior?.sources || []) {
-      if (!readIds.has(p.id) && !sources.some(s=>s.id === p.id)) sources.push(p);
+      if (!sources.some(s=>s.id === p.id)) sources.push(p);
     }
     assert(await this.isCurrent(scope), 'SCOPE_MISMATCH', '프롬프트를 읽는 중 대화가 바뀌었습니다.');
     await this.api.pluginStorage.setItem(await this.promptKey(scope), JSON.stringify({sources,warnings}));
@@ -15119,16 +15108,40 @@ function convertModule(original,{preserveBackground=false}={}) {
   return module;
 }
 const readIndex=(value,max)=>/^\d+$/.test(String(value).trim())&&Number(value)<max?Number(value):null;
+const gameRulebook=state=>state?.meta.hunters?'hunters':state?.meta.rulebook?.id||'common';
+function legacyToggle(context,key,max) {
+  const name='toggle_'+key,local=context.chat?.GLGlobalVariables?.[name];
+  // Risu's chat-local global override precedes its global value. Official v3
+  // does not expose globalChatVariables, but some compatible hosts do.
+  return readIndex(local&&local!=='null'?local:context.db?.globalChatVariables?.[name],max);
+}
+function selectOwnedTemplate(text,prefs) {
+  text=String(text||'');
+  const start=/\{\{#if\s+\{\{\?\s+\{\{getglobalvar::toggle_nyorurpg_(rulebook|theme)\}\}\s*=\s*(\d+)\}\}\s*\}\}/g;
+  let match;
+  while((match=start.exec(text))) {
+    const bodyStart=start.lastIndex,tokens=/\{\{#if\b|\{\{\/if\}\}/g;tokens.lastIndex=bodyStart;
+    let depth=1,end;
+    while((end=tokens.exec(text))) {depth+=end[0].startsWith('{{#if')?1:-1;if(!depth)break;}
+    if(!end)break;
+    const value=match[1]==='theme'?prefs.theme:settings.books.indexOf(prefs.rulebook);
+    const body=value===Number(match[2])?text.slice(bodyStart,end.index):'';
+    text=text.slice(0,match.index)+body+text.slice(tokens.lastIndex);start.lastIndex=match.index;
+  }
+  // Resolve only our fixed selectors. Preserve arbitrary user CBS verbatim;
+  // never execute source expressions or pretend a v3 parser API exists.
+  return text.replace(/\{\{getglobalvar::toggle_nyorurpg_(rulebook|theme)\}\}/g,(_,key)=>String(key==='theme'?prefs.theme:settings.books.indexOf(prefs.rulebook)));
+}
 class ModuleBridge {
   constructor(app){this.app=app;}
   async context(scope) {
     const {character,chat}=await this.app.host.locate(scope);
     assert(typeof this.app.api.getDatabase==='function','MODULE_ACCESS','연결 모듈을 읽을 권한이 필요합니다.');
-    const db=await this.app.api.getDatabase(['modules','enabledModules','moduleIntergration','personas','selectedPersona']);
+    const db=await this.app.api.getDatabase(['modules','enabledModules','moduleIntergration','personas','selectedPersona','globalChatVariables']);
     assert(db&&typeof db==='object','MODULE_ACCESS','연결 모듈을 읽지 못했습니다.');
     assert(await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','모듈을 읽는 중 채팅이 바뀌었습니다.');
     const modules=activeModules(db,character,chat);
-    return {active:modules.length>0,modules,legacy:modules.some(m=>!isBridge(m)),db};
+    return {active:modules.length>0,modules,legacy:modules.some(m=>!isBridge(m)),db,chat};
   }
   async preferences(scope,context) {
     const key=(await this.app.repo.key(scope))+'/chat-settings';
@@ -15136,17 +15149,9 @@ class ModuleBridge {
     if(saved)return saved;
     context||=await this.context(scope);
     const current=await this.app.repo.current(scope);
-    let book=current?.state?.meta.hunters?'hunters':current?.state?.meta.rulebook?.id||'common',theme=0;
-    if(context.legacy)book='common'; // An unset legacy select meant option zero.
-    else for(const module of context.modules)if(await this.migrationRecord(module)){book='common';break;}
-    // Old chat-local toggles take priority over global toggles inside Risu's own
-    // read-only parser. Their keys survive removal of the old toggle controls.
-    if(context.active&&typeof this.app.api.parseRisuChat==='function') {
-      const values=await Promise.all([settings.keys.rulebook,settings.keys.theme].map(name=>this.app.api.parseRisuChat('{{getglobalvar::toggle_'+name+'}}',{runVar:false,processRegex:false,rmVar:false})));
-      const b=readIndex(values[0],settings.books.length),t=readIndex(values[1],settings.themes.length);
-      if(b!==null)book=settings.books[b];
-      if(t!==null)theme=t;
-    }
+    const priorBook=legacyToggle(context,settings.keys.rulebook,settings.books.length);
+    const book=current?.state?gameRulebook(current.state):settings.books[priorBook]||'common';
+    const theme=legacyToggle(context,settings.keys.theme,settings.themes.length)??0;
     assert(await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','설정을 읽는 중 채팅이 바뀌었습니다.');
     const result={version:1,rulebook:book,theme};
     // A merely opened settings window in an unrelated chat creates no settings.
@@ -15217,15 +15222,15 @@ class ModuleBridge {
     return {count:converted.size,custom};
   }
   async parseTemplate(text,prefs,scope) {
-    text=String(text||'').replace(/\{\{getglobalvar::toggle_nyorurpg_(rulebook|theme)\}\}/g,(_,key)=>String(key==='theme'?prefs.theme:settings.books.indexOf(prefs.rulebook)));
-    if(text.includes('{{')) {
-      assert(typeof this.app.api.parseRisuChat==='function','MODULE_TEMPLATE','사용자 수정 지침의 변수를 읽을 수 없습니다.');
-      text=await this.app.api.parseRisuChat(text,{runVar:false,processRegex:false,rmVar:false});
-    }
+    text=selectOwnedTemplate(text,prefs);
     assert(await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','지침 준비 중 채팅이 바뀌었습니다.');
     return text;
   }
   async protocol(scope,context,prefs) {
+    const current=await this.app.repo.current(scope);
+    // The applied system is authoritative, including games restored from backup.
+    // An un-applied setup selection must not switch a running game's guide.
+    if(current?.state)prefs={...prefs,rulebook:gameRulebook(current.state)};
     for(const module of context.modules) {
       const record=await this.migrationRecord(module);
       if(record?.customProtocol&&!prefs.useDefaultGuide) {
@@ -24095,8 +24100,13 @@ module.exports = {
 'use strict';
 // Public release notes. The build also publishes this as updates.json.
 module.exports={
-  latest:'0.22.3',
+  latest:'0.22.4',
   entries:[
+    {version:'0.22.4',date:'2026-09-30',title:'카드 테마 오류와 룰북 지침 선택 정리',changes:[
+      '진행 지침의 별도 룰북 선택을 없애고, 시스템 구축에서 적용한 게임의 룰북을 따릅니다.',
+      '테마를 바꿀 때 발생하던 parseRisuChat API 오류를 수정했습니다.',
+      '테마 처리 오류 때문에 결과 카드가 원래 표식으로 돌아가던 문제를 수정했습니다.'
+    ],note:'연결 모듈 v1 사용자는 플러그인만 업데이트한 뒤 Risu를 새로 고침하세요. 게임 재구축은 필요 없습니다.'},
     {version:'0.22.3',date:'2026-09-30',title:'업데이트 알림과 변경 내역',changes:[
       '플러그인 창에서 새 버전을 확인하고, 설치 후 처음 열 때 변경 내역을 보여줍니다.',
       '창 하단의 업데이트 내역에서 지난 변경 사항과 현재 버전을 확인할 수 있습니다.',
@@ -24441,7 +24451,7 @@ module.exports = {
 },
 "./version.js":function(module,exports,require){
 'use strict';
-module.exports={VERSION:'0.22.3'};
+module.exports={VERSION:'0.22.4'};
 
 },
 "./vertex-auth.js":function(module,exports,require){
