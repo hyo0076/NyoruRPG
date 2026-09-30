@@ -1,12 +1,12 @@
-# NyoruRPG 0.22.2
+# NyoruRPG 0.22.3
 
-0.22.2는 Vertex 서비스 계정 JSON 등록과 인증 토큰 자동 갱신을 추가한 플러그인 업데이트입니다. 뉴뉴 퍼센트·배율 지침과 연결 모듈 v1 전환도 포함합니다. [Vertex JSON 등록과 이번 변경](docs/nyoru-release-0.22.2.md) · [모듈 전환·테마 설정·확인 범위](docs/nyoru-release-0.22.0.md). 아래 과거 버전 기록의 모듈 토글 안내는 연결 v1 전환 전의 사용법입니다.
+0.22.3은 새 버전 알림과 업데이트 내역을 추가합니다. 업데이트 후 플러그인 창을 처음 열면 변경 내역을 보여주며, 창 하단의 **업데이트 내역**에서 언제든 다시 확인할 수 있습니다. 새 버전 자동 확인은 해당 창을 열 때만 최대 6시간에 한 번 실행합니다. [이번 변경](docs/nyoru-release-0.22.3.md) · [Vertex JSON 등록](docs/nyoru-release-0.22.2.md) · [모듈 전환·테마 설정·확인 범위](docs/nyoru-release-0.22.0.md). 아래 과거 버전 기록의 모듈 토글 안내는 연결 v1 전환 전의 사용법입니다.
 
 ## 다운로드
 
 - [플러그인 NyoruRPG.js](https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js)
 - [새 설치용 연결 모듈 NyoruRPG.risum](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG.risum)
-- [0.22.2 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.22.2.zip)
+- [0.22.3 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.22.3.zip)
 
 기존 사용자는 플러그인을 업데이트한 뒤 **시스템 구축 → 기존 모듈을 연결 전용으로 전환**을 한 번 실행하고 Risu를 새로 고침하세요. 모듈을 지우고 다시 가져오거나 게임을 재구축할 필요는 없습니다. 전환을 마쳤다면 이후 일반 업데이트는 플러그인만 교체합니다.
 
