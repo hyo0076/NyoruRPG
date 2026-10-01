@@ -1,7 +1,7 @@
 //@name universal-rpg-engine
-//@display-name NyoruRPG 0.23.0 · 자동 진행
+//@display-name NyoruRPG 0.23.1 · 자동 진행
 //@api 3.0
-//@version 0.23.0
+//@version 0.23.1
 //@update-url https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js
 (async()=>{
 "use strict";
@@ -268,6 +268,31 @@ function bindUI(ui){document.querySelectorAll('[data-scene-person]').forEach(el=
 module.exports={playerIds,player,bind,repairErencha,ids,people,mark,save,render,bindUI};
 
 },
+"./actor-reference.js":function(module,exports,require){
+'use strict';
+const {assert}=require('./util.js');
+const normalize=value=>String(value??'').normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu,'');
+const names=a=>[a.name,a.realName,a.nickname,...(a.aliases||[])].filter(Boolean);
+const alive=a=>a.active!==false&&!Object.values(a.resources||{}).some(r=>(r.role==='vital'||r===a.resources?.hp)&&r.current<=0);
+
+// Resolve references in this call before consulting the historical registry.
+// An explicit ID always keeps its identity, even if that actor is defeated.
+function find(w,reference,{bindings=[],actorNames=names,same=(a,b)=>normalize(a)===normalize(b),isAlive=alive}={}) {
+  if(reference==null||!String(reference).trim())return null;
+  const canonical=a=>a?.mergedInto?w.actors[a.mergedInto]:a;
+  const exact=canonical(w.actors[reference]);if(exact)return exact;
+  const unique=rows=>[...new Map(rows.filter(Boolean).map(a=>[a.id,a])).values()];
+  const bound=unique(bindings.filter(b=>b.names.some(n=>n&&same(n,reference))).map(b=>canonical(w.actors[b.id])));
+  let candidates=bound.length?bound:Object.values(w.actors).filter(a=>!a.mergedInto&&actorNames(a).some(n=>n&&same(n,reference)));
+  if(candidates.length>1){const living=candidates.filter(isAlive);if(living.length)candidates=living;}
+  if(candidates.length>1&&!bound.length){const current=candidates.filter(a=>w.combat?.order?.some(row=>row.actorId===a.id));if(current.length)candidates=current;}
+  assert(candidates.length<=1,'ACTOR_AMBIGUOUS','같은 이름의 인물이 여러 명입니다. 대상 ID 또는 participants의 고유 개체 이름을 지정하세요: '+candidates.map(a=>a.name+' ['+a.id+']').join(', '));
+  return candidates[0]||null;
+}
+function binding(id,input){return {id,names:[input.name,input.realName,input.nickname,input.instanceKey,...(input.aliases||[])].filter(Boolean),...(input.kind?{kind:input.kind}:{})};}
+module.exports={find,binding};
+
+},
 "./adventure-ui.js":function(module,exports,require){
 'use strict';
 const {escapeHTML:e}=require('./util.js');
@@ -352,7 +377,9 @@ function visible(w) {
   const exits=r.exits.map(id=>p.rooms.find(n=>n.id===id)).filter(n=>n.kind!=='secret'||n.revealed).map(n=>({id:n.id,name:n.name,visited:n.visited,blocked:!!r.mechanism&&!r.solved&&r.mechanism.blockedExits.includes(n.id)}));
   return {shared:true,id:p.id,name:p.name,current:r.id,nodeName:r.name,description:r.description,exits,visited:p.rooms.filter(n=>n.visited).length,complete:p.complete,
     clues:r.clues.slice(0,r.found),mechanism:r.mechanism?{description:r.mechanism.description,solved:r.solved}:null,resource:r.resource?{name:r.resource.name,remaining:r.resource.remaining}:null,
-    map:p.rooms.filter(n=>n.visited).map(n=>({name:n.name,current:n.id===r.id,paths:n.exits.map(id=>p.rooms.find(x=>x.id===id)).filter(x=>x.visited).map(x=>x.name)})),encounter:encounter(w)};
+    map:p.rooms.filter(n=>n.visited).map(n=>({name:n.name,current:n.id===r.id,paths:n.exits.map(id=>p.rooms.find(x=>x.id===id)).filter(x=>x.visited).map(x=>x.name)})),encounter:encounter(w),
+    nextActions:{tool:'rpg_play',op:'explore',move:exits.filter(x=>!x.blocked).map(x=>({destination:x.id,name:x.name})),investigate:'현재 구역의 단서를 실제로 조사할 때',...(r.mechanism&&!r.solved||r.resource?.remaining>0?{interact:'현재 장치에 시도하거나 남은 자원을 채집할 때'}:{}),end:'이 탐험 장소를 실제로 떠날 때'},
+    instruction:'start는 장소 준비와 입장만 처리했습니다. 실제 이동·조사·조작·채집은 해당 explore 행동을 호출한 뒤 서술하세요. 위임된 장면 진행이면 같은 답변에서 이어 호출할 수 있습니다. 일상 대화나 같은 자리에 있는 묘사는 탐험 호출이 필요 없습니다.'};
 }
 async function prepare({app,scope,w,args,actorId,ask,ensure}) {
   const action=args.action;assert(alive(w.actors[actorId]),'ACTOR_INCAPACITATED','탐험할 인물의 HP를 확인하세요.');assert(['start','move','inspect','investigate','interact','end'].includes(action),'UNKNOWN_OPERATION','탐험 시작·이동·관찰·조사·조작·종료 중에서 선택하세요.');
@@ -394,7 +421,10 @@ function check(w,a,field,stat,base,rng) {
   if(isErencha(w)) {const R=require('./erencha-rules.js'),p=a.proficiencies[R.key(field)]||R.proficiency({name:field}),b=require('./erencha-proficiency.js').benefits(p);bonus=b.accuracy;insight=b.insight;yieldBonus=b.yield;}
   else if(w.meta.murim){const M=require('./murim-rules.js'),k=M.key(stat)||'SENSE';bonus=require('./rules.js').viewActor(w,a.id).raw[k]*.6;}
   else {const book=w.meta.hunters?require('./hunter-rpg.js'):require('./native-rpg.js'),stats=book.sheet(w,a.id)?.stats||[],aliases={DEX:'AGI',WIS:'SEN'},key=book.key(stat)||stat,s=stats.find(x=>x.key===key)||stats.find(x=>x.key===aliases[key])||stats.find(x=>x.key===(w.meta.hunters?'SEN':'WIS'));bonus=s?.modifier||0;}
-  const target=Math.max(0,Math.min(99,base-bonus)),roll=require('./rules.js').d100(rng);return {roll,target,success:roll>target,insight,yieldBonus,bonus};
+  const target=Math.max(0,Math.min(99,base-bonus)),roll=require('./rules.js').d100(rng),success=roll>target;
+  const critical=require('./effect-system.js').numeric(w,a,'critical'),perfectMin=Math.max(6,(isErencha(w)?96:w.profile.d100?.perfectMin??96)-critical);
+  const outcome=success&&roll>=perfectMin?'perfect':success?'success':roll<=(isErencha(w)?5:w.profile.d100?.fatalMax??5)?'fatal':'failure';
+  return {roll,target,success,outcome,insight,yieldBonus,bonus};
 }
 function grant(w,owner,item,quantity,changes) {
   if(['weapon','armor','accessory','equipment'].includes(item.type||item.category)&&quantity>1){const ids=[];for(let i=0;i<quantity;i++)ids.push(grant(w,owner,item,1,changes));return ids;}
@@ -454,7 +484,7 @@ function apply(w,plan,args,authority,rng=globalThis.crypto) {
   return output(w,plan,changes,rolled,reason);
 }
 function output(w,plan,changes,rolled,reason) {
-  return {status:'resolved',resolution:rolled?'check':'automatic',roll:rolled?.roll??null,outcome:rolled?(rolled.success?'success':'failure'):'recorded',result:{adventure:true,actorId:plan.actorId,action:{name:{start:'탐험 시작',move:'이동',inspect:'관찰',investigate:'조사',interact:'상호작용',end:'탐험 종료'}[plan.action]},target:rolled?.target??null,reason,changes,exploration:visible(w)},narrationRule:'반환된 현재 위치·발견한 단서·실제 변경만 해당 장면에 서술하세요. 숨겨진 방·해답을 추측해 확정하지 마세요. 발견한 적은 act의 대상이며 아직 싸우거나 쓰러뜨린 결과가 아닙니다. 물품과 피해는 이미 저장됐으므로 재지급·재차감하지 마세요.'};
+  return {status:'resolved',resolution:rolled?'check':'automatic',roll:rolled?.roll??null,outcome:rolled?(rolled.outcome||(rolled.success?'success':'failure')):'recorded',result:{adventure:true,actorId:plan.actorId,action:{name:{start:'탐험 시작',move:'이동',inspect:'관찰',investigate:'조사',interact:'상호작용',end:'탐험 종료'}[plan.action]},target:rolled?.target??null,reason,changes,exploration:visible(w)},narrationRule:'현재 위치·발견한 단서・수치 변화는 반환된 실제 결과를 따르세요. 숨겨진 방·해답을 추측해 확정하지 마세요. 발견한 적은 act의 대상이며 아직 싸우거나 쓰러뜨린 결과가 아닙니다. 물품과 피해는 이미 저장됐으므로 재지급·재차감하지 마세요. '+require('./narrative-flow.js').RESULT};
 }
 async function prepareNative(native,scope,tx,args,signal) {
   const temp={...tx,state:clone(tx.state)},preparations=[],key=await native.app.repo.key(scope)+'/adventure-prepared/'+await hash({tx:tx.id,args,version:1}),cache=await native.app.repo.read(key)||{responses:{}};
@@ -471,7 +501,7 @@ function validate(w) {
   assert(s.version===1&&s.places&&(!s.activeId||s.places[s.activeId]),'EXPLORATION_STATE','탐험 기록이 올바르지 않습니다.');
   for(const [id,p] of Object.entries(s.places)){assert(p.id===id&&Array.isArray(p.rooms)&&p.rooms.length>0&&p.rooms.length<=12&&p.rooms.some(r=>r.id===p.current),'EXPLORATION_STATE','탐험 지도가 올바르지 않습니다.');const ids=new Set(p.rooms.map(r=>r.id));assert(ids.size===p.rooms.length&&ids.has(p.entry)&&ids.has(p.goal),'EXPLORATION_STATE','탐험 위치가 중복되거나 없습니다.');for(const r of p.rooms){assert(r.exits.every(id=>ids.has(id))&&Array.isArray(r.actorIds)&&r.actorIds.every(id=>w.actors[id])&&Number.isInteger(r.found)&&r.found>=0&&r.found<=r.clues.length,'EXPLORATION_STATE','탐험 연결·발견 기록이 올바르지 않습니다.');if(r.resource)assert(Number.isInteger(r.resource.remaining)&&r.resource.remaining>=0,'EXPLORATION_STATE','채집원 수량이 올바르지 않습니다.');}}
 }
-const protocol=' For a real exploration use rpg_play op:explore, actor and action:start|move|inspect|investigate|interact|end. start takes place name and known context in intent; move takes a visible destination. investigate searches fixed clues; interact takes the actual physical approach or gathering intent. A move does not solve a device. Map, clues, finite sources and rewards persist. Use returned enemies in act when fighting; discovery starts no combat. Exploration rewards and damage are already applied. Exit with end when the story leaves. Do not expose undiscovered rooms or invent solutions. Keep each returned card next to its matching story paragraph.';
+const protocol=' For a real exploration use rpg_play op:explore, actor and action:start|move|inspect|investigate|interact|end. start takes place name and known context in intent; it only enters the place, never completes a search, battle, gathering or later movement. move takes a visible destination. investigate searches fixed clues; interact takes the actual physical approach or gathering intent. A move does not solve a device. Map, clues, finite sources and rewards persist. When the scene advances across a saved exit, searches the area or gathers resources, call that next operation in the SAME response after reading the prior result; do not replace it with character registration or prose. Follow current exploration and nextActions, not an abandoned/regenerated answer: if the current branch has exploration:null, an earlier discarded start has not happened here. A real new entry needs start again; do not resurrect old results or simulate prior battles. Ordinary dialogue and movement unrelated to an exploration need no exploration calls. Use returned enemies in act when fighting; discovery starts no combat. Exploration rewards and damage are already applied. Exit with end when the story leaves. Do not expose undiscovered rooms or invent solutions. Keep each returned card next to its matching story paragraph.';
 const legacy=(w,args)=>!current(w)&&(!!w.exploration||args.action==='start'&&Object.values(w.meta.archivedExplorations||{}).some(p=>norm(p.name)===norm(args.name)));
 module.exports={prepare,prepareNative,apply,applyNative,current,encounter,visible,validate,protocol,legacy};
 
@@ -1036,6 +1066,7 @@ class App {
       const manualEquipmentChanges=await require('./manual-changes.js').context(this,s,this.tx?.id);
       if(manualEquipmentChanges.length)digest+='\n'+JSON.stringify({manualEquipmentChanges})+'\n사용자가 플러그인에서 이미 변경한 장비입니다. 다음 장면에 자연스럽게 한 번 반영하고, 같은 변경을 도구로 다시 실행하지 마세요.';
       digest+=Rulebooks.statusContext(info.state)+require('./turn-review.js').context(review);
+      this.host.record('requestStatePrepared',{transactionId:info.staged?.id||null,revisionId:info.current?.id||null,reviewStatus:review?.status||null,reviewActions:(review?.results||[]).filter(r=>r.ok&&!r.alreadyRecorded&&!r.skipped).map(r=>r.actionId)});
       if (!info.state) digest += '\nRPG 상태 → 시스템 구축에서 규칙과 인물을 최초 적용해야 합니다. 준비되지 않은 판정을 성공한 것처럼 서술하지 마세요.';
     } catch (e) {
       if(!connected||e.code==='SCOPE_MISMATCH')return sourceMessages;
@@ -1054,11 +1085,22 @@ class App {
   async install(ui) {
     await this.load();
     this.ui = ui;
-    this.before = (messages, type) => this.serialized(() => this.beforeRequest(messages, type));
+    this.before = (messages, type) => {
+      const requestId=uid('request'),queuedAt=Date.now();
+      return this.serialized(async()=>{
+        const startedAt=Date.now();this.host.record('requestPreparationStarted',{requestId,type:String(type||''),queueMs:startedAt-queuedAt});
+        try {
+          const prepared=await this.beforeRequest(messages,type);
+          this.host.record('beforeRequestReturned',{requestId,type:String(type||''),transactionId:this.tx?.id||null,elapsedMs:Date.now()-startedAt});
+          return prepared;
+        }catch(error){this.host.record('requestPreparationFailed',{requestId,code:error.code||'REQUEST_PREPARATION_FAILED'});throw error;}
+      });
+    };
     this.after = (text, type) => {
       this.host.record('afterRequest', {
         type: String(type || ''),
-        length: typeof text === 'string' ? text.length : 0
+        length: typeof text === 'string' ? text.length : 0,
+        ...(this.activeTurnReview?{reviewInProgress:true,reviewId:this.activeTurnReview.id,reviewTransactionId:this.activeTurnReview.transactionId,reviewElapsedMs:Date.now()-this.activeTurnReview.startedAt}:{reviewInProgress:false})
       });
       return text;
     };
@@ -1788,7 +1830,7 @@ module.exports={ids,find,followUps,companion,skill,summon,maintainSummons,compan
 const {assert,escapeHTML:e,scopeKey,uid}=require('./util.js');
 const LABELS={commander:'지휘관 모드',action:'행동 모드',turnTable:'턴테이블',fastCombat:'전투가 길어',halfEnemyHP:'적 체력 감소',oneChance:'한 번의 기회',noGameOver:'게임오버는 없어'};
 const HELP={commander:'모든 아군의 행동을 사용자가 정합니다.',action:'사용자의 다음 행동 차례에서 서술을 멈춥니다.',turnTable:'끄면 선공 순서 없이 각자의 행동 턴을 셉니다.',oneChance:'아군이 모두 쓰러지면 전투마다 한 번 구원투수가 등장합니다.',noGameOver:'전멸하면 치료소로 돌아가며 현재 쌓인 경험치를 잃습니다.'};
-Object.assign(HELP,{fastCombat:'기존 주사위·피해·비용으로 여러 행동을 한 호출에서 계산하고 짧게 묘사합니다. 턴테이블은 최대 6라운드, 행동 게이지는 최대 60회 행동입니다. 지휘관·행동 모드와 사용자 선택 대기는 우선합니다.',halfEnemyHP:'새 전투에서 적 편의 현재·최대 HP를 50%로 적용합니다. 원래 인물의 기본 HP는 보존합니다.'});
+Object.assign(HELP,{fastCombat:'기존 주사위·피해·비용으로 여러 행동을 한 호출에서 계산하고 반복 공방 묘사를 압축합니다. 전체 답변 분량은 원래 봇 지침을 따릅니다. 턴테이블은 최대 6라운드, 행동 게이지는 최대 60회 행동이며 위임된 진행은 같은 답변에서 이어 호출할 수 있습니다. 지휘관·행동 모드와 사용자 선택 대기는 우선합니다.',halfEnemyHP:'새 전투에서 적 편의 현재·최대 HP를 50%로 적용합니다. 원래 인물의 기본 HP는 보존합니다.'});
 const defaults={commander:false,action:false,turnTable:true,fastCombat:false,halfEnemyHP:false,oneChance:false,noGameOver:false};
 const MODES={round:'턴테이블',gauge:'행동 게이지',free:'자유 진행'};
 function get(w){const raw=w.meta.combatOptions||{},values=Object.fromEntries(Object.entries(defaults).map(([k,v])=>[k,typeof raw[k]==='boolean'?raw[k]:v]));const mode=MODES[raw.mode]?raw.mode:values.turnTable?'round':'free';return {...values,mode,turnTable:mode!=='free',gaugeFormula:typeof raw.gaugeFormula==='string'?raw.gaugeFormula:'BASE',gaugeProficiency:typeof raw.gaugeProficiency==='string'&&raw.gaugeProficiency.trim()?raw.gaugeProficiency.trim():'스텝'};}
@@ -2131,6 +2173,7 @@ const descriptions = {
   rpg_registry: '소환은 summon(name,owner,mode:permanent|cast,duration), 소환 해제는 dismiss_summon(name,owner)입니다. 같은 소환수를 재사용하고 쓰러진 소환수는 부활시키지 않습니다. 실제로 등장한 새 인물은 ensure_actor(name), 여러 명은 ensure_actors(actors). 능력치·기술·장비를 준비하고 기존 인물은 현재 상태를 재사용합니다. 같은 종류의 적 개체는 고유 instanceKey, 원형 재사용은 templateId입니다. 등록만으로 전투·회복·부활하지 않습니다. train은 저장된 훈련 성장 정책의 기술 숙련을 기록합니다. 사용으로 성장하는 기술은 act로 실제 사용하며 train으로 추가 지급하지 않습니다.',
   rpg_check: '등록된 비전투 판정. 같은 사건을 다시 굴려 결과를 바꾸지 않습니다.'
 };
+descriptions.rpg_play+=' '+require('./narrative-flow.js').RESULT+' 같은 이름의 새 적은 participants에 instanceKey를 지정하고, 대상이 여럿이면 targets에 각각의 ID 또는 instanceKey를 씁니다.';
 const READ_ONLY = new Set(['rpg_bootstrap.status','rpg_bootstrap.refresh','rpg_bootstrap.get_context',...Object.keys(operations.rpg_state).map(op=>'rpg_state.'+op),'rpg_inventory.inspect','rpg_explore.inspect']);
 const catalog = require('./tool-catalog.js').createCatalog({operations, descriptions, readOnly: READ_ONLY});
 function tools({admin=false,native=false,hunters=false}={}) {
@@ -5962,6 +6005,7 @@ const Identity=require('./event-identity.js');
 const {assert,clone,hash,parseModelJSON}=require('./util.js');
 const {sourceBatches}=require('./source-batches.js');
 const R=require('./erencha-rules.js'),P=require('./erencha-prompts.js');
+const ActorReference=require('./actor-reference.js');
 const controllers=new WeakMap();
 const BUILTINS={attack:['기본 공격','공격','attack'],rest:['휴식','쉬기','rest'],escape:['도주','탈출','escape'],continue:['계속','관전','continue'],defense:['기본 방어','방어','defend'],evasion:['기본 회피','회피','피하기','dodge']};
 function builtin(name){return Object.keys(BUILTINS).find(k=>BUILTINS[k].some(n=>R.norm(n)===R.norm(name)));}
@@ -6025,7 +6069,7 @@ async function prepare(app,scope,tx,args,tool) {
   try {return await prepareValue(app,scope,tx,args,tool,c.signal);}finally{pending.delete(c);}
 }
 async function prepareValue(app,scope,tx,args,tool,signal) {
-  const key=await app.repo.key(scope)+'/prepared-erencha/'+await hash({tx:tx.id,tool,args,version:7});
+  const key=await app.repo.key(scope)+'/prepared-erencha/'+await hash({tx:tx.id,tool,args,version:8});
   const cache=await app.repo.read(key)||{responses:{},actors:[],skills:[],actions:[]};cache.objects||=[];cache.summons||=[];if(cache.plan)return {...cache.plan,cacheKey:key};
   const save=()=>app.repo.write(key,cache),w=R.upgrade(clone(tx.state));for(const a of cache.actors)R.install(w,a);
   const request=async(messages,connection,secrets)=>{assert(!app.unloaded&&!signal.aborted,'CANCELLED','요청 대기를 중단했습니다.');assert(await app.host.isCurrent(scope),'SCOPE_MISMATCH','채팅이 바뀌었습니다.');return app.provider.request(messages,connection,secrets,signal);};
@@ -6033,7 +6077,9 @@ async function prepareValue(app,scope,tx,args,tool,signal) {
   async function ensure(name,description='',kind=null,instanceKey='',identity={}) {
     const original=catalog(name),identityNames=[name,identity.realName,identity.nickname,...(identity.aliases||[]),...R.rows(canonical({},original).aliases).map(x=>x.name)].filter(Boolean);
     const matches=identityNames.map(n=>R.find(w.actors,n)).filter(Boolean);
-    const known=instanceKey?w.actors['erencha.actor.'+(await hash(instanceKey)).slice(0,20)]:matches.find(a=>a.kind==='player')||matches[0];
+    const known=instanceKey?w.actors['erencha.actor.'+(await hash(instanceKey)).slice(0,20)]:
+      identity.realName&&identity.nickname?(matches.find(a=>a.kind==='player')||matches[0]):
+      ActorReference.find(w,name)||identityNames.slice(1).map(n=>ActorReference.find(w,n)).find(Boolean);
     if(known){
       const changed=identityNames.some(n=>!(known.aliases||[]).includes(n))||identity.realName&&identity.realName!==known.realName||identity.nickname&&identity.nickname!==known.nickname||new Set(matches.map(a=>a.id)).size>1;
       if(changed){const input={...clone(known),aliases:[...new Set([...(known.aliases||[]),...identityNames])],...(identity.realName?{realName:identity.realName}:{}),...(identity.nickname?{nickname:identity.nickname}: {})};cache.actors.push(input);R.install(w,input);await save();}
@@ -6054,7 +6100,7 @@ async function prepareValue(app,scope,tx,args,tool,signal) {
     const record={...canonicalFacts,...identity,id,name,kind:resolvedKind};cache.actors.push(record);const installed=R.install(w,record);await save();return installed.id;
   }
   const actorId=await ensure(args.actor||args.actorId||args.owner||require('./actor-presence.js').player(w)?.id);
-  const ids=[],targets=[];let plan={actorId,actors:cache.actors,skills:cache.skills,actions:cache.actions,objects:cache.objects,summons:cache.summons};
+  const ids=[],targets=[],participantBindings=[];let plan={actorId,actors:cache.actors,skills:cache.skills,actions:cache.actions,objects:cache.objects,summons:cache.summons,participantBindings};
   const FX=require('./effect-system.js');for(const object of cache.objects)FX.object(w,object);
   for(const input of args.objects||[]){const old=R.find(w.meta.effectObjects,input.name),id=old?.id||'object.'+(await hash(input.name)).slice(0,24);if(!old){cache.objects.push({...input,id});FX.object(w,{...input,id});}}
   if(tool==='rpg_play'&&args.op==='explore'){
@@ -6064,7 +6110,7 @@ async function prepareValue(app,scope,tx,args,tool,signal) {
   if(tool==='rpg_play'&&args.op==='record'&&w.meta.eventClaims[Identity.actorEventKey('event',actorId,args)])return {...plan,event:{},participantIds:[],targetIds:[],cacheKey:key};
   if(tool==='rpg_registry'&&args.op==='dismiss_summon'){const found=R.find(w.actors,args.name);assert(found,'UNKNOWN_ACTOR','해제할 소환수를 지정하세요.');return {...plan,participantIds:[found.id],targetIds:[],cacheKey:key};}
   if(tool==='rpg_registry')for(const a of args.op==='ensure_actors'?args.actors:[args.op==='summon'?{...args,kind:'summon'}:args]){const id=await ensure(a.name,a.description,a.kind||null,a.instanceKey,a);ids.push(id);if(a.kind==='summon'){const ownerId=a.owner?await ensure(a.owner):actorId;cache.summons.push({id,ownerId});}}
-  for(const p of args.participants||[]){const id=await ensure(p.name,p.description,p.kind||null,p.instanceKey,p);ids.push(id);if(p.kind==='summon'){const ownerId=p.owner?await ensure(p.owner):actorId;cache.summons.push({id,ownerId});w.actors[id].ownerId=ownerId;}}
+  for(const p of args.participants||[]){const id=await ensure(p.name,p.description,p.kind||null,p.instanceKey,p);ids.push(id);participantBindings.push(ActorReference.binding(id,p));if(p.kind==='summon'){const ownerId=p.owner?await ensure(p.owner):actorId;cache.summons.push({id,ownerId});w.actors[id].ownerId=ownerId;}}
   const selected=R.find(Object.fromEntries(w.actors[actorId].skills.map(id=>[id,w.definitions.skills[id]])),args.action);
   const attacking=builtin(args.action)==='attack'||['attack','command'].includes(selected?.type)||!selected&&/공격|사격|베기|찌르기|타격|밀치기|attack|strike|thrust|bash/i.test(args.action||'');
   const relations=selected?.mechanics?.targeting?.relations;
@@ -6073,8 +6119,9 @@ async function prepareValue(app,scope,tx,args,tool,signal) {
   if(attacking&&!args.targets?.length&&discovered)targets.push(...discovered.enemies.map(e=>e.id));
   for(const n of args.targets||[]){const object=R.find(w.meta.effectObjects,n);if(object){targets.push(object.id);continue;}
     if(selected?.mechanics?.targeting?.kinds?.length===1&&selected.mechanics.targeting.kinds[0]==='object'){const input={name:n,id:'object.'+(await hash(n)).slice(0,24)};cache.objects.push(input);targets.push(FX.object(w,input).id);continue;}
-    targets.push(await ensure(n,args.intent||'',attacking&&!friendly?'enemy':friendly?'ally':null));}
-  if(args.target)targets.push(await ensure(args.target));
+    const bound=ActorReference.find(w,n,{bindings:participantBindings});
+    targets.push(bound?.id||await ensure(n,args.intent||'',attacking&&!friendly?'enemy':friendly?'ally':null));}
+  if(args.target)targets.push(ActorReference.find(w,args.target,{bindings:participantBindings})?.id||await ensure(args.target));
   const actor=w.actors[actorId];
   if(tool==='rpg_play'&&args.op==='act') {
     const basic=builtin(args.action),known=R.find(Object.fromEntries(actor.skills.map(id=>[id,w.definitions.skills[id]])),args.action),saved=R.find(Object.fromEntries(Object.entries(w.meta.erencha.actions).filter(([,s])=>s.ownerId===actorId)),args.action);
@@ -6167,10 +6214,12 @@ const R=require('./erencha-rules.js');
 const Proficiency=require('./erencha-proficiency.js');
 const CombatOptions=require('./combat-options.js');
 const Gauge=require('./action-gauge.js');
+const Roll=require('./erencha-roll.js');
+const Narrative=require('./narrative-flow.js');
 const alive=a=>!!a&&a.active!==false&&a.resources.hp.current>0;
 const change=(rows,label,value)=>rows.push({label,value:String(value)});
 const actor=(w,id)=>{const a=R.find(w.actors,id)||R.find(w.meta.effectObjects,id);assert(a,'UNKNOWN_ACTOR','등록된 인물을 지정하세요.');return a;};
-const result=(w,a,name,changes=[],extra={})=>({status:'resolved',resolution:extra.roll?'check':'automatic',roll:extra.roll||null,outcome:extra.outcome||'resolved',result:{rulebook:'erencha',actorId:a.id,actorName:a.name,action:{name},changes,...extra,...(extra.targetId?{targetName:(w.actors[extra.targetId]||w.meta.effectObjects?.[extra.targetId])?.name||extra.targetId}: {})},narrationRule:(extra.batched?'기존 규칙으로 여러 행동을 계산했습니다. steps의 실제 결과를 짧게 묶어 묘사하고 미완료 전투는 이어갈 수 있습니다. ':'')+'실제 명중·피해·자원·숙련도·턴 결과만 서술하세요. 주사위 실패는 처리된 결과입니다. 캐릭터 레벨과 숙련도는 별개입니다.'});
+const result=(w,a,name,changes=[],extra={})=>({status:'resolved',resolution:extra.roll?'check':'automatic',roll:extra.roll||null,outcome:extra.outcome||'resolved',result:{rulebook:'erencha',actorId:a.id,actorName:a.name,action:{name},changes,...extra,...(extra.targetId?{targetName:(w.actors[extra.targetId]||w.meta.effectObjects?.[extra.targetId])?.name||extra.targetId}: {})},narrationRule:(extra.batched?Narrative.BATCH:'')+'명중·피해·자원·숙련도·턴 수치는 저장된 실제 결과를 따르세요. 주사위 실패는 처리된 결과입니다. 캐릭터 레벨과 숙련도는 별개입니다. '+Narrative.RESULT});
 function proficiency(a,name){return a.proficiencies?.[R.key(name)]||R.proficiency({name});}
 function settleEffectDeaths(w,events,rng){for(const e of [...events])if(e.defeated&&w.actors[e.targetId]){const target=w.actors[e.targetId],source=w.actors[e.sourceId];if(source&&source.id!==target.id)awardKill(w,source,target,events,rng);else if(target.entity==='avatar')(w.meta.erencha.respawns||={})[target.id]=true;}}
 function tick(w,a,rng=globalThis.crypto,events=(w.meta.effectEvents||=[])) {
@@ -6214,12 +6263,13 @@ function hitOnce(w,a,t,s,args,rng,{linked=false,extraTarget=false,counterMultipl
   require('./combat-features.js').automatic(w,a,rng,changes);
   if(!extraTarget&&!bypass&&s.cooldown)a.cooldowns[s.id]=s.cooldown+1;
   if(!extraTarget)a.uses[s.id]=R.num(a.uses[s.id])+1;
-  let roll=null,success=true,damage=0,threshold=null;
+  let roll=null,success=true,damage=0,threshold=null,outcome='success';
   if(s.type==='attack') {
     assert(t&&alive(t),'TARGET_REQUIRED','공격할 살아 있는 대상을 지정하세요.');
     const tm=FX.isObject(t)?{defense:0,evasion:0,poisonImmunity:0}:R.modifiers(w,t),ev=proficiency(t,'회피');
     threshold=Math.max(5,Math.min(95,s.target+Proficiency.benefits(ev).evasion+tm.evasion-Proficiency.benefits(p).accuracy-mod.accuracy+(t.stance==='evasion'&&!s.area?(t.stancePower??20):0)));
-    roll=FX.isObject(t)?null:d100(rng);success=FX.isObject(t)||roll>threshold;
+    roll=FX.isObject(t)?null:d100(rng);
+    if(roll!==null)({success,outcome}=Roll.classify(roll,threshold,FX.numeric(w,a,'critical')));
     if(roll!==null&&roll<=5&&!fxContext.fumble){fxContext.fumble=true;a.conditions.push({id:uid('fumble'),name:'대실패 · 다음 행동 불가',duration:2,component:require('./effect-model.js').row({type:'incapacitated',name:'대실패 · 자세 붕괴',value:1,duration:2}),sourceId:a.id});change(changes,'대실패 패널티','다음 자신의 행동 1회 불가');}
     if(ranged) {
       const saved=mod.ammoSaving>0&&d100(rng)<=mod.ammoSaving;if(!saved)ammo.quantity--;change(changes,ammo.name,saved?'절약 발동 · 소비 없음':'-1 · 남은 수량 '+ammo.quantity);
@@ -6230,7 +6280,7 @@ function hitOnce(w,a,t,s,args,rng,{linked=false,extraTarget=false,counterMultipl
       if(t.stance==='evasion'&&s.area)damage=Math.round(damage*1.2);
       if(s.damageType==='poison'&&tm.poisonImmunity>0){damage=0;change(changes,'독 면역',t.name+' · 독 피해 무효');}
       const before=t.resources.hp.current;
-      const critical=FX.numeric(w,a,'critical');if(critical>0&&roll!==null&&roll>=Math.max(1,96-critical))damage=Math.round(damage*1.5);
+      if(outcome==='perfect'){damage=Math.round(damage*1.5);change(changes,'대성공','공격 피해 ×1.5');}
       const impact=FX.damage(w,t,damage,type,{sourceId:a.id,attack:true,secondary:counterMultiplier!==null,enchanted:true,rng,events:changes});damage=impact.hpDamage;
       FX.apply(w,a,[t],s,{hit:true,hpDamage:damage,rng,events:changes,handled:fxContext.handled});FX.attachments(w,a,[t],{hit:true,hpDamage:damage,rng,events:changes});
       const debuffs=s.effects.filter(x=>x.value<0);
@@ -6251,17 +6301,21 @@ function hitOnce(w,a,t,s,args,rng,{linked=false,extraTarget=false,counterMultipl
   settleEffectDeaths(w,changes,rng);
   if(!deferAfter)FX.afterAction(w,a,{hit:success,kill:t&&!alive(t),rng,events:changes,reaction:linked,token:fxContext.token,preparedIds:fxContext.preparedIds});
   if(!extraTarget)R.gainProficiency(w,a,s.proficiency,changes,args);
-  const out=result(w,a,s.name,changes,{targetId:t?.id||null,retargeted:t?.id!==initialTarget,success,damage,roll,target:threshold,outcome:roll!==null&&roll<=5?'fatal':success?'success':'failure',linked});
+  const out=result(w,a,s.name,changes,{targetId:t?.id||null,retargeted:t?.id!==initialTarget,success,damage,roll,target:threshold,outcome,linked});
 
   return out;
 }
 function hit(w,a,t,s,args,rng,options={}){
+  assert(alive(a),'ACTOR_INCAPACITATED',a.name+'은 행동할 수 없습니다.');
+  assert(s.type!=='attack'||t&&alive(t),'TARGET_REQUIRED','공격할 살아 있는 대상을 지정하세요.');
+  assert(!t||alive(t),'TARGET_REQUIRED','효과를 적용할 수 있는 대상을 지정하세요.');
   const rows=[],F=require('./combat-features.js');
   for(let n=0;n<(s.type==='attack'?(s.mechanics?.hits||1):1);n++){
     if(!alive(a)||t&&!alive(t))break;
     const out=hitOnce(w,a,t,s,{...args,_effectContext:n?{handled:new Set(),token:uid('strike')}:args._effectContext},rng,{...options,linked:options.linked===true||n>0,extraTarget:options.extraTarget||n>0});rows.push(out);if(out.result.skippedAction)break;
   }
-  const first=rows[0]||result(w,a,s.name,[],{success:false,reason:'행동 가능한 대상 없음'});if(first.result.skippedAction)return first;
+  assert(rows.length,'TARGET_REQUIRED','행동을 실행하지 못했습니다. 현재 행동자와 대상을 확인하세요.');
+  const first=rows[0];if(first.result.skippedAction)return first;
   if(!options.extraTarget)F.summon(w,a,s,first.result.changes);
   if(!options.linked&&!options.extraTarget&&(s.type==='command'||rows.some(x=>x.result.success))){let budget=20,landed=true;for(const link of F.followUps(s)){
     const companion=F.companion(w,a,link.actor),follow=companion&&F.skill(w,companion,link.skill,s,a.id);
@@ -6315,7 +6369,12 @@ function battleContext(w,plan,args) {
   const ids=[...new Set([...(plan.builtin==='continue'?[]:[plan.actorId]),...plan.participantIds,...plan.targetIds,...require('./combat-features.js').companionIds(w,[plan.actorId,...plan.participantIds])])].filter(id=>w.actors[id]&&alive(w.actors[id]));
   const teams=Object.fromEntries(ids.map(id=>[id,w.combat?.teams?.[id]??((w.actors[w.actors[id].ownerId]||w.actors[id]).kind==='enemy'?1:0)]));
   const declared=new Map();
-  for(const p of args.participants||[]){const a=R.find(w.actors,p.name);if(a&&p.kind){declared.set(a.id,p.kind);if(a.id in teams)teams[a.id]=p.kind==='enemy'?1:0;}}
+  const bindings=plan.participantBindings||(args.participants||[]).map(p=>{
+    const rows=(plan.participantIds||[]).map(id=>w.actors[id]).filter(Boolean);
+    const a=rows.find(a=>a.id===p.name)||rows.find(a=>[a.name,...(a.aliases||[])].some(n=>R.norm(n)===R.norm(p.name)));
+    return {id:a?.id,kind:p.kind};
+  });
+  for(const p of bindings){if(w.actors[p.id]&&p.kind){declared.set(p.id,p.kind);if(p.id in teams)teams[p.id]=p.kind==='enemy'?1:0;}}
   const a=w.actors[plan.actorId],side=teams[a.id]??(FX.enemy(w,a)?1:0),skill=w.definitions.skills[plan.skillId];
   const attack=plan.builtin==='attack'||['attack','command'].includes(skill?.type);
   const relations=skill?.mechanics?.targeting?.relations,allowsAlly=relations?.includes('ally')||relations?.includes('self');
@@ -6364,7 +6423,7 @@ function combat(w,plan,args,authority,rng) {
   if(added.length){if(configured&&!Gauge.active(w)){c.order.sort((x,y)=>y.initiative-x.initiative);c.index=Math.max(0,c.order.findIndex(row=>row.actorId===currentId));}else if(c.freeQueue)c.freeQueue.push(...added);}
   if(c.turnTable!==configured){const currentId=c.order[c.index]?.actorId;c.turnTable=configured;delete c.freeQueue;if(configured){for(const row of c.order){row.roll=d100(rng);row.initiative=row.roll+R.modifiers(w,w.actors[row.actorId]).evasion+FX.numeric(w,w.actors[row.actorId],'initiative');}c.order.sort((x,y)=>y.initiative-x.initiative);c.index=Math.max(0,c.order.findIndex(x=>x.actorId===currentId));}}
   CombatOptions.scaleEnemies(w);
-  const batched=CombatOptions.batch(w,authority),steps=[],initialRound=c.round,limit=Gauge.active(w)?(batched?60:Math.min(60,Math.max(12,c.order.length*2))):Math.min(120,c.order.length*(batched?6:2)+1);let applied=false;
+  const batched=CombatOptions.batch(w,authority),steps=[],initialRound=c.round,limit=Gauge.active(w)?(batched?60:Math.min(60,Math.max(12,c.order.length*2))):Math.min(120,c.order.length*(batched?6:2)+1);let applied=false,attention=null;
   if(c.turnTable===false){c.freeQueue||=c.order.map(r=>r.actorId).filter(id=>alive(w.actors[id]));if(plan.builtin!=='continue')c.freeQueue=[plan.actorId,...c.freeQueue.filter(id=>id!==plan.actorId)];}
   const turnTable=c.turnTable===false||Gauge.active(w)?null:clone(c.order.map((r,i)=>({...r,name:w.actors[r.actorId].name,current:i===c.index})));
   if(Gauge.active(w))steps.push({result:result(w,actor(w,plan.actorId),'행동 게이지',FX.takeEvents(w),{gauge:Gauge.snapshot(w)})});
@@ -6381,22 +6440,26 @@ function combat(w,plan,args,authority,rng) {
     let out;
     if(requested&&plan.action?.type==='task')out=require('./erencha-life.js').perform(w,plan,args,rng,{combatTurn:true});
     else if(requested&&['defense','evasion'].includes(plan.builtin)) {if(plan.builtin==='defense')assert(!FX.has(w,a,'defenseBlock'),'DEFENSE_BLOCKED','갑옷 파괴 상태에서는 방어할 수 없습니다.');a.stance=plan.builtin;const changes=[];R.gainProficiency(w,a,plan.builtin==='evasion'?'회피':'방어',changes,args);change(changes,'태세',plan.builtin==='defense'?'다음 자기 턴까지 받는 피해 50% 경감':'회피 난이도 +20 · 광역 피격 피해 +20%');out=result(w,a,args.action,changes);}
-    else if(requested&&plan.builtin==='escape') {const roll=d100(rng),threshold=Math.max(5,Math.min(95,50-Proficiency.benefits(proficiency(a,'스텝')).accuracy)),success=roll>threshold,changes=[];R.gainProficiency(w,a,'스텝',changes);out=result(w,a,'탈출',changes,{roll,target:threshold,success,outcome:success?'success':'failure'});if(success){w.combat=null;change(changes,'전투','탈출');}}
+    else if(requested&&plan.builtin==='escape') {const roll=d100(rng),threshold=Math.max(5,Math.min(95,50-Proficiency.benefits(proficiency(a,'스텝')).accuracy)),check=Roll.classify(roll,threshold,FX.numeric(w,a,'critical')),changes=[];R.gainProficiency(w,a,'스텝',changes);out=result(w,a,'탈출',changes,{roll,target:threshold,...check});if(check.success){w.combat=null;change(changes,'전투','탈출');}}
     else {
       let skill=requested?(plan.skillId?w.definitions.skills[plan.skillId]:basic(a)):automaticSkill(w,a,enemy);
-      let selected=requested?FX.targets(w,a,skill,plan.targetIds.length?plan.targetIds:[enemy.id]):FX.targets(w,a,skill,[enemy.id]);
-      const forced=FX.activeRows(w,a).find(e=>e.r.type==='taunt'),forcedTarget=forced&&FX.entity(w,forced.state.referenceId||forced.state.sourceId);
-      if(!requested&&forcedTarget&&alive(forcedTarget))selected=[forcedTarget];if(['defense','evasion'].includes(skill.type))selected=[a];
-      const target=selected[0];assert(target,'INVALID_TARGET','조건에 맞는 대상이 없습니다.');
+      let selected,target;
       const callArgs={...args,_effectContext:{handled:new Set(),token:uid('effect-action')}};
-      try {out=hit(w,a,target,skill,callArgs,rng,{deferAfter:true});}catch(error) {
-        if(!['SKILL_COOLDOWN','SKILL_USES','INSUFFICIENT_RESOURCE','AMMO_MISSING','TARGET_REQUIRED','PASSIVE_SKILL'].includes(error.code))throw error;
-        steps.push({result:result(w,a,skill.name,[],{outcome:'awaiting_action',reason:error.message,success:null})});
+      try {
+        selected=requested?FX.targets(w,a,skill,plan.targetIds.length?plan.targetIds:[enemy.id]):FX.targets(w,a,skill,[enemy.id]);
+        const forced=FX.activeRows(w,a).find(e=>e.r.type==='taunt'),forcedTarget=forced&&FX.entity(w,forced.state.referenceId||forced.state.sourceId);
+        if(!requested&&forcedTarget&&alive(forcedTarget))selected=[forcedTarget];if(['defense','evasion'].includes(skill.type))selected=[a];
+        target=selected[0];assert(target,'INVALID_TARGET','조건에 맞는 대상이 없습니다.');
+        out=hit(w,a,target,skill,callArgs,rng,{deferAfter:true});
+      }catch(error) {
+        if(!['SKILL_COOLDOWN','SKILL_USES','INSUFFICIENT_RESOURCE','AMMO_MISSING','TARGET_REQUIRED','INVALID_TARGET','PASSIVE_SKILL','ACTOR_INCAPACITATED'].includes(error.code))throw error;
+        attention={actorId:a.id,code:error.code,reason:error.message};
+        steps.push({result:result(w,a,skill.name,[],{outcome:'awaiting_action',reason:error.message,success:null,actionExecuted:false})});
         break;
       }
       if(!out.result.skippedAction&&!out.result.retargeted&&(skill.area||skill.mechanics?.targeting)){
         const extra=skill.mechanics?selected.slice(1):(requested?plan.targetIds:current.order.map(x=>x.actorId)).filter(id=>id!==target.id&&current.teams[id]!==current.teams[a.id]&&alive(w.actors[id])).map(id=>w.actors[id]);
-        if(extra.length){out.result.steps||=[{result:outWithoutSteps(out)}];for(const other of extra)out.result.steps.push({result:hit(w,a,other,skill,callArgs,rng,{linked:true,extraTarget:true,deferAfter:true})});}
+        if(extra.length){out.result.steps||=[{result:outWithoutSteps(out)}];for(const other of extra){if(!alive(a))break;if(!alive(other))continue;out.result.steps.push({result:hit(w,a,other,skill,callArgs,rng,{linked:true,extraTarget:true,deferAfter:true})});}}
       }
       if(!out.result.skippedAction)FX.afterAction(w,a,{hit:out.result.success||(out.result.steps||[]).some(x=>x.result.result.success),kill:selected.some(t=>!alive(t)),rng,events:tailChanges(out),token:callArgs._effectContext.token,preparedIds:callArgs._effectContext.preparedIds});
     }
@@ -6407,7 +6470,7 @@ function combat(w,plan,args,authority,rng) {
   const a=actor(w,plan.actorId),next=w.combat?w.actors[w.combat.order[w.combat.index].actorId]:null;
   const finalEvents=FX.takeEvents(w);if(steps.length)tailChanges(steps.at(-1).result).push(...finalEvents);
   if(steps.length&&Gauge.active(w))tailResult(steps.at(-1).result).gauge=Gauge.snapshot(w);
-  return result(w,a,args.action,steps.length?[]:finalEvents,{steps,turnTable,...(Gauge.active(w)?{gauge:Gauge.snapshot(w)}:{}),round:initialRound,batched,requestedActionApplied:applied,pending:next?{actorId:next.id,name:next.name,awaitUser:CombatOptions.get(w).commander&&CombatOptions.controlled(w,next)||CombatOptions.get(w).action&&next.kind==='player',reason:next.kind==='player'?'다음 행동 선택':'다음 교전자',instruction:CombatOptions.get(w).commander&&CombatOptions.controlled(w,next)||CombatOptions.get(w).action&&next.kind==='player'?'사용자 입력을 기다립니다.':'상위 RP에서 행동을 위임했다면 같은 응답에서 다음 act를 선택할 수 있습니다. 이미 처리된 steps는 반복하지 마세요.'}:null,outcome:steps.length?'resolved':'awaiting_action'});
+  return result(w,a,args.action,steps.length?[]:finalEvents,{steps,turnTable,...(Gauge.active(w)?{gauge:Gauge.snapshot(w)}:{}),round:initialRound,batched,requestedActionApplied:applied,...(attention?{attention}:{}),pending:next?{actorId:next.id,name:next.name,awaitUser:CombatOptions.get(w).commander&&CombatOptions.controlled(w,next)||next.kind==='player'&&(CombatOptions.get(w).action||!authority.playerActions),reason:attention?.reason||(next.kind==='player'?'다음 행동 선택':'다음 교전자'),instruction:attention?'실행되지 않은 행동입니다. 현재 대상·비용·사용 조건을 확인하고 수정한 다음 행동만 요청하세요. 실패 판정이나 턴 소비로 서술하지 마세요.':CombatOptions.get(w).commander&&CombatOptions.controlled(w,next)||next.kind==='player'&&(CombatOptions.get(w).action||!authority.playerActions)?'사용자 입력을 기다립니다.':'상위 RP에서 행동을 위임했다면 같은 응답에서 다음 act를 선택할 수 있습니다. 이미 처리된 steps는 반복하지 마세요.'}:null,outcome:attention?'attention':steps.length?'resolved':'awaiting_action'});
 }
 function inventory(w,plan,args,rng,authority) {
   const a=actor(w,plan.actorId),changes=[],useRolls=[],q=R.num(args.quantity,1,1,1e6);
@@ -6530,7 +6593,7 @@ function action(w,plan,tool,args,authority={},rng=globalThis.crypto) {
    }else if(!battle.engaged&&(plan.skillId||plan.builtin==='attack')&&(args.combat===false||plan.skillId&&['heal','buff','defense','evasion'].includes(w.definitions.skills[plan.skillId].type)||plan.targetIds.length&&plan.targetIds.every(id=>FX.isObject(FX.entity(w,id))||FX.relation(w,a,FX.entity(w,id))!=='enemy'))){
     const skill=plan.skillId?w.definitions.skills[plan.skillId]:basic(a),selected=FX.targets(w,a,skill,plan.targetIds.length?plan.targetIds:[a.id]);assert(selected.length,'INVALID_TARGET','조건에 맞는 대상이 없습니다.');
     tick(w,a,rng);const context={...args,_effectContext:{handled:new Set(),token:uid('effect-action')}},rows=[];
-    for(const [i,t] of selected.entries()){if(FX.isObject(t))t.effectTickOwner=a.id;rows.push(hit(w,a,t,skill,context,rng,{extraTarget:i>0,linked:i>0,deferAfter:true}));if(rows[0].result.skippedAction||rows[0].result.retargeted||!alive(a))break;}
+    for(const [i,t] of selected.entries()){if(i&&!alive(t))continue;if(FX.isObject(t))t.effectTickOwner=a.id;rows.push(hit(w,a,t,skill,context,rng,{extraTarget:i>0,linked:i>0,deferAfter:true}));if(rows[0].result.skippedAction||rows[0].result.retargeted||!alive(a))break;}
     output=rows[0];if(!output.result.skippedAction)FX.afterAction(w,a,{hit:rows.some(r=>r.result.success),rng,events:output.result.changes,token:context._effectContext.token,preparedIds:context._effectContext.preparedIds});
     if(rows.length>1)output={...outWithoutSteps(output),result:{...output.result,steps:rows.map(result=>({result}))}};
     FX.sceneTick(w,a,rng,tailChanges(output));settleEffectDeaths(w,tailChanges(output),rng);
@@ -6760,7 +6823,7 @@ function perform(w,plan,args,rng,{combatTurn=false}={}) {
   assert(!(a.cooldowns[d.id]>0),'SKILL_COOLDOWN','이 활동의 재사용 대기가 남았습니다.');
   assert(d.uses==null||R.num(a.uses[d.id])<d.uses,'SKILL_USES','기술 사용 횟수를 모두 썼습니다.');
   const gate=FX.beforeAction(w,a,d,[a],rng,changes);if(gate.skipped){if(!combatTurn)FX.tick(w,a,'turn_end',rng,changes);return {status:'resolved',outcome:'failure',result:{rulebook:'erencha',actorId:a.id,action:{name:d.name},changes,skippedAction:true}};}
-  const target=Math.max(5,Math.min(95,d.target-b.accuracy-mod.accuracy)),roll=require('./rules.js').d100(rng),success=roll>target;
+  const target=Math.max(5,Math.min(95,d.target-b.accuracy-mod.accuracy)),roll=require('./rules.js').d100(rng),{success,outcome}=require('./erencha-roll.js').classify(roll,target,FX.numeric(w,a,'critical'));
   if(success){c.yield=potential-Math.floor(potential);b.outputQuantity=quantity;}
   if(cost){a.resources.mp.current-=cost;changes.push({label:'MP 소비',value:String(cost)});}
   a.uses[d.id]=R.num(a.uses[d.id])+1;
@@ -6778,7 +6841,7 @@ function perform(w,plan,args,rng,{combatTurn=false}={}) {
   R.gainProficiency(w,a,d.proficiency,changes,args);
   if(success)R.gainXP(w,a,Math.round(d.rewardXP*P.benefits(p).power),changes);
   if(b.minutes)changes.push({label:'작업 소요 시간',value:b.minutes+'분 · 기준 '+activity.minutes+'분'});
-  const output={status:'resolved',resolution:'check',roll,outcome:success?'success':'failure',result:{rulebook:'erencha',actorId:a.id,action:{name:d.name},roll,target,success,changes,createdItems,activity:{kind:activity.kind,benefits:activity.benefits,...b}},narrationRule:'완성품·재료 소비·회복량은 이미 저장됐습니다. gain/lose로 다시 지급·차감하지 마세요. 같은 이름의 품질이 다르면 반환된 물품 ID를 사용하세요. 소요 시간만 작업에 반영하고 날짜·장소는 현재 RP를 따르세요.'};
+  const output={status:'resolved',resolution:'check',roll,outcome,result:{rulebook:'erencha',actorId:a.id,action:{name:d.name},roll,target,success,outcome,changes,createdItems,activity:{kind:activity.kind,benefits:activity.benefits,...b}},narrationRule:'완성품·재료 소비·회복량은 이미 저장됐습니다. gain/lose로 다시 지급·차감하지 마세요. 같은 이름의 품질이 다르면 반환된 물품 ID를 사용하세요. 소요 시간만 작업에 반영하고 날짜·장소는 현재 RP를 따르세요. '+require('./narrative-flow.js').RESULT};
   return output;
 }
 const needsRecipe=s=>s.type==='task'&&(!s.activity||s.activity.output&&!s.activity.inputs.length&&!s.activity.source&&s.mpCost===0);
@@ -6824,7 +6887,8 @@ module.exports={BASE,PERSON,SKILL:SKILL+' '+LIFE,ACTION,LIFE,RECORD,protocol:pro
 module.exports.SKILL+='\n'+require('./effect-presets.js').PROMPT;
 
 module.exports.RECORD+=' Quest acceptance is quest_offer, never quest_update. Copy promised XP, gold, items and class rewards at acceptance. When RP has accepted a real quest but its numeric reward was never specified, prepare a modest reward once using its task, difficulty and actor level (e.g. beginner errand XP 30-100 and gold 20-100); mark rewardBasis:"inferred". Preserve explicit no-reward quests as zero with rewardBasis:"explicit none". Do not silently use 0 for missing reward information. quest_rewards fills only previously unrecorded rewards; fixed or user-edited rewards remain authoritative. A numeric growth announcement that contradicts an already recorded roll is not a missing award.';
-module.exports.protocol+=' combatOptions.fastCombat batches several real rounds with unchanged rolls, costs and damage. Narrate the returned steps concisely; never repeat them. A normal next-player turn permits the next chosen act within the same response when the RP delegates it. Stop for awaitUser or the explicit commander/action modes.';
+module.exports.protocol+=' combatOptions.fastCombat batches several real rounds with unchanged rolls, costs and damage. Compress only repetitive blow-by-blow detail, never the original response length. '+require('./narrative-flow.js').GUIDE;
+module.exports.protocol+=' High-roll checks use 96–100 as the base perfect/critical range; a saved critical bonus can lower it. 95 is normally an ordinary success. Copy the actual returned outcome, including perfect and fatal. If enemies share a name, bind targets to the current participants and their distinct instanceKey values or use saved actor IDs. Do not target an earlier defeated instance. requestedActionApplied:false or actionExecuted:false is not a failed roll and consumes no unexecuted attack; read attention and correct only the unexecuted action, never replay already resolved steps.';
 
 module.exports.protocol+=' playerActorIds identifies the user avatar. Other human online players are ally avatars, never another user-controlled player. registeredActors lists prepared identities; present=false does not mean missing data. Registering a person does not automatically add them to the visible current cast. Current quests exclude completedQuests, which remain history.';
 
@@ -6873,6 +6937,17 @@ function apply(w,a,event,args,changes){
 }
 function validate(w){for(const [id,q] of Object.entries(w.meta.erencha.quests)){assert(q.id===id&&w.actors[q.actorId]&&typeof q.name==='string'&&['active','completed'].includes(q.status),'QUEST_STATE','퀘스트의 인물·이름·상태가 올바르지 않습니다.');for(const k of ['rewardXP','gold','fame'])assert(q[k]===undefined||Number.isFinite(q[k])&&q[k]>=0,'QUEST_STATE','퀘스트 보상 값이 올바르지 않습니다.');}}
 module.exports={KINDS,find,normalize,apply,validate};
+
+},
+"./erencha-roll.js":function(module,exports,require){
+'use strict';
+// Erencha's high-roll checks use a fixed base critical range. A critical
+// modifier widens/narrows that range; it is not required to enable criticals.
+function classify(roll,target,criticalBonus=0) {
+  const success=roll>target,perfectMin=Math.max(6,96-criticalBonus);
+  return {success,outcome:roll<=5?'fatal':success&&roll>=perfectMin?'perfect':success?'success':'failure'};
+}
+module.exports={classify};
 
 },
 "./erencha-rules.js":function(module,exports,require){
@@ -7149,6 +7224,8 @@ const descriptions={
     rpg_economy:'trade(actor,item,mode:buy|sell|auction,quantity). 저장된 가격으로 원자적 정산. auction은 판매 수수료10%. 처음 보는 상점 물건은 description에 제안을 적으면 가격·효과를 준비한 뒤 구매합니다. 원화 환전은 지원하지 않습니다.'
 };
 descriptions.rpg_play+=' explore: 장소 name 또는 destination과 실제 조작 intent로 탐험합니다. 이동·조작·획득은 별도 결과이며 적 발견만으로 전투를 시작하지 않습니다.';
+descriptions.rpg_play+=' '+require('./narrative-flow.js').RESULT;
+ops.rpg_play.act.properties.targets.description='현재 대상의 저장 ID 또는 이름. 같은 이름의 새 개체는 participants에 instanceKey를 지정하세요. 같은 호출에 동명 개체가 여럿이면 targets에는 각각의 ID 또는 instanceKey를 씁니다.';
 const catalog=require('./tool-catalog.js').createCatalog({operations:ops,descriptions,readOnly:new Set([...Object.keys(ops.rpg_state).map(op=>'rpg_state.'+op),'rpg_inventory.inspect'])});
 module.exports={ops,catalog,readOnly:catalog.isReadOnly,validateCall:catalog.validateCall,tools:catalog.tools};
 
@@ -7586,13 +7663,13 @@ const FX=require('./effect-system.js');
 const {stableId}=require('./semantic-actor.js');
 const CombatOptions=require('./combat-options.js');
 const Gauge=require('./action-gauge.js');
+const ActorReference=require('./actor-reference.js');
+const Narrative=require('./narrative-flow.js');
 
 function findActor(w,name) {
-  if(w.actors[name])return w.actors[name];
-  const matches=Object.values(w.actors).filter(a=>[a.name,...(w.meta.native.actors[a.id]?.aliases || [])].some(n=>N.sameSkill(n,name)));
-  assert(matches.length<=1,'ACTOR_AMBIGUOUS','같은 이름의 인물이 여러 명입니다. 표시된 개체 이름으로 구분하세요.');
-  return matches[0] || null;
+  return resolveActor(w,name);
 }
+const resolveActor=(w,name,bindings=[])=>ActorReference.find(w,name,{bindings,actorNames:a=>[a.name,...(w.meta.native.actors[a.id]?.aliases||[])],same:N.sameSkill,isAlive:Engine.alive});
 const actionKind=name=>({공격:'attack',기본공격:'attack',attack:'attack',basicattack:'attack',대기:'wait',wait:'wait',방어:'defense',기본방어:'defense',defense:'defense',회피:'evasion',기본회피:'evasion',evasion:'evasion',계속:'continue',진행:'continue',관전:'continue',continue:'continue'})[N.norm(name)];
 function knownSkill(w,actor,name) {
   const alias=w.meta.native.skillAliases?.[actor.id]?.[N.norm(name)];
@@ -7600,7 +7677,7 @@ function knownSkill(w,actor,name) {
 }
 async function prepare(native,scope,tx,args,signal) {
   assert(args.combat!==false||!tx.state.combat,'COMBAT_ACTIVE','진행 중인 전투는 비전투 호출로 건너뛸 수 없습니다. 현재 턴의 행동이나 반응을 처리하세요.');
-  const key=await native.app.repo.key(scope)+'/prepared-play/'+await hash({tx:tx.id,args,flow:3});
+  const key=await native.app.repo.key(scope)+'/prepared-play/'+await hash({tx:tx.id,args,flow:4});
   const cached=await native.app.repo.read(key) || {preparations:[]};
   if(cached.plan)return {...cached.plan,cacheKey:key};
   const temp={...tx,state:clone(tx.state)},preparations=cached.preparations;
@@ -7618,7 +7695,7 @@ async function prepare(native,scope,tx,args,signal) {
   const actorId=await ensure(args.actor,findActor(temp.state,args.actor)?.kind || 'ally');
   const equipment=require('./equipment-intent.js').prepare(temp.state,actorId,args.action,args.intent);
   if(equipment){const plan={op:'play-action',preparations,actorId,kind:'equipment',equipment,participants:[],targetIds:[],reactions:[],linkBindings:[],cacheKey:key};await native.app.repo.write(key,{preparations,plan});return plan;}
-  const explicit=[],objects=[],summons=[],requestedTeams={};
+  const explicit=[],objects=[],summons=[],requestedTeams={},participantBindings=[];
   const ensureObject=(input)=>{const old=Object.values(wObjects()).find(x=>x.id===input.name||N.sameSkill(x.name,input.name)),id=old?.id||stableId('object',input.name);const value=old||{...input,id};objects.push(value);FX.object(temp.state,value);return id;};
   const wObjects=()=>temp.state.meta.effectObjects||{};
   for(const input of args.objects||[])ensureObject(input);
@@ -7630,6 +7707,7 @@ async function prepare(native,scope,tx,args,signal) {
     const extra=typeof p==='string'?{}:{...p};delete extra.name;delete extra.kind;delete extra.owner;
     if(kind==='enemy' && count && !extra.instanceKey)extra.instanceKey=stableId('instance',args.actionId+'|'+index);
     const id=await ensure(name,kind==='summon'?'ally':kind,extra);explicit.push(id);
+    participantBindings.push(ActorReference.binding(id,{...extra,name,kind}));
     if(typeof p==='object'&&p.kind)requestedTeams[id]=kind==='enemy'?1:0;
     if(kind==='summon'){const owner=p.owner?await ensure(p.owner,'ally'):actorId;summons.push({id,ownerId:owner});temp.state.actors[id].kind='summon';temp.state.actors[id].ownerId=owner;}
   }
@@ -7663,10 +7741,10 @@ async function prepare(native,scope,tx,args,signal) {
     if(obj||selected?.mechanics?.targeting?.kinds?.length===1&&selected.mechanics.targeting.kinds[0]==='object'){targets.push(obj?.id||ensureObject({name:target}));continue;}
     const relations=selected?.mechanics?.targeting?.relations;
     const friendly=kind==='check'||(relations?relations.some(side=>side==='ally'||side==='self')&&!relations.includes('enemy'):selected?.kind==='heal'||selected?.kind==='utility'&&selected?.link?.mode!=='command');
-    targets.push(await ensure(target,friendly?'ally':'enemy'));
+    targets.push(resolveActor(w,target,participantBindings)?.id||await ensure(target,friendly?'ally':'enemy'));
   }
   if(!targets.length&&selected?.mechanics?.summon?.actor)targets.push(actorId);
-  if(terrain){for(const name of args.terrain.targets){const id=await ensure(name,'enemy');terrain.targetIds.push(id);explicit.push(id);}require('./terrain.js').attach(w,terrain.objectId,terrain.targetIds,terrain.severity);targets.splice(0,targets.length,terrain.objectId);}
+  if(terrain){for(const name of args.terrain.targets){const id=resolveActor(w,name,participantBindings)?.id||await ensure(name,'enemy');terrain.targetIds.push(id);explicit.push(id);}require('./terrain.js').attach(w,terrain.objectId,terrain.targetIds,terrain.severity);targets.splice(0,targets.length,terrain.objectId);}
   const discovered=!w.combat && require('./native-exploration.js').encounter(w);
   const offensive=kind==='attack' || kind==='skill' && (selected?.kind==='attack' || selected?.link?.mode==='command');
   const enemyIds=discovered?.enemies.map(enemy=>enemy.id) || [];
@@ -7920,7 +7998,7 @@ function apply(native,w,plan,args,authority) {
   const next=Engine.liveSummary(w).combat;
   if(next)next.instruction=next.pending?.length?'대기 중인 공격에 대한 반응만 선택하세요. 공격을 다시 호출하지 마세요.':!(w.actors[next.currentActorId]?.budgets.action>0)?'현재 행동을 이미 소모했습니다. 같은 공격을 반복하지 말고 계속으로 턴 종료를 이어가세요.':w.actors[next.currentActorId]?.kind==='player'||next.currentActorId===plan.actorId&&plan.kind!=='continue'?next.currentActorName+'의 다음 행동을 선택할 차례입니다. 사용자 인물은 상위 RP 권한에 따라 선택하거나 사용자 입력을 기다리세요.':'아군·적의 자동 턴은 기록된 단계까지 진행됐습니다. 장면을 이어가려면 계속/관전으로 다음 턴들을 처리하세요.';
   if(next){if(w.combat.rescuePending){next.instruction='이번 전투의 구원투수를 등장시키고 실제 행동을 호출하세요. 기존 쓰러진 인물은 부활하지 않습니다.';next.rescuePending=true;}else if(CombatOptions.get(w).commander&&CombatOptions.controlled(w,w.actors[next.currentActorId])||CombatOptions.get(w).action&&w.actors[next.currentActorId]?.kind==='player'){next.awaitUser=true;next.instruction='사용자의 다음 행동 지시를 기다리며 여기서 서술을 멈추세요. 위임이나 소설 모드로 넘어가지 마세요.';}if(w.combat.turnTable===false)next.freeTurn=true;}
-  return {status,outcome:blocked?'attention':!requestedActionApplied&&plan.kind!=='continue'&&next?'waiting':steps.at(-1)?.result.outcome || 'success',result:{actorId:a.id,requestedActionApplied,batched,steps,...(JSON.stringify(w.meta.lastCombatResolution||null)!==previousResolution?{defeat:w.meta.lastCombatResolution}:{}),...(blocked?{attention:blocked}:{}),next,encounter:require('./native-exploration.js').encounter(w)},narrationRule:(batched?'여러 행동을 기존 규칙으로 계산했습니다. 실제 결과를 짧게 묶어 묘사하고, 미완료 전투는 다음 호출로 이어갈 수 있습니다. ':'')+'steps의 요청 행동·자동 아군/적 턴·연계 결과를 기록된 순서대로 서술하고 다시 호출하지 마세요. requestedActionApplied:false이면 요청한 공격·기술은 실행되지 않았습니다. 실제 처리된 다른 행동은 steps대로 서술하고, 대기 중인 선택은 next를 따르세요. 각 표시 표식은 해당 행동 문단 바로 뒤에 넣으세요.'};
+  return {status,outcome:blocked?'attention':!requestedActionApplied&&plan.kind!=='continue'&&next?'waiting':steps.at(-1)?.result.outcome || 'success',result:{actorId:a.id,requestedActionApplied,batched,steps,...(JSON.stringify(w.meta.lastCombatResolution||null)!==previousResolution?{defeat:w.meta.lastCombatResolution}:{}),...(blocked?{attention:blocked}:{}),next,encounter:require('./native-exploration.js').encounter(w)},narrationRule:(batched?Narrative.BATCH:'')+'steps의 요청 행동·자동 아군/적 턴·연계 결과를 기록된 순서대로 서술하고 다시 호출하지 마세요. requestedActionApplied:false이면 요청한 공격·기술은 실행되지 않았습니다. 실제 처리된 다른 행동은 steps대로 서술하고, 대기 중인 선택은 next를 따르세요. 각 표시 표식은 해당 행동 문단 바로 뒤에 넣으세요. '+Narrative.RESULT};
 }
 module.exports={prepare,apply,findActor};
 
@@ -8014,10 +8092,21 @@ function replySummary(events) {
     if(e.event==='generationStarted')active.set(context(e),e.transactionId);
     const id=e.transactionId||(e.callId!=null?calls.get(callKey(e)):active.get(context(e)));
     if(!id)continue;
-    if(!replies.has(id))replies.set(id,{transactionId:id,userMessageId:null,outputMessageIds:[],committed:false,outputTimes:[],storageSlow:[],calls:new Map(),errors:[]});
+    if(!replies.has(id))replies.set(id,{transactionId:id,userMessageId:null,outputMessageIds:[],committed:false,outputTimes:[],reviewRuns:[],requestPreparations:[],storageSlow:[],calls:new Map(),errors:[]});
     const reply=replies.get(id);
     if(e.userMessageId)reply.userMessageId=e.userMessageId;
     if(['afterRequest','outputReceived'].includes(e.event))reply.outputTimes.push(e.at);
+    if(['reviewRunStarted','reviewRunReturned'].includes(e.event)){
+      let run=reply.reviewRuns.find(r=>r.reviewId===e.reviewId);if(!run){run={reviewId:e.reviewId};reply.reviewRuns.push(run);}
+      if(e.event==='reviewRunStarted')run.startedAt=e.at;else Object.assign(run,{returnedAt:e.at,elapsedMs:e.elapsedMs,status:e.status});
+    }
+    if(e.event==='requestStatePrepared')reply.requestPreparations.push({statePreparedAt:e.at,revisionId:e.revisionId,reviewStatus:e.reviewStatus,reviewActions:e.reviewActions});
+    if(e.event==='beforeRequestReturned'){
+      const preparation=reply.requestPreparations.at(-1);
+      if(preparation&&!preparation.returnedAt)Object.assign(preparation,{requestId:e.requestId,returnedAt:e.at,elapsedMs:e.elapsedMs});
+      else reply.requestPreparations.push({requestId:e.requestId,returnedAt:e.at,elapsedMs:e.elapsedMs});
+    }
+    if(e.reviewInProgress)reply.errors.push({event:e.event,code:'OUTPUT_DURING_REVIEW',reviewId:e.reviewId,message:'검사 대기가 끝나기 전에 호스트 출력이 관측됐습니다. 첫 토큰·모델 요청 시각을 입증하는 기록은 아닙니다.'});
     if(e.event==='storageSlow')reply.storageSlow.push({at:e.at,operation:e.operation,store:e.store,elapsedMs:e.elapsedMs,bytes:e.bytes});
     if(e.event==='outputReceived'&&e.messageId&&!reply.outputMessageIds.includes(e.messageId))reply.outputMessageIds.push(e.messageId);
     if(e.callId!=null) {
@@ -15500,7 +15589,8 @@ function captureOutput(app,arg) {
   if(tx?.automatic&&tx.scope.characterId===receipt.characterId&&tx.scope.chatId===receipt.chatId&&tx.userMessageId===receipt.userMessageId) {
     receipt.transactionId=tx.id;
   }
-  app.host.record('outputReceived',{characterId:receipt.characterId,chatId:receipt.chatId,messageId:receipt.messageId,userMessageId:receipt.userMessageId,transactionId:receipt.transactionId});
+  const review=app.activeTurnReview,reviewInProgress=!!review&&review.scope.characterId===receipt.characterId&&review.scope.chatId===receipt.chatId&&review.transactionId===receipt.transactionId;
+  app.host.record('outputReceived',{characterId:receipt.characterId,chatId:receipt.chatId,messageId:receipt.messageId,userMessageId:receipt.userMessageId,transactionId:receipt.transactionId,reviewInProgress,...(reviewInProgress?{reviewId:review.id,reviewElapsedMs:Date.now()-review.startedAt}:{})});
   return receipt;
 }
 
@@ -15922,7 +16012,7 @@ module.exports={ModuleBridge,owned,isBridge,activeModules,convertModule,normaliz
 'use strict';
 // The bridge fills the existing module lore position with the selected guide.
 // The short reminder remains beside this response's receipts, as before.
-const REQUEST='Resolve an action before narrating its mechanical outcome, including actions you introduce later in this reply. A lookup or character registration does not execute skills, attacks, recovery or rewards. Read all returned steps, including automatic turns and links; never call already resolved actions again. Call for new actions as the scene advances. If the user pauses RP to discuss tools/settings, answer without advancing the scene or resting characters.';
+const REQUEST='Resolve an action before narrating its mechanical outcome, including actions you introduce later in this reply. A lookup or character registration does not execute skills, attacks, recovery or rewards. Read all returned steps, including automatic turns and links; never call already resolved actions again. Call for new actions as the scene advances. If the user pauses RP to discuss tools/settings, answer without advancing the scene or resting characters. '+require('./narrative-flow.js').GUIDE;
 const BASE=require('./tool-catalog.js').IDENTITY_GUIDE+'\n'+
   "The main AI directs RP; NyoruRPG stores and calculates mechanics. Preserve the bot's style and player agency. "+REQUEST+'\n'+
   'Copy each exact [NyoruRPG:number] after its matching story paragraph, outside reasoning, code and footers. A resolved failed roll is binding. A tool error or timeout leaves that action unresolved: continue only narration that does not decide its success, failure or consequences. Registration errors also do not establish character stats. Never invent costs, damage, defeats or rewards.';
@@ -15939,10 +16029,11 @@ In combat, act follows the stored turnMode (round/gauge/free), resolves the requ
 Automatic turns stop for a player choice, an unresolved reaction, combat end, or the bounded turn cycle. requestedActionApplied:false means the requested attack/skill did not execute; other recorded steps still happened. Follow next without replaying them.
 action:"계속" or "관전" advances the existing fighters' turns even when the player is only observing. It can start their encounter with actual fighters in participants; do not add the observer.
 Respect next.awaitUser even in novel mode: commander waits for each friendly command, action mode stops at the player's turn. With turnTable:false there is no initiative; use returned individual action counts. A rescue result allows one rescuer per combat, whose entry and action must be called; it does not revive the fallen. Clinic results and death are binding. For terminal death state, state the returned consequence firmly in the fiction; do not resurrect through later narration or invent a rescuer. Death immunity is a stored passive.
-When you control the player under upper RP rules, choose their next action and call act in the SAME response as the scene advances. A player turn alone does not end narration. Otherwise wait at their decision. Read every result before requesting another action. combatOptions.fastCombat batches several actual rounds without changing rolls, damage or costs; briefly narrate its recorded steps rather than repeating them. Follow next.awaitUser and pending reactions before any continuation.
+When you control the player under upper RP rules, choose their next action and call act in the SAME response as the scene advances. A player turn alone does not end narration. Otherwise wait at their decision. Read every result before requesting another action. combatOptions.fastCombat batches several actual rounds without changing rolls, damage or costs; compress repetitive blow-by-blow detail while preserving the original response length and style. Neither a batch limit nor combat end forces the reply to end. Follow next.awaitUser and pending reactions before any continuation.
 For an undelegated pending reaction, wait for their choice; use act 방어/회피 or the named reaction skill with the returned threatId. To take the hit use action:"계속",reactions:[{actor,choice:"none",threatId}]. A usable evasion rolls first; on failure a usable defense reduces the remaining damage. Each used reaction skill pays its stored cost within one reaction. Area evasion requires its special ability.
 
 Use opening:"surprise" only for an opening attack against an enemy established as unaware; the specified attacker opens before initiative. Discovery alone starts no fight. Exploration's saved enemies can supply targets for the first attack.
+When enemies share a name, use saved actor IDs or participants with distinct instanceKey values. A target name in this call binds to its prepared participant. If multiple current participants still share that name, target their ID or instanceKey; never reuse a defeated previous instance.
 Stored on-hit links require the first hit; command links roll only the commanded ally's attack and do not spend their normal turn. Do not call them again yourself.
 
 Use inventory use for an actual potion (actorId,itemId,targetId); inspect only if its ID is unknown. Equip/unequip uses inventory or act with the owned item name. Equipment never gates skills. manualEquipmentChanges are already applied: describe them without repeating the call.
@@ -16338,6 +16429,14 @@ function edit(w,args,authority){assert(authority.admin,'PLAYER_SELECTION_REQUIRE
   return {result:{edited:true}};
 }
 module.exports={navigation,help,render,preview,capture,bind,edit};
+
+},
+"./narrative-flow.js":function(module,exports,require){
+'use strict';
+const GUIDE="Preserve the original bot's narrative style and requested response length. One tool result, one bounded combat batch, or combat ending is NOT a command to end the reply. Within delegated RP, continue the scene and sequentially call each new needed action in this SAME reply, reading its result before continuing. Compress repetitive combat blows only when fastCombat is enabled; this never shortens the whole reply's requested length. Do not pad the story with invented mechanical outcomes or replay completed actions. Actual awaitUser choices, commander/action modes and unresolved reactions still take priority.";
+const RESULT='도구 결과나 묶음 계산 종료는 답변 종료 지시가 아닙니다. 원래 봇의 서술 방식·요청 분량을 유지하고, 위임된 진행은 같은 답변에서 다음 필요한 도구를 순서대로 호출하세요. 실제 사용자 선택·미결 반응은 기다립니다.';
+const BATCH='여러 행동을 기존 규칙으로 계산했습니다. 반복 공방 묘사만 압축하며 전체 답변 분량은 원래 봇 지침을 따릅니다. 저장된 steps를 재실행하지 마세요. ';
+module.exports={GUIDE,RESULT,BATCH};
 
 },
 "./native-assistant.js":function(module,exports,require){
@@ -17464,7 +17563,7 @@ const GUIDE={
 백분율을 그대로 저장하는 필드는 예외입니다. chance(발동 확률), healthBelow, automatic.threshold(HP 임계 비율)는 25%=25입니다. lifesteal/reflect/penetration/share/protect/counter의 value도 비율(%)이므로 25%=25입니다. applyResource의 mode:"multiply"는 최대 자원의 비율을 증감하므로 최대 HP의 25% 회복은 value:25, 25% 소비는 -25입니다. 모든 %를 무조건 1.25 또는 0.25로 바꾸지 마세요.
 제안을 반환하기 전에 원래 값 100을 기준으로 설명과 저장 수치를 맞추세요. 25% 증가면 125, 감소면 75, 원래 값의 25%면 25, 25배면 2500이어야 합니다. 사용자에게는 의미가 분명하게 "25% 증가 · 1.25배"처럼 설명하세요. 단위가 없는 숫자나 기존 value:25만 보고 잘못된 배율이라고 추정하여 고치지 마세요. 사용자가 명시한 실제 25배는 유지합니다.`,
   effects:`주는 피해와 받는 피해, 적용 대상, 물리·마법·속성 범위를 구분합니다. 자신에게 유지/명중 시 전달은 사용자에게 인챈트를 유지하다 맞힌 상대에게 효과를 전달하는 방식입니다. 자기에게 받는 피해 증가를 직접 적용하는 것과 다릅니다. 지속 기준 durationBasis:turns는 대상의 자기 차례, combat_time은 게이지 모드에서 기본 속도의 한 차례분입니다. 게이지 밖에서는 자기 차례로 계산합니다. gaugeSpeed는 충전 속도(+50%는 multiply1.5), gaugeChange는 현재 게이지 즉시 증감(add30이면30포인트)입니다. 상시 효과는 gaugeSpeed를 사용하고, gaugeChange는 실제 사용·명중·자동 조건 발동에 씁니다. 중첩/갱신/교체를 선택합니다. 기술 사용 조건에는 실제 유지 중이어야 하는 기술 또는 상태 이름을 넣습니다. 패시브는 상시, 자동 발동은 HP 임계치 등 조건 진입에 발동합니다. 추가 타격마다 따로 명중을 판정합니다. 명중 후 연계는 저장된 후속 기술을 쓰며 동료의 일반 턴을 소모하지 않습니다. 아이템도 효과를 조합할 수 있고 투척이면 명중 판정합니다.`,
-  combat:`d100은 높은 눈 성공입니다. 저장된 난이도·능력치·상대 보정을 따릅니다. 회피 판정 후 남는 피해를 방어로 경감하며 광역 회피는 해당 능력이 필요합니다. 장비는 보너스 자리여서 기술 사용의 무기 제한이 아닙니다. 전투 진행 방식은 턴테이블(round, 기존 기본값)·행동 게이지(gauge)·자유 진행(free) 중 하나입니다. 지휘관 모드는 모든 아군을 직접 조작, 행동 모드는 사용자 차례에 멈춥니다. 자유 진행은 인물별 행동 턴입니다. 게이지는 100이 먼저 찬 인물이 행동하고 일반 행동을 마치면100을 소비합니다. 속도가 빠르면 연속 행동할 수 있습니다. 화면 표시·API 응답 대기는 전투 시간을 흐르게 하지 않습니다. 행동자 표시는 자동 진행 중단 조건이 아니며 상위 RP의 위임과 직접 조작 설정이 기준입니다. 전투가 길어는 기존 수치로 턴테이블 최대6라운드 또는 게이지 최대60회 행동을 한 호출에서 처리하고 짧게 서술합니다. 확정 승리나 수치 강화가 아니며 지휘관·행동 모드, 위임하지 않은 사용자 선택은 우선합니다. 적 체력 감소는 별도 선택으로 새 전투의 적 현재·최대 HP를 절반으로 적용하고 기본 능력치는 보존합니다. 등록 인물과 현재 장면의 표시 인물은 별개이며 다른 온라인 플레이어를 채팅 사용자와 혼동하지 않습니다. 전투 방식 설정(mode/gaugeFormula/gaugeProficiency)도 편집 제안할 수 있습니다. gaugeFormula의 BASE는 기본 충전 속도10을 기준으로 d100 DEX·헌터 AGI·무림 SENSE+OUTER/20의 제곱근 비율, 에렌샤는 선택한 이동 숙련도의 Grade/Lv를 반영합니다. 공식은 설정창에서 수정할 수 있습니다. 한 번의 기회는 전투마다 1회, 게임오버 없음은 치료소 복귀와 현재 경험치 소실입니다. 이 두 완충 옵션은 공통/헌터용이며 에렌샤는 아바타 부활을 따릅니다. 무기 마모는 기본 가한 피해/50, 방어구는 실제 피격 피해/10이며 장비별 편집 가능합니다. 내구도 0은 보너스 정지, 수리는 별도 비용입니다.`,
+  combat:`d100은 높은 눈 성공입니다. 저장된 난이도·능력치·상대 보정을 따릅니다. 회피 판정 후 남는 피해를 방어로 경감하며 광역 회피는 해당 능력이 필요합니다. 장비는 보너스 자리여서 기술 사용의 무기 제한이 아닙니다. 전투 진행 방식은 턴테이블(round, 기존 기본값)·행동 게이지(gauge)·자유 진행(free) 중 하나입니다. 지휘관 모드는 모든 아군을 직접 조작, 행동 모드는 사용자 차례에 멈춥니다. 자유 진행은 인물별 행동 턴입니다. 게이지는 100이 먼저 찬 인물이 행동하고 일반 행동을 마치면100을 소비합니다. 속도가 빠르면 연속 행동할 수 있습니다. 화면 표시·API 응답 대기는 전투 시간을 흐르게 하지 않습니다. 행동자 표시는 자동 진행 중단 조건이 아니며 상위 RP의 위임과 직접 조작 설정이 기준입니다. 전투가 길어는 기존 수치로 턴테이블 최대6라운드 또는 게이지 최대60회 행동을 한 호출에서 처리하고 반복 공방 묘사만 압축합니다. 전체 답변은 원래 봇의 서술 분량·방식을 따릅니다. 확정 승리나 수치 강화가 아니며 지휘관·행동 모드, 위임하지 않은 사용자 선택은 우선합니다. 적 체력 감소는 별도 선택으로 새 전투의 적 현재·최대 HP를 절반으로 적용하고 기본 능력치는 보존합니다. 등록 인물과 현재 장면의 표시 인물은 별개이며 다른 온라인 플레이어를 채팅 사용자와 혼동하지 않습니다. 전투 방식 설정(mode/gaugeFormula/gaugeProficiency)도 편집 제안할 수 있습니다. gaugeFormula의 BASE는 기본 충전 속도10을 기준으로 d100 DEX·헌터 AGI·무림 SENSE+OUTER/20의 제곱근 비율, 에렌샤는 선택한 이동 숙련도의 Grade/Lv를 반영합니다. 공식은 설정창에서 수정할 수 있습니다. 한 번의 기회는 전투마다 1회, 게임오버 없음은 치료소 복귀와 현재 경험치 소실입니다. 이 두 완충 옵션은 공통/헌터용이며 에렌샤는 아바타 부활을 따릅니다. 무기 마모는 기본 가한 피해/50, 방어구는 실제 피격 피해/10이며 장비별 편집 가능합니다. 내구도 0은 보너스 정지, 수리는 별도 비용입니다.`,
   api:`AI 연결은 기본/시스템 정밀 구축/검사로 나뉩니다. 기본 API 사용 체크로 같은 모델·인증을 공유합니다. 뉴뉴는 기본 API를 씁니다. API 키와 서비스 계정 JSON 키는 기기별 LocalPluginStorage에 저장합니다. Vertex Express는 API 키입니다. 일반 Vertex는 서비스 계정 JSON 직접 붙여넣기 또는 OAuth 액세스 토큰 직접 입력을 지원합니다. API 형식을 바꾸면 해당 형식에 저장한 주소·모델·키를 불러오며, 없으면 기본 주소와 빈 키를 표시합니다. 기본·정밀 구축·검사 설정은 각각 따로 보관합니다. JSON 등록은 프로젝트를 자동 입력하며 토큰을 요청 시 자동 발급·갱신합니다. JSON 키는 모델 프롬프트나 게임 백업에 넣지 않고 Google 공식 API 주소에서 사용합니다. 직접 입력한 OAuth 토큰은 수동 교체합니다. JSON 모드와 추가 본문 JSON은 인증 파일 등록과 별개입니다. 놓치지마 검사는 기본 OFF, 새 입력 전에 직전 최종 서술과 실행 기록을 비교합니다. 누락된 직전 행동·소모품·거래·사건은 기존 엔진으로 계산해 데이터에 직접 반영하고, 메인 AI에는 이미 적용된 결과만 전달합니다. 확정된 주사위를 다시 굴리거나 서술에 맞춰 HP를 덮어쓰지 않습니다. 같은 주사위 반복은 검사 보고서에서 알리며 반복만으로 난수 버그를 확정하지 않습니다. 다른 플러그인보다 먼저 실행되는 것은 호스트가 허용해야 합니다. 호스트 진단의 toolReturned는 플러그인 반환이지 메인 모델 수신 확인이 아닙니다. 긴 prepare는 보조 AI 준비일 수 있습니다. 시간 초과 원인이나 제한 시간을 근거 없이 단정하지 않습니다. 경량 모델의 실제 성공률·속도는 시험하지 않았습니다.`,
   d100:`공통 d100은 STR/CON/DEX/INT/WIS/CHA, 레벨·HP/MP/SP와 기술별 숙련 성장입니다. 능력치/성장/장비/효과를 합쳐 판정합니다. 스탯 탭에서 기술을 추가·편집하며 숙련도 성장 구간별 효과와 등급을 설정합니다. 단계별 누적 배율은 1을 기준으로 증가분이 누적되는 구조이므로 실제 저장 성장 규칙을 보고 계산합니다.`,
   hunters:`얼터네이티브 헌터는 STR/CON/AGI/INT/SEN과 원본 헌터 성장·상태창을 사용합니다. 공통 DND 능력치로 바꿔 설명하지 않습니다. 기술 편집과 숙련 성장, 파티·전투·장비·탐험을 지원합니다. 봇 상태창에는 저장된 기계 수치를 쓰고 날짜·장면·서사 정보는 RP를 따릅니다.`,
@@ -17473,6 +17572,7 @@ const GUIDE={
   romance:`로맨스 판타지는 통찰·표현·매력·의지·처세·담력, 방향별 호감/신뢰/경계, 명예·카르마입니다. 일상마다 VS를 만들지 않습니다. 대결은 이유가 있어야 하며 능력치와 관계·명예가 결과와 이유를 결정합니다. 마음의 거울은 다른 인물이 선택 인물을 어떻게 보는지 표시합니다. 설계는 사용자 수락으로 시작하고, 실제 확보한 준비를 갱신하며 AI가 다음 단계를 미리 결정하지 않습니다. 대결 성장과 실제 활동 성장이 있습니다.`,
   dating:`미연시는 학업·운동·예술·화술·배려·용기와 상대별 호감/경계·성향·카르마를 사용합니다. 유저만 1~100을 굴려 상대 난이도와 비교하며 상대 난이도는 100을 넘을 수 있습니다. 같은 제안 반복은 경계에 영향을 줍니다. 강행의 의도와 결과는 분리합니다. 훈련 난이도는 30+현재 스탯+같은 날 같은 훈련 반복당10, 시간과 체력을 소비합니다. 식사20/음료10 회복, 실제 활동 완료로도 성장합니다.`
 };
+GUIDE.combat+=' '+require('./narrative-flow.js').RESULT+' 에렌샤의 기본 대성공은96~100이고 공격 피해는1.5배입니다. 치명타 보정이 범위를 넓힐 수 있으며95는 기본 대성공이 아닙니다. 행동 게이지100은 스탯 상한이 아니라 행동 준비량이며 다음 준비 시각을 계산해서 이동합니다.';
 function select(book,text){const keys=new Set(['core','navigation','units',!book||book==='common'?'d100':book]);if(/효과|기술|스킬|아이템|장비|인챈트|패시브|숙련|skill|effect/i.test(text))keys.add('effects');if(/전투|주사위|판정|피해|방어|턴|게이지|속도|가속|둔화|내구|combat|설정/i.test(text))keys.add('combat');if(/api|연결|모델|검사|타임|콜백|설정|저장|오류|vertex|버텍스|인증|토큰|서비스.?계정/i.test(text))keys.add('api');return [...keys].map(k=>GUIDE[k]||'').filter(Boolean).join('\n');}
 module.exports={PERSONA,select};
 
@@ -19138,7 +19238,8 @@ function consumables(w){
 const norm=value=>String(value||'').normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]/gu,'');
 function actorKey(w,value){
   const key=norm(value);if(!key)return '';
-  return Object.values(w.actors).find(a=>[a.id,a.name,a.realName,a.nickname,...(a.aliases||[])].some(n=>norm(n)===key))?.id||key;
+  try{return require('./actor-reference.js').find(w,value,{actorNames:a=>[a.id,a.name,a.realName,a.nickname,...(a.aliases||[]),...(w.meta.native?.actors?.[a.id]?.aliases||[])]})?.id||key;}
+  catch(error){if(error.code==='ACTOR_AMBIGUOUS')return '';throw error;}
 }
 function actionKeys(w,value){
   const key=norm(value),out=new Set(key?[key]:[]);
@@ -19155,10 +19256,11 @@ function matchesAction(w,args,saved,input={}){
   if(!actual.some(v=>[...actionKeys(w,v)].some(n=>names.includes(n))))return false;
   const wanted=[...(args.targets||args.targetIds||[]),args.targetId,args.target].filter(Boolean).map(id=>actorKey(w,id));
   const targets=[data.targetId,...(input.targets||input.targetIds||[]),input.targetId,input.target].filter(Boolean).map(id=>actorKey(w,id));
-  return !wanted.length||wanted.every(id=>targets.includes(id));
+  return !wanted.length||wanted.every(id=>id&&targets.includes(id));
 }
 function resolvedAction(w,args,saved,input={},depth=0){
   if(!saved||saved.ok===false||saved.status==='blocked')return false;
+  if(saved.result?.actionExecuted===false||saved.outcome==='awaiting_action')return false;
   const children=saved.result?.steps||saved.steps;
   // Automatic ally/enemy/linked actions are receipts too. Do not replay them
   // as separate repairs just because the main call names a different actor.
@@ -19170,6 +19272,7 @@ function alreadyRecorded(w,repair,records,recent=records){
   if(['ensure_actor','ensure_actors','prepare_skill'].includes(repair.arguments?.op))return false;
   if(records.some(r=>{
     if(r.tool!==repair.tool||r.op!==repair.arguments?.op||r.result?.ok===false)return false;
+    if(repair.tool==='rpg_play'&&['act','check'].includes(repair.arguments?.op)&&!resolvedAction(w,repair.arguments,r.result,r.arguments))return false;
     if(repair.existingActionId)return r.actionId===repair.existingActionId;
     if(repair.arguments.eventId&&r.eventId===repair.arguments.eventId&&comparable(r.arguments)===comparable(repair.arguments))return true;
     return false;
@@ -24537,7 +24640,7 @@ module.exports={call};
 },
 "./turn-review.js":function(module,exports,require){
 'use strict';
-const {assert,clone,hash,parseModelJSON,scopeKey}=require('./util.js');
+const {assert,clone,hash,parseModelJSON,scopeKey,uid}=require('./util.js');
 const Books=require('./rulebook-runtime.js');
 const Repair=require('./review-actions.js');
 // Repair an omitted execution through the same engines and repository. A
@@ -24552,10 +24655,11 @@ When an actual action in this preceding narrative has NO execution receipt, repa
 Order repairs by the actual narrative sequence. act already processes automatic turns: do not add repairs for those steps. Only repair an omitted action at the end of the recorded sequence; if it occurred before later recorded actions and cannot be inserted safely, explain it in notes. Never replay an entire battle, auto-continue to the next scene, interpret the NEW user input as already done, or bypass manual player authority. Use actor/item IDs from state, or register a missing named actor first. Reuse eventId for another factual consequence of that SAME action; each new attack/defense/attempt is a distinct event. Multiple parts of one action share eventKey. Omit actionId; the program assigns stable IDs so retries do not charge or roll twice. A scheme offer still requires the user's acceptance; only actual completed preparation may be recorded.
 Also compare combatState, actual opponents, saved skill types and every automatic step with the FINAL NARRATIVE. Detect a fight treated as noncombat, an omitted enemy/participant, or an unprocessed NPC turn. turnTable:false is a valid user setting, never switch it on. A normal player choice, commander choice, pending reaction, rescue, or a completed/escaped fight is NOT missing progress. Do not force every monster encounter or friendly effect into battle.
 If a living, unresolved fight is still present in the final scene but its combat flow is missing, register missing actual participants first. Then propose at most ONE combatRepair:true with rpg_play act, action:"관전", combat:true, actor:an existing observer/participant, and participants containing the actual two sides with kind. Do not include targets, attacks, reactions or surprise. This attaches the CURRENT fight and may process pending NPC turns only until the next player choice. It never replays a recorded attack or retroactively invents past counterattacks. Already recorded player damage and mastery stay unchanged. Existing allies in a duel keep their permanent identity; participants.kind declares the temporary battle side. For an active fight, repair only missing participants or a genuinely omitted current NPC continuation. Explain uncertain or already finished historical gaps in notes, not arbitrary HP corrections.`;
-function story(text){return String(text||'').replace(/<details\b(?=[^>]*data-pm-thinking)[^>]*>[\s\S]*?<\/details>/gi,'').replace(/<(think|thinking|analysis|reasoning|tool_call|script|style)\b[^>]*>[\s\S]*?<\/\1>/gi,'').replace(/<!--[^]*?-->/g,'').trim();}
+const EXPLORATION_REVIEW=' Also compare the final narrated exploration entry, movement, search, gathering and departure with state.exploration and current-branch receipts. A new monster registration or combat act does not create or advance an exploration. If a real entry in the preceding narrative has no current-branch start, prepare that entry with explore start; subsequent moves use actual visible exits, never guessed IDs. Do not treat discarded/regenerated answer receipts as current events or restore an abandoned map. Do not force ordinary dialogue into exploration, replay old battles, or reconstruct earlier omitted exploration before later saved actions; report a historical gap when it cannot be repaired without rewriting the sequence.';
+function story(text){return String(text||'').replace(/<details\b(?=[^>]*data-pm-thinking)[^>]*>[\s\S]*?<\/details>/gi,'').replace(/<(think|thinking|thoughts|analysis|reasoning|tool_call|script|style)\b[^>]*>[\s\S]*?<\/\1>/gi,'').replace(/<!--[^]*?-->/g,'').trim();}
 function permitted(tool,op,args){return ALLOWED[tool]?.includes(op)&&!(tool==='rpg_play'&&op==='scheme'&&args.mode!=='prepare');}
 function operations(w){const catalog=Books.catalog(w);return Object.entries(catalog.operations).flatMap(([tool,ops])=>Object.keys(ops).filter(op=>ALLOWED[tool]?.includes(op)).map(op=>({tool,op,schema:catalog.shape(tool,op)})));}
-async function run(app,scope){
+async function runReview(app,scope,phase){
   if(!app.settings.reviewEnabled||!app.tx?.automatic||app.tx.awaitingUser)return null;
   const tx=await app.repo.transaction(scope,app.tx.id);
   if(Object.keys(tx.actions||{}).length)return app.previousTurnReview?.transactionId===tx.id?app.previousTurnReview.value:null; // Already inside a tool continuation.
@@ -24566,6 +24670,7 @@ async function run(app,scope){
   const prior=messages[previous],narrative=story(prior.data);if(!narrative)return null;
   const fingerprint=(await hash({user:tx.userMessageId,message:prior.chatId,text:narrative,parent:tx.parentRevision})).slice(0,32),base=await app.repo.key(scope),key=base+'/review/'+fingerprint;
   let saved=await app.repo.read(key);
+  phase('checking');
   const matches=await app.host.history(scope);await app.host.verifyTransaction(tx);
   const receipts=await Repair.receipts(app,scope,tx.state);
   let previousInput=previous-1;while(previousInput>=0&&messages[previousInput].role!=='user')previousInput--;
@@ -24575,10 +24680,10 @@ async function run(app,scope){
   if(!saved){
     saved={version:3,status:'requesting',summary:'검사 중',notes:[],findings,repairs:[],results:[],messageId:prior.chatId,createdAt:Date.now()};await app.repo.write(key,saved);
     const settings=require('./ai-connections.js').select(app,'reviewConnection'),controller=new AbortController();app.reviewController=controller;
-    app.host.record('reviewStarted',{messageId:prior.chatId,transactionId:tx.id});app.ui?.notify?.('놓치지마 검사 · 이전 답변의 누락을 확인합니다.');
+    app.host.record('reviewStarted',{messageId:prior.chatId,transactionId:tx.id});
     try{
       const state=require('./engine.js').liveSummary(tx.state);
-      const response=await app.provider.request([{role:'system',content:PROMPT},{role:'user',content:JSON.stringify({rulebook:Books.select(tx.state).id,FINAL_NARRATIVE:narrative,newInput:messages[index].data,state,combatState:Repair.combatState(tx.state),consumables:Repair.consumables(tx.state),previousReplyReceipts,otherRecentReceipts:receipts.filter(r=>!previousReplyReceipts.includes(r)),findings,operations:operations(tx.state)})}],settings.connection,settings.secrets,controller.signal);
+      const response=await app.provider.request([{role:'system',content:PROMPT+EXPLORATION_REVIEW},{role:'user',content:JSON.stringify({rulebook:Books.select(tx.state).id,FINAL_NARRATIVE:narrative,newInput:messages[index].data,state,combatState:Repair.combatState(tx.state),consumables:Repair.consumables(tx.state),previousReplyReceipts,otherRecentReceipts:receipts.filter(r=>!previousReplyReceipts.includes(r)),findings,operations:operations(tx.state)})}],settings.connection,settings.secrets,controller.signal);
       await app.host.verifyTransaction(tx);assert(app.host.matches(matches,await app.host.history(scope)),'HISTORY_CHANGED','검사 중 대화가 바뀌었습니다.');
       const plan=parseModelJSON(response.text);assert(plan&&typeof plan==='object'&&!Array.isArray(plan),'REVIEW_RESPONSE','검사 응답을 읽지 못했습니다.');
       saved.summary=typeof plan.summary==='string'?plan.summary:'이전 답변 검사';saved.notes=(Array.isArray(plan.notes)?plan.notes:[]).filter(x=>typeof x==='string').slice(0,20);saved.repairs=(Array.isArray(plan.repairs)?plan.repairs:[]).slice(0,20);saved.status='prepared';await app.repo.write(key,saved);
@@ -24587,6 +24692,7 @@ async function run(app,scope){
   }
   if(saved.status==='requesting')return {summary:'이전 검사 요청이 중단되었습니다. 같은 답변의 검사 API를 자동으로 다시 청구하지 않았습니다.',notes:[]};
   if(saved.status==='failed')return saved;
+  phase('applying');
   // Reuse the cached plan on regeneration. Repository receipts decide which
   // repairs already exist in this branch; never use a new random action ID.
   const results=[];let combatRepaired=false;
@@ -24627,6 +24733,23 @@ async function run(app,scope){
   saved.results=results;saved.status='complete';await app.repo.write(key,saved);const {repairs,...report}=saved;await app.repo.write(base+'/last-review',report);app.previousTurnReview={transactionId:tx.id,value:report};
   app.host.record('reviewCompleted',{messageId:prior.chatId,transactionId:tx.id,repairs:results.filter(r=>r.ok&&!r.alreadyRecorded&&!r.skipped).length,alreadyRecorded:results.filter(r=>r.alreadyRecorded).length,skipped:results.filter(r=>!r.ok||r.skipped).length,findings:findings.map(f=>({code:f.code,actionIds:f.actionIds}))});
   return saved;
+}
+async function run(app,scope){
+  let active=null,feedback=null,ownsFeedback=true,report=null;
+  const phase=value=>{
+    if(!active){active={id:uid('review'),transactionId:app.tx?.id,scope:clone(scope),startedAt:Date.now(),phase:value};app.activeTurnReview=active;app.host.record('reviewRunStarted',{reviewId:active.id,transactionId:active.transactionId});}
+    active.phase=value;
+    if(ownsFeedback&&feedback!==null&&app.ui?.feedback!==feedback)ownsFeedback=false;
+    if(ownsFeedback){feedback=value==='applying'?'놓치지마 검사 · 확인한 누락을 저장하고 있습니다.':'놓치지마 검사 · 이전 답변의 누락을 확인합니다.';app.ui?.notify?.(feedback);}
+  };
+  try{report=await runReview(app,scope,phase);return report;}
+  finally{
+    if(active){
+      if(app.activeTurnReview===active)app.activeTurnReview=null;
+      app.host.record('reviewRunReturned',{reviewId:active.id,transactionId:active.transactionId,status:report?.status||'incomplete',elapsedMs:Date.now()-active.startedAt});
+      if(ownsFeedback&&app.ui?.feedback===feedback)app.ui.notify(report?.summary||'놓치지마 검사를 완료하지 못했습니다. AI 연결의 검사 보고서를 확인하세요.',report?.status!=='complete');
+    }
+  }
 }
 function context(review){
   const applied=(review?.results||[]).filter(r=>r.ok&&!r.alreadyRecorded&&!r.skipped);if(!applied.length)return '';
@@ -25269,8 +25392,15 @@ module.exports = {
 'use strict';
 // Public release notes. The build also publishes this as updates.json.
 module.exports={
-  latest:'0.23.0',
+  latest:'0.23.1',
   entries:[
+    {version:'0.23.1',date:'2026-10-02',title:'대성공·전투 대상·연속 서술과 검사 표시',changes:[
+      '에렌샤의 기본 96~100 대성공을 피해 ×1.5와 결과 카드에 연결합니다. 치명타 보정이 있으면 시작 눈금이 낮아지며 95는 기본 대성공이 아닙니다. 생활·탈출과 공통 탐험 판정의 결과 구분도 보완합니다.',
+      '같은 이름의 새 적을 지정했는데 이전에 쓰러진 개체가 대상으로 선택되던 경로를 수정합니다. 현재 호출의 참가자·개체 키·ID를 사용하며 d100·헌터·무림에도 같은 연결을 적용합니다. 실행되지 않은 공격은 실패 판정이나 턴 소비로 처리하지 않습니다.',
+      '전투가 길어는 반복 공방 묘사만 압축합니다. 원래 봇의 서술 분량을 유지하고 위임된 장면에서 같은 답변 안에 후속 행동을 계속 호출하도록 지침·도구 설명·결과 안내를 맞춥니다.',
+      '탐험 결과에 현재 출구와 다음 이동·조사·상호작용 안내를 포함합니다. 장소 입장만으로 후속 탐험을 끝낸 것으로 보지 않으며 재생성으로 제외된 답변의 탐험을 현재 분기에 적용된 것으로 취급하지 않습니다.',
+      '놓치지마 검사 중 알림을 완료·실패 상태로 갱신합니다. 검사 종료, 보완 상태를 읽은 시점, 요청 준비 반환과 검사 중 출력 관측을 호스트 진단에 남깁니다. 기존 검사에서 탐험 누락도 확인하도록 보완합니다.'
+    ],note:'연결 모듈 v1과 기존 세이브를 유지하며 플러그인만 교체합니다. 소스 수정·첨부 기록 분석·배포 생성 범위입니다. 별도 최종 검사·실제 RisuAI·모델 호출은 하지 않았습니다. 실제 첫 토큰 시점과 모델의 서술 분량 준수는 아직 확인하지 못했습니다.'},
     {version:'0.23.0',date:'2026-10-01',title:'행동 게이지 전투',changes:[
       '공통 d100·얼터네이티브 헌터·에렌샤·무림에서 턴테이블·행동 게이지·자유 진행을 선택합니다. 기존 게임의 선택은 유지합니다.',
       '행동 게이지가 100에 먼저 도달한 인물이 행동합니다. 능력·숙련·효과에 따른 속도 차이로 연속 행동할 수 있고, 기본 속도 수식도 편집할 수 있습니다.',
@@ -25661,7 +25791,7 @@ module.exports = {
 },
 "./version.js":function(module,exports,require){
 'use strict';
-module.exports={VERSION:'0.23.0'};
+module.exports={VERSION:'0.23.1'};
 
 },
 "./vertex-auth.js":function(module,exports,require){

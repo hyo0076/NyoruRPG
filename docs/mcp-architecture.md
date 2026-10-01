@@ -1,4 +1,14 @@
-# NyoruRPG MCP 구조 · 0.22.8
+# NyoruRPG MCP 구조 · 0.23.1
+
+## 0.23.1 연결 보완
+
+`actor-reference.js`는 현재 호출에서 준비한 참가자의 이름·instanceKey를 ID로 연결한 뒤 저장 명단을 조회한다. 명시적 ID, 현재 호출의 참가자, 생존 개체와 현재 전투 순으로 범위를 좁히며 여전히 동명이면 대상 구분 오류를 반환한다. 에렌샤와 공통 d100/헌터/무림의 준비 경로가 이를 사용한다. 별도 NPC 생성이나 현재 저장 인물 병합을 하지 않는다.
+
+`erencha-roll.js`는 에렌샤 높은 눈 판정의 기본 대성공 96~100과 치명타 보정을 구분한다. 공격은 그 결과로 피해 배율과 카드 outcome을 함께 결정한다. `hit`에서 실제 실행이 없으면 일반 실패 판정으로 반환하지 않으며 전투의 요청 적용/턴 진행으로 넘기지 않는다. 검사도 actionExecuted:false를 이미 처리된 공격으로 보지 않는다.
+
+`narrative-flow.js`의 안내를 지침·공개 도구·결과에 공유한다. 전체 답변 길이는 원래 봇 지침을 따르고 fastCombat은 반복 공방의 묘사만 압축한다. 공통 탐험은 visible의 nextActions로 현재 보이는 출구와 후속 조작을 알리며 미래 사건을 자동 실행하지 않는다.
+
+검사는 기존 beforeRequest의 직렬 await 안에서 끝내고 상태를 다시 읽는다. reviewRunStarted/reviewRunReturned는 검사 경계, requestStatePrepared는 보완 후 상태 준비, beforeRequestReturned는 플러그인 훅 반환이다. afterRequest/outputReceived의 reviewInProgress는 실제 출력 이벤트와 검사 작업이 겹쳤는지를 기록할 뿐, 첫 토큰 시점·호스트 요청 전송·외부 타임아웃을 추정하지 않는다. 카드 확정·재호출 프로토콜은 그대로 유지한다.
 
 ## 0.22.8 연결 정비
 
