@@ -1,4 +1,6 @@
-# NyoruRPG 0.22.8
+# NyoruRPG 0.22.9
+
+0.22.9는 **전투 묶음 진행·적 HP 감소·사용자와 등록 인물 구분·퀘스트 보상·검사 보완·미니보드 상세 정보**를 추가하고 연결을 수정합니다. 연결 모듈 v1 사용자는 플러그인만 업데이트합니다. [이번 변경과 확인 범위](docs/nyoru-release-0.22.9.md). 실제 RisuAI·모델 호출 및 외부 시간 초과 해결은 미확인입니다.
 
 0.22.8은 **에렌샤 방어·회피와 퀘스트, 뉴뉴의 항목별 편집, 내구도·효과·연계·성장 연결**을 정비합니다. API 형식을 고르면 그 형식의 주소·모델·키를 불러오며, 처음 고른 형식은 기본 주소와 빈 키를 사용합니다. Vertex 서비스 계정 JSON은 직접 붙여넣어 저장합니다. 연결 모듈 v1 사용자는 플러그인만 교체하며 게임 재구축은 필요 없습니다. [이번 변경과 사용 위치](docs/nyoru-release-0.22.8.md) · [전체 검사 범위·발견한 결함·미확인 사항](docs/full-audit-0.22.8.md).
 
@@ -8,7 +10,7 @@
 
 - [플러그인 NyoruRPG.js](https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js)
 - [새 설치용 연결 모듈 NyoruRPG.risum](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG.risum)
-- [0.22.8 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.22.8.zip)
+- [0.22.9 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.22.9.zip)
 
 기존 사용자는 플러그인을 업데이트한 뒤 **시스템 구축 → 기존 모듈을 연결 전용으로 전환**을 한 번 실행하고 Risu를 새로 고침하세요. 모듈을 지우고 다시 가져오거나 게임을 재구축할 필요는 없습니다. 전환을 마쳤다면 이후 일반 업데이트는 플러그인만 교체합니다.
 
