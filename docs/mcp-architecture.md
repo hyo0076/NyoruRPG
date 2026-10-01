@@ -1,4 +1,12 @@
-# NyoruRPG MCP 구조 · 0.23.1
+# NyoruRPG MCP 구조 · 0.23.2
+
+## 0.23.2 호출 조건과 장소 기록
+
+`narrative-flow.js`는 서술 분량·문체·묘사 압축 대신 실행 계약만 제공한다. 일반 지침은 모듈의 기존 삽입 위치에 남고 요청 끝의 짧은 안내는 현재 기록과 이후 새 행동을 구분한다. `result-record.lastResults`의 조회는 새 행동을 막지 않는다. 전투 묶음의 계산 상한·자동 NPC·사용자 선택 경계는 그대로다.
+
+`adventure.entryHint`는 공통 엔진과 에렌샤의 현재 상태에 `explorationEntry`를 제공한다. 활성 지도는 여전히 `exploration`이며, 비활성 상태를 가짜 지도로 바꾸지 않는다. 실제 구역 진입·이동은 에렌샤의 저장 위치도 갱신하고 날짜·시간·현실 상태를 임의로 바꾸지 않는다. `erencha-tools`의 선택적 `record eventType:clock` 필드는 `erencha-assistant`에서 직접 사건으로 준비해 기존 엔진의 기록 절차로 저장한다. 알려지지 않은 필드는 유지하며 자연어 기록 경로도 보존한다.
+
+놓치지마 검사는 같은 입장·이동·일반 장소 기록 구분을 사용하며 이전 결과를 재연하지 않는다. `moduleGuidanceSelected`는 구형 모듈 지침 유지 여부와 삽입 성공만 기록한다. 별도 훅·재호출·출력 차단을 추가하지 않는다.
 
 ## 0.23.1 연결 보완
 
@@ -6,7 +14,7 @@
 
 `erencha-roll.js`는 에렌샤 높은 눈 판정의 기본 대성공 96~100과 치명타 보정을 구분한다. 공격은 그 결과로 피해 배율과 카드 outcome을 함께 결정한다. `hit`에서 실제 실행이 없으면 일반 실패 판정으로 반환하지 않으며 전투의 요청 적용/턴 진행으로 넘기지 않는다. 검사도 actionExecuted:false를 이미 처리된 공격으로 보지 않는다.
 
-`narrative-flow.js`의 안내를 지침·공개 도구·결과에 공유한다. 전체 답변 길이는 원래 봇 지침을 따르고 fastCombat은 반복 공방의 묘사만 압축한다. 공통 탐험은 visible의 nextActions로 현재 보이는 출구와 후속 조작을 알리며 미래 사건을 자동 실행하지 않는다.
+0.23.1에서 `narrative-flow.js`를 도입했으며 0.23.2에서는 위 실행 계약으로 정리했다. 공통 탐험은 visible의 nextActions로 현재 보이는 출구와 후속 조작을 알리며 미래 사건을 자동 실행하지 않는다.
 
 검사는 기존 beforeRequest의 직렬 await 안에서 끝내고 상태를 다시 읽는다. reviewRunStarted/reviewRunReturned는 검사 경계, requestStatePrepared는 보완 후 상태 준비, beforeRequestReturned는 플러그인 훅 반환이다. afterRequest/outputReceived의 reviewInProgress는 실제 출력 이벤트와 검사 작업이 겹쳤는지를 기록할 뿐, 첫 토큰 시점·호스트 요청 전송·외부 타임아웃을 추정하지 않는다. 카드 확정·재호출 프로토콜은 그대로 유지한다.
 

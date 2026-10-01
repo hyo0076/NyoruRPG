@@ -1,4 +1,6 @@
-# NyoruRPG 0.23.1
+# NyoruRPG 0.23.2
+
+0.23.2는 **지역 진입·이동·조사·채집과 실제 상태 변경의 호출 조건**을 명시하고, MCP의 분량·문체·묘사 압축 지시를 정리합니다. 결과 조회 뒤 새 행동을 생략하게 읽힐 수 있는 안내를 수정하며 에렌샤 탐험 위치와 일반 장소·시간 기록을 연결합니다. 연결 모듈 v1 사용자는 플러그인만 교체합니다. [이번 변경과 확인 범위](docs/nyoru-release-0.23.2.md). 실제 RisuAI·모델 호출은 미확인입니다.
 
 0.23.1은 **대성공 계산·동명 적 대상 연결·긴 서술 중 후속 호출·탐험 진행 안내·검사 완료 표시**를 보완합니다. 전투 압축은 반복 공방에만 적용하고 원래 봇의 답변 분량 지침을 유지합니다. 연결 모듈 v1과 기존 게임을 그대로 사용하며 플러그인만 교체합니다. [변경 내용과 확인 범위](docs/nyoru-release-0.23.1.md). 실제 RisuAI·모델 호출과 첫 토큰 시각은 미확인입니다.
 
@@ -14,7 +16,7 @@
 
 - [플러그인 NyoruRPG.js](https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js)
 - [새 설치용 연결 모듈 NyoruRPG.risum](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG.risum)
-- [0.23.1 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.23.1.zip)
+- [0.23.2 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.23.2.zip)
 
 기존 사용자는 플러그인을 업데이트한 뒤 **시스템 구축 → 기존 모듈을 연결 전용으로 전환**을 한 번 실행하고 Risu를 새로 고침하세요. 모듈을 지우고 다시 가져오거나 게임을 재구축할 필요는 없습니다. 전환을 마쳤다면 이후 일반 업데이트는 플러그인만 교체합니다.
 
