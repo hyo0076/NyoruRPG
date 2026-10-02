@@ -1,4 +1,6 @@
-# NyoruRPG 0.25.0
+# NyoruRPG 0.25.1
+
+0.25.1은 **검사 실패 기록·물체 대상 소모품·소수점 수리·오류 문구·탐험 준비**의 연결 결함을 수정합니다. 일부 선택 항목이 없는 보고서도 미해결 목록에 보관하며 기존 초안과 처리 내역은 유지합니다. 연결 모듈 v1 사용자는 플러그인만 교체합니다. [수정 근거와 확인 범위](docs/nyoru-release-0.25.1.md). 실제 RisuAI·모델 호출은 미확인입니다.
 
 0.25.0은 **전투 거리·소지/착용 효과·장비 강화·놓치지마 검사 전용 화면**을 추가합니다. 기술·장비별 사거리와 네 구간 명중, 인물 이동력을 편집할 수 있습니다. 빈 닉네임으로 등록이 막히는 경로와 장애물 없는 길의 탐험 이동 오류를 수정하고, 처리 방침을 미해결 요청에서 구분합니다. [사용 위치·규칙·확인 범위](docs/nyoru-release-0.25.0.md). 연결 모듈 v1은 그대로 쓰며 실제 RisuAI·모델 호출은 미확인입니다.
 
@@ -22,7 +24,7 @@
 
 - [플러그인 NyoruRPG.js](https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js)
 - [새 설치용 연결 모듈 NyoruRPG.risum](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG.risum)
-- [0.25.0 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.25.0.zip)
+- [0.25.1 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.25.1.zip)
 
 기존 사용자는 플러그인을 업데이트한 뒤 **시스템 구축 → 기존 모듈을 연결 전용으로 전환**을 한 번 실행하고 Risu를 새로 고침하세요. 모듈을 지우고 다시 가져오거나 게임을 재구축할 필요는 없습니다. 전환을 마쳤다면 이후 일반 업데이트는 플러그인만 교체합니다.
 

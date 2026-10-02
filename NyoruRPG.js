@@ -1,7 +1,7 @@
 //@name universal-rpg-engine
-//@display-name NyoruRPG 0.25.0 · 자동 진행
+//@display-name NyoruRPG 0.25.1 · 자동 진행
 //@api 3.0
-//@version 0.25.0
+//@version 0.25.1
 //@update-url https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js
 (async()=>{
 "use strict";
@@ -334,6 +334,11 @@ const approachPrompt='Interpret only this physical attempt against the supplied 
 function normalize(value,name,id) {
   value=value?.result||value||{};
   const input=list(value.rooms||value).slice(0,12);assert(input.length,'EXPLORATION_EMPTY','탐험할 장소가 응답에 없습니다.');
+  input.forEach((room,i)=>{
+    assert(room&&typeof room==='object'&&!Array.isArray(room),'EXPLORATION_RESPONSE','탐험 응답의 '+(i+1)+'번째 구역이 올바른 장소 자료가 아닙니다. 완료한 AI 응답은 보존했습니다.');
+    list(room.enemies).forEach((enemy,j)=>assert(enemy&&(typeof enemy==='string'||typeof enemy==='object'&&!Array.isArray(enemy)),
+      'EXPLORATION_RESPONSE',(i+1)+'번째 구역의 '+(j+1)+'번째 적 자료가 비어 있거나 형식이 잘못됐습니다. 완료한 AI 응답은 보존했습니다.'));
+  });
   const rooms=input.map((r,i)=>({id:'n'+i,name:text(r.name,i===0?name+' 입구':'통로 '+i),description:text(r.description),kind:['secret','puzzle','trap','combat','boss'].includes(r.kind)?r.kind:'passage',exits:[],clues:list(r.clues).map(x=>text(x?.description||x)).filter(Boolean).slice(0,8),found:0,visited:false,revealed:false,solved:false,claimed:false,attempts:{},actorIds:[],
     enemies:list(r.enemies).flatMap((e,j)=>Array.from({length:Math.floor(number(e.count,1,1,6))},(_,k)=>({name:text(e.name||e),description:text(e.description),key:j+'-'+k}))).filter(e=>e.name).slice(0,12),
     mechanism:r.mechanism?{description:text(r.mechanism.description),actions:list(r.mechanism.actions).map(x=>text(x?.name||x)).filter(Boolean),target:number(r.mechanism.target,40,0,99),stat:text(r.mechanism.stat,'DEX'),proficiency:text(r.mechanism.proficiency,'장치 조작'),damage:Math.round(number(r.mechanism.damage,0)),blockedExits:[],approaches:{}}:null,
@@ -354,7 +359,7 @@ function normalize(value,name,id) {
 }
 function roomAt(w){const p=current(w);return p?.rooms.find(r=>r.id===p.current)||null;}
 async function preparePlace(app,scope,w,name,id,args,actorId,ask){
-  const a=w.actors[actorId],data={place:name,context:args.intent||'',rulebook:w.meta.rulebook?.id||(w.meta.hunters?'hunters':'d100'),world:w.meta.rulebook?.instructions||w.meta.native?.adapter?.prompt,actor:{name:a.name,...(w.meta.murim?{realm:a.rank}:{level:a.level}),resources:a.resources}};
+  const a=w.actors[actorId],data={place:name,context:args.intent||'',rulebook:w.meta.rulebook?.id||(w.meta.hunters?'hunters':'d100'),world:w.meta.rulebook?.instructions||w.meta.native?.adapter?.prompt||'',actor:{name:a.name,...(w.meta.murim?{realm:a.rank}:{level:a.level}),resources:a.resources}};
   // Keep completed authoring across a regenerated answer. This is a template,
   // never an activated map or an instruction to generate future places.
   let key=null;
@@ -417,6 +422,8 @@ async function prepare({app,scope,w,args,actorId,ask,ensure}) {
       assert(intent,'INTENT_REQUIRED','장치에 어떤 행동을 시도하는지 알려주세요.');
       const key='method.'+norm(intent).slice(0,300),known=device.actions.find(s=>norm(intent).includes(norm(s)));
       const interpretation=device.approaches[key]||(known?{possible:true,reason:known,stat:device.stat,proficiency:device.proficiency}:await ask(approachPrompt,{attempt:intent,room:clone(room),actor:w.actors[actorId].name,knownProficiencies:Object.values(w.actors[actorId].proficiencies||{}).map(p=>p.name)},'approach.'+place.id+'.'+node+'.'+await hash(key)));
+      assert(interpretation&&typeof interpretation==='object'&&!Array.isArray(interpretation)&&typeof interpretation.possible==='boolean',
+        'EXPLORATION_RESPONSE','장치 접근법 응답에 가능 여부(possible: true/false)가 없습니다. 판정과 피해를 실행하지 않았습니다.');
       plan.method={key,...{possible:interpretation.possible!==false,reason:text(interpretation.reason),stat:text(interpretation.stat,device.stat),proficiency:text(interpretation.proficiency,device.proficiency)}};
     }
   }
@@ -910,7 +917,8 @@ class App {
           return result;
         });
       if(!this.tx)await this.repo.commit(scope, tx.id, anchor);
-      assert(result.ok!==false,result.error?.code||'EDIT_FAILED',result.error?.message||'변경을 저장하지 못했습니다. 입력한 내용은 유지됩니다.');
+      const failure=require('./util.js').resultError(result,'EDIT_FAILED','변경을 저장하지 못했습니다. 입력한 내용은 유지됩니다.');
+      assert(result.ok!==false,failure.code,failure.message);
       return { ...result, persistence: this.tx?'staged':'committed' };
     });
   }
@@ -5004,9 +5012,6 @@ function visibleExploration(w) {
   };
 }
 function query(w, tool, args) {
-  if(w.meta.murim&&['growth','actor'].includes(args.op))return mechanicalSheet(w,args.actorId);
-  const external=require('./rulebook-runtime.js').externalEngine(w);
-  if(external)return external.query(w,tool,args);
   if (tool === 'rpg_bootstrap') return {
     status: w ? 'READY' : 'MISSING',
     profile: w?.profileRef ?? null,
@@ -5014,6 +5019,9 @@ function query(w, tool, args) {
     paidRequests: 0
   };
   assert(w, 'SETUP_MISSING', '먼저 시스템을 구축하세요.');
+  if(w.meta.murim&&['growth','actor'].includes(args.op))return mechanicalSheet(w,args.actorId);
+  const external=require('./rulebook-runtime.js').externalEngine(w);
+  if(external)return external.query(w,tool,args);
   switch (args.op) {
     case 'last_results': return require('./result-record.js').lastResults(w);
     case 'growth': return w.meta.native && actor(w,args.actorId).kind === 'enemy' ? publicActor(w,actor(w,args.actorId)) : mechanicalSheet(w,args.actorId);
@@ -6393,7 +6401,11 @@ async function prepareValue(app,scope,tx,args,tool,signal) {
     if(selected?.mechanics?.targeting?.kinds?.length===1&&selected.mechanics.targeting.kinds[0]==='object'){const input={name:n,id:'object.'+(await hash(n)).slice(0,24)};cache.objects.push(input);targets.push(FX.object(w,input).id);continue;}
     const bound=ActorReference.find(w,n,{bindings:participantBindings});
     targets.push(bound?.id||await ensure(n,args.intent||'',attacking&&!friendly?'enemy':friendly?'ally':null));}
-  if(args.target)targets.push(ActorReference.find(w,args.target,{bindings:participantBindings})?.id||await ensure(args.target));
+  if(args.target){
+    // A consumable can target a stored object. Do not prepare it as a person.
+    const object=tool==='rpg_inventory'&&args.op==='use'?R.find(w.meta.effectObjects,args.target):null;
+    targets.push(object?.id||ActorReference.find(w,args.target,{bindings:participantBindings})?.id||await ensure(args.target));
+  }
   const actor=w.actors[actorId];
   if(tool==='rpg_play'&&args.op==='act') {
     const basic=args.movement?'move':builtin(args.action),known=R.find(Object.fromEntries(actor.skills.map(id=>[id,w.definitions.skills[id]])),args.action),saved=R.find(Object.fromEntries(Object.entries(w.meta.erencha.actions).filter(([,s])=>s.ownerId===actorId)),args.action);
@@ -7486,10 +7498,10 @@ module.exports={packet,synchronize,presentation};
 },
 "./erencha-tools.js":function(module,exports,require){
 'use strict';
-const {obj,str,id,int,en,arr,optional}=require('./schema.js');
+const {obj,str,id,int,num,en,arr,optional}=require('./schema.js');
 const person=optional(obj({name:str(),realName:str(),nickname:str(),aliases:arr(str(),30),kind:{...en('player','ally','enemy','summon'),description:'player는 이 채팅의 사용자만. 다른 온라인 이용자는 ally + 아바타 설명으로 등록합니다.'},owner:str(),description:str(4000),instanceKey:id}),'realName','nickname','aliases','kind','owner','description','instanceKey');
 const act=optional(obj({objects:arr(optional(obj({name:str(),description:str(2000),durability:int(1,1000000),tags:arr(str(),20)}),'description','durability','tags'),100),actor:str(),action:str(1000),intent:str(4000),targets:arr(str(),20),participants:arr(person,50),eventId:str(300),opening:en('surprise'),combat:{type:'boolean',description:'실제 교전이면 true. 턴테이블·행동 게이지·자유 진행은 저장된 사용자 설정을 따릅니다.'},combatMode:en('pve','duel','pvp')}),'objects','intent','targets','participants','eventId','opening','combat','combatMode');
-const inv=optional(obj({actor:str(),item:str(),quantity:int(1,1000000),target:str(),slot:str(),description:str(4000),amount:int(0,1000000),restore:{type:'boolean'},protect:{type:'boolean'},eventId:str(300)}),'quantity','target','slot','description','protect','eventId','amount','restore');
+const inv=optional(obj({actor:str(),item:str(),quantity:int(1,1000000),target:str(),slot:str(),description:str(4000),amount:num(0,1000000),restore:{type:'boolean'},protect:{type:'boolean'},eventId:str(300)}),'quantity','target','slot','description','protect','eventId','amount','restore');
 const ops={
   rpg_registry:{summon:optional(obj({name:str(),owner:str(),description:str(4000),mode:en('permanent','cast'),duration:int(1,1000)}),'description','mode','duration'),dismiss_summon:obj({name:str(),owner:str()}),ensure_actor:optional(obj({...person.properties,actor:str()}),'realName','nickname','aliases','kind','owner','description','instanceKey','actor'),ensure_actors:optional(obj({actor:str(),actors:arr(person,50)}),'actor')},
   rpg_play:{act,explore:optional(obj({actor:str(),action:{...en('start','move','inspect','investigate','interact','end'),description:'Required for actual area entry: start with name. A later visit to a known place also needs start. Within the place use move for a visible exit, investigate for a search, interact for a device/resource. To enter another area, end the old visit then start the new name.'},name:{...str(),description:'Required for start: the actual place being entered.'},destination:{...str(),description:'Required for move: an exit returned by the current exploration.'},intent:str(4000),eventId:str(300)}),'name','destination','intent','eventId'),record:optional(obj({actor:str(),action:str(1000),intent:str(4000),eventId:str(300),eventType:{...en('quest_offer','quest_update','quest_rewards','quest_finish','class_finish','clock'),description:'clock은 실제 장소·날짜·시간·현실/게임 전환 기록. 알려진 변경 필드만 보냅니다. 퀘스트 수락·진행·완료와 구분합니다.'},location:str(),date:str(),time:str(),realm:en('game','real'),days:int(0,10000),questId:str(300),quest:optional(obj({name:str(),description:str(4000),rewardXP:int(0,1000000000),gold:int(0,1000000000000),fame:int(0,1000000000),items:arr(optional(obj({name:str(),quantity:int(1,1000000),description:str(4000),type:en('weapon','armor','accessory','consumable','ammo','material','protection'),rank:en('Common','Rare','Unique','Legendary','Epic'),power:int(0,1000000),defense:int(0,1000000),price:int(0,1000000000000),recovery:optional(obj({hp:int(0,1000000),mp:int(0,1000000)}),'hp','mp'),mechanics:require('./effect-model.js').schema}),'quantity','description','type','rank','power','defense','price','recovery','mechanics'),50),className:str(),proficiencies:arr(str(),30)}),'description','rewardXP','gold','fame','items','className','proficiencies'),progress:str(4000),completed:{type:'boolean'}}),'intent','eventType','location','date','time','realm','days','questId','quest','progress','completed')},
@@ -19669,8 +19681,9 @@ const {assert,canonical}=require('./util.js');
 function consumption(w,tool,args){
   if(tool!=='rpg_inventory'||args.op!=='use')return null;
   const er=w.meta.rulebook?.id==='erencha',R=er?require('./erencha-rules.js'):null;
-  const a=er?R.find(w.actors,args.actor):w.actors[args.actorId];
-  const target=er?R.find(w.actors,args.target||a?.id):w.actors[args.targetId||a?.id]||w.meta.objects?.[args.targetId];
+  const a=er?require('./actor-reference.js').find(w,args.actor):w.actors[args.actorId];
+  const ref=er?args.target||a?.id:args.targetId||a?.id;
+  const target=er?R.find(w.meta.effectObjects,ref)||require('./actor-reference.js').find(w,ref):require('./effect-system.js').entity(w,ref);
   assert(a&&target,'REVIEW_ACTOR','저장된 사용 인물과 대상을 찾지 못했습니다.');
   const it=er?R.find(Object.fromEntries(Object.entries(w.inventory).filter(([,x])=>x.ownerId===a.id)),args.item):w.inventory[args.itemId];
   assert(it&&it.ownerId===a.id&&it.quantity>0,'REVIEW_ITEM','실제로 보유한 소모품만 사용 보완할 수 있습니다.');
@@ -19808,7 +19821,10 @@ function initial(s){if(s.enum)return s.enum[0];if(s.type==='object')return Objec
 function at(s,path){for(const k of path.split('.').filter(Boolean))s=s.type==='array'?s.items:s.properties?.[k]||s.additionalProperties||{};return s;}
 function references(ui,path){
   const w=ui.info.state,k=path.split('.').filter(x=>!/^\d+$/.test(x)).at(-1),rows=values=>Object.entries(values||{});
-  if(['actor','actorId','actorIds','target','targetId','targets','targetIds','owner','ownerId'].includes(k))return rows(w.actors).map(([id,a])=>[id,(a.nickname||a.name||id)+(a.realName?' · '+a.realName:'')]);
+  if(['actor','actorId','actorIds','target','targetId','targets','targetIds','owner','ownerId'].includes(k))return [
+    ...rows(w.actors).map(([id,a])=>[id,(a.nickname||a.name||id)+(a.realName?' · '+a.realName:'')]),
+    ...(['target','targetId','targets','targetIds'].includes(k)?rows(w.meta.effectObjects).map(([id,o])=>[id,o.name+' · 물체']):[])
+  ];
   if(k==='destination')return (require('./adventure.js').visible(w)?.exits||[]).filter(x=>!x.blocked).map(x=>[x.id,x.name]);
   if(['item','itemId'].includes(k))return rows(w.inventory).map(([id,it])=>[id,(it.name||w.definitions.items[it.definitionId]?.name||id)+' · '+(w.actors[it.ownerId]?.nickname||w.actors[it.ownerId]?.name||it.ownerId)+' · '+it.quantity+'개']);
   if(['skill','skillId'].includes(k))return rows(w.definitions.skills).map(([id,s])=>[id,s.name]);
@@ -19874,20 +19890,27 @@ function dependencies(plan,index,row){
 }
 async function loadBox(app,scope){
   let box=await app.repo.read(await key(app,scope));
-  if(box){if((box.version||1)<3){for(const item of Object.values(box.items||{})){if(item.kind==='notice'&&!item.connection&&item.status==='open'&&require('./review-report.js').informational(item.reason)){item.status='informational';item.closedAt=Date.now();item.resolution='처리 완료 또는 처리 방침 설명입니다. 원래 검사 보고서에 보존합니다.';}}box.version=3;await app.repo.write(await key(app,scope),box);}return box;}
-  box={version:3,items:{},seenReports:{}};
-  // One-time migration of the last pre-inbox report. Never scan every chat.
+  if(box?.version>=4)return box;
+  box||={version:1,items:{},seenReports:{}};
+  if((box.version||1)<3)for(const item of Object.values(box.items||{})){
+    if(item.kind==='notice'&&!item.connection&&item.status==='open'&&require('./review-report.js').informational(item.reason)){
+      item.status='informational';item.closedAt=Date.now();item.resolution='처리 완료 또는 처리 방침 설명입니다. 원래 검사 보고서에 보존합니다.';
+    }
+  }
+  // Backfill the latest report once: older capture could fail on an absent
+  // optional issues/results field. Existing drafts and resolutions stay intact.
   const last=await app.repo.read((await app.repo.key(scope))+'/last-review');
   if(last){
-    const report=last.repairs?last:(await app.repo.list(scope,'review')).find(r=>r?.messageId===last.messageId&&r.createdAt===last.createdAt);
-    if(report)await collect(app,scope,report,box);
+    const report=last.repairs?last:(await app.repo.list(scope,'review')).find(r=>r?.messageId===last.messageId&&r.createdAt===last.createdAt)||last;
+    await collect(app,scope,report,box);
   }
+  box.version=4;
   await app.repo.write(await key(app,scope),box);return box;
 }
 async function read(app,scope){return app.repo.exclusive(()=>loadBox(app,scope));}
 async function collect(app,scope,report,box){
-  const reportId=report.reviewId||await hash({message:report.messageId,created:report.createdAt});
-  const signature=await hash({status:report.status,results:report.results,notes:report.notes,issues:report.issues});
+  const reportId=report.reviewId||await hash({message:report.messageId??null,created:report.createdAt??null});
+  const signature=await hash({status:report.status??null,results:report.results??[],notes:report.notes??[],issues:report.issues??null});
   if(box.seenReports[reportId]===signature)return box;
   box.seenReports[reportId]=signature;
   const repairs=report.repairs||[],results=report.results||[];
@@ -20003,7 +20026,8 @@ async function apply(app,scope,id,input,expectedRevision){
           Repair.consumption(world,tool,args);
           const manual=require('./manual-changes.js'),before=manual.equipment(world);
           const output=Books.apply(app,world,prepared,tool,args,tx.authority);
-          assert(output?.ok!==false,output?.error?.code||'REVIEW_APPLY_FAILED',output?.error?.message||'수정한 입력을 적용하지 못했습니다.');
+          const failure=require('./util.js').resultError(output,'REVIEW_APPLY_FAILED','수정한 입력을 적용하지 못했습니다.');
+          assert(output?.ok!==false,failure.code,failure.message);
           manual.record(world,before,args.actionId);
           world.meta.reviewHelpChanges=[...(world.meta.reviewHelpChanges||[]),{id:args.actionId,title:item.title,result:clone(output)}].slice(-20);
           return output;
@@ -21475,7 +21499,7 @@ function validate(schema, value, path = '자료', root = schemas) {
       if (child || typeof schema.additionalProperties === 'object') validate(child || schema.additionalProperties, v, path + '.' + k, root);
     }
   } else if (schema.type === 'array') {
-    assert(Array.isArray(value) && value.length <= (schema.maxItems ?? 1000), 'INVALID_SCHEMA', path + ': 배열 크기 또는 형식 오류입니다.');
+    assert(Array.isArray(value) && value.length >= (schema.minItems ?? 0) && value.length <= (schema.maxItems ?? 1000), 'INVALID_SCHEMA', path + ': 배열 크기 또는 형식 오류입니다.');
     value.forEach((v, i) => validate(schema.items, v, path + '[' + i + ']', root));
   } else if (schema.type === 'string') assert(typeof value === 'string' && value.length >= (schema.minLength ?? 0) && value.length <= (schema.maxLength ?? 100000) && (!schema.pattern || new RegExp(schema.pattern).test(value)), 'INVALID_SCHEMA', path + ': 문자열 형식 오류입니다.');else if (['number', 'integer'].includes(schema.type)) assert(Number.isFinite(value) && (schema.type !== 'integer' || Number.isSafeInteger(value)) && value >= (schema.minimum ?? -Infinity) && value <= (schema.maximum ?? Infinity), 'INVALID_SCHEMA', path + ': 숫자 범위 오류입니다.');else if (schema.type === 'boolean') assert(typeof value === 'boolean', 'INVALID_SCHEMA', path + ': 참/거짓 값이 필요합니다.');
   return value;
@@ -26263,8 +26287,16 @@ module.exports = {
 'use strict';
 // Public release notes. The build also publishes this as updates.json.
 module.exports={
-  latest:'0.25.0',
+  latest:'0.25.1',
   entries:[
+    {version:'0.25.1',date:'2026-10-02',title:'오류 기록·입력 규격·탐험 준비 연결 수정',changes:[
+      '검사 실패·중단 보고서나 구버전 보고서에 선택 항목이 없으면 미해결 목록 저장도 실패하던 오류를 수정합니다. 현재 채팅의 마지막 보고서를 한 번 다시 읽어 누락 항목을 보관하고 기존 초안·정리 내역은 유지합니다.',
+      '공통 d100·헌터·무림의 소모품 검사에서 실제 물체 저장소를 참조하도록 수정합니다. 에렌샤도 물체 대상 소모품을 인물 생성으로 잘못 넘기지 않으며 미해결 대상 선택에 물체를 표시합니다.',
+      '에렌샤 수리 도구가 소수점 내구도 수치를 받을 수 있도록 공통 수리 계산과 입력 규격을 맞춥니다.',
+      '직접 편집과 미해결 항목 적용에서 문자열로 반환된 실제 오류 코드·원인 문구를 일반 저장 실패 문구로 덮어쓰지 않습니다.',
+      '추가 지침이 비어 있어 탐험 장소 초안 재사용이 해제되던 경로를 수정합니다. 잘못된 구역·적·장치 해석 응답은 해당 항목의 형식 오류로 알리고 판정하지 않습니다.',
+      '네 거리의 명중 보정 배열은 네 값을 모두 받도록 최소 길이 검사를 연결하고, 구축 전 상태 조회에는 시스템 미구축 오류를 반환합니다.'
+    ],note:'연결 모듈 v1·기존 세이브·판정 결과를 유지합니다. 소스 조사·수정과 배포 생성이며 별도 최종 검사·브라우저·모의 호스트/전투·실제 RisuAI·유료 API 호출은 하지 않았습니다. 외부 타임아웃 해결이나 실제 채팅 팝업 확인을 뜻하지 않습니다.'},
     {"version":"0.25.0","date":"2026-10-02","title":"전투 거리·소지 효과·장비 강화와 검사 화면","changes":["공통 d100·헌터·에렌샤·무림에 근접1/가까움2/멀리3/아주멀리4의 전투 거리를 추가합니다. 적·아군·소환수에 같은 사거리와 이동 행동을 적용합니다.","기술·장비 편집에서 최대 사거리와 네 구간의 명중 보정을, 전투 옵션에서 인물 이동력을 설정합니다. 사거리·거리 명중·거리 패널티·이동력 효과도 조합할 수 있습니다.","각 장비 효과에 소지 시 적용과 착용 시 추가 적용을 구분합니다. 화살통처럼 가지고 있을 때의 보너스와 착용 추가 보너스를 함께 만들 수 있습니다.","장비 강화의 비용·성공률·실패 조건을 표시하고 기존 에렌샤 강화 규칙을 공통 장비에 연결합니다. 강화 단계의 현재 가치를 판매·경매·수리 비용에도 적용합니다.","놓치지마 검사를 독립 카테고리로 옮깁니다. 완료 안내·단순 처리 방침을 미해결 요청에서 제외하고 실제 실패·초안·원래 보고서는 보존합니다.","인물 등록의 빈 닉네임·본명·소유자와 빈 별칭을 생략하도록 수정합니다. 장애물이 없는 탐험 구역 이동에서 장치 설명을 잘못 읽던 오류를 수정합니다.","검사 실패 항목에 단계·코드·민감 정보를 가린 원인 문구를 남기고 탐험 이동 편집에서는 현재 열린 출구를 제시합니다.","채팅 팝업의 생성·재표시를 정리하고 위치 측정 실패 시 기본 위치로 표시합니다. 놓치지마 검사에 API 호출 없는 채팅 알림 미리보기를 추가합니다. 실제 호스트 표시는 미확인입니다."],"note":"연결 모듈 v1과 기존 세이브를 유지합니다. 소스 수정·배포 생성 범위이며 별도 최종 검사·브라우저·실제 RisuAI·모델 호출은 하지 않았습니다. 실제 거리 전투·강화·미해결 항목 적용은 실사용 확인이 필요합니다. 외부 호스트 타임아웃 해결을 의미하지 않습니다."},
     {version:'0.24.1',date:'2026-10-02',title:'놓치지마 검사 도움 알림과 미해결 항목 수정',changes:[
       '미해결 검사에 쮸인님 이것 좀 도와달라냥! 알림을 표시합니다. 플러그인 창 밖의 현재 채팅에서도 보이며, 누르면 미해결 목록이 열립니다.',
@@ -26651,11 +26683,16 @@ const scopeKey = s => {
   for (const v of Object.values(s)) assert(typeof v === 'string' && v.length > 0 && v.length <= 300, 'SCOPE_MISMATCH', '안정적인 대화·분기 ID가 필요합니다.');
   return canonical(s);
 };
+function resultError(result, code = 'OPERATION_FAILED', message = '처리에 실패했습니다.') {
+  const error=result?.error;
+  return {code:result?.code||error?.code||code,
+    message:(typeof error==='string'?error:error?.message)||message};
+}
 function errorResult(error) {
   return {
     ok: false,
-    code: error.code || 'INTERNAL_ERROR',
-    error: error.code ? error.message : '처리에 실패했습니다. 저장 기록과 진단을 확인하세요.',
+    code: error?.code || 'INTERNAL_ERROR',
+    error: error?.code && error.message ? error.message : '처리에 실패했습니다. 저장 기록과 진단을 확인하세요.',
     status: 'blocked',
     applied: false,
     persistence: 'unchanged',
@@ -26678,13 +26715,14 @@ module.exports = {
   fields,
   escapeHTML,
   scopeKey,
-  errorResult
+  errorResult,
+  resultError
 };
 
 },
 "./version.js":function(module,exports,require){
 'use strict';
-module.exports={VERSION:'0.25.0'};
+module.exports={VERSION:'0.25.1'};
 
 },
 "./vertex-auth.js":function(module,exports,require){
