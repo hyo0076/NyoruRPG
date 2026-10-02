@@ -1,4 +1,8 @@
-# NyoruRPG 0.25.1
+# NyoruRPG 0.25.2
+
+**AI 연결 → Provider Manager 도구 직접 연결**을 추가했습니다. 기본 대기는 600초이며 기존 판정·저장 경로를 사용합니다. Risu의 HTML 클래스 변환과 알림 선택자의 불일치도 수정했습니다. 실제 IPC 호출과 채팅 팝업 표시는 실사용 미확인입니다. [연결 안내·수정 근거](docs/nyoru-release-0.25.2.md).
+
+0.25.2는 **게임 상태가 없는 채팅에서 창을 열 때 `combat`을 읽으며 중단되는 경로**를 수정합니다. 상태가 준비되지 않으면 구축·복구 안내를 표시하며 기존 게임은 초기화하지 않습니다. 정보 읽기 실패 시의 오류 화면, 채팅 변경 확인, 미니보드 닫기와 검사 알림의 연결도 보완합니다. 연결 모듈 v1은 그대로 사용하고 플러그인만 교체합니다. [수정 근거와 확인 범위](docs/nyoru-release-0.25.2.md). 포켓리스·우분투 실사용 확인은 아직 하지 않았습니다.
 
 0.25.1은 **검사 실패 기록·물체 대상 소모품·소수점 수리·오류 문구·탐험 준비**의 연결 결함을 수정합니다. 일부 선택 항목이 없는 보고서도 미해결 목록에 보관하며 기존 초안과 처리 내역은 유지합니다. 연결 모듈 v1 사용자는 플러그인만 교체합니다. [수정 근거와 확인 범위](docs/nyoru-release-0.25.1.md). 실제 RisuAI·모델 호출은 미확인입니다.
 
@@ -24,7 +28,7 @@
 
 - [플러그인 NyoruRPG.js](https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js)
 - [새 설치용 연결 모듈 NyoruRPG.risum](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG.risum)
-- [0.25.1 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.25.1.zip)
+- [0.25.2 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.25.2.zip)
 
 기존 사용자는 플러그인을 업데이트한 뒤 **시스템 구축 → 기존 모듈을 연결 전용으로 전환**을 한 번 실행하고 Risu를 새로 고침하세요. 모듈을 지우고 다시 가져오거나 게임을 재구축할 필요는 없습니다. 전환을 마쳤다면 이후 일반 업데이트는 플러그인만 교체합니다.
 

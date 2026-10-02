@@ -1,4 +1,17 @@
-# NyoruRPG MCP 구조 · 0.25.1
+# NyoruRPG MCP 구조 · 0.25.2
+
+## 0.25.2 Provider Manager IPC와 알림
+
+provider-tool-ipc는 선택적 직접 연결이며 app의 기존 callSerialized/tool-runtime/Repository를 사용한다. provider-tool-schema는 PM의 제한된 입력 프로필로 변환하고 엔진 앞에서 원래 값으로 복원한다. 직접 연결 토큰·현재 채팅·전원·룰북을 검사하며 공개 MCP는 그대로 유지한다. 취소 signal은 rulebook-runtime과 각 준비기/Provider에 전달하고 적용 직전 다시 확인한다. 저장된 결과는 취소하지 않는다. 등록만 최대 10초 재전송하며 게임 호출의 processing/재호출 프로토콜은 없다.
+
+review-notifications의 HTML 생성 자식과 선택자는 Risu sanitizer가 유지하는 x-risu- 접두사를 공유한다. MAIN_DOM_PERMISSION만 권한 안내로 분류하고 요소 생성 오류는 별도 코드로 기록한다. 참고한 공식 SafeElement/공유 정제 훅과 확인 범위는 0.25.2 배포 문서에 남겼다.
+
+
+## 0.25.2 게임 상태 없는 창 표시
+
+`app.inspect()`는 적용된 게임·진행 중 거래가 없으면 `state:null`을 반환한다. UI의 플레이 화면은 이 상태에서 룰북별 계산·편집으로 진입하지 않고 준비·복구 안내를 표시한다. 읽기 오류는 기존 feedback에 남기며 안내 표시가 저장소를 초기화하거나 전원을 변경하지 않는다. `action-gauge.active/snapshot`과 `combat-range.snapshot`은 세계가 없는 읽기 호출을 각각 비활성·표시 없음으로 처리한다. 실제 전투 실행·저장 검증·MCP 미구축 오류는 기존대로 유지한다.
+
+`UI.refresh/openMini`는 읽기 시작과 결과의 scope 및 표시 직전 현재 채팅을 확인한다. 읽기 실패는 loadError로 보관하고 renderUnavailable에서 원래 오류·다시 읽기·닫기만 표시해 불완전한 info로 설정·편집 바인딩을 진행하지 않는다. native-ui의 투자·장비 공통 실행기는 버튼을 만든 시점의 expectedScope를 adminExecute에 전달한다. mini-ui의 닫기는 reviewNotices의 panelVisible도 해제하여 미해결 채팅 알림을 다시 표시할 수 있게 한다.
 
 ## 0.25.1 오류 반환 경로
 

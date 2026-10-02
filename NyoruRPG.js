@@ -1,16 +1,30 @@
 //@name universal-rpg-engine
-//@display-name NyoruRPG 0.25.1 · 자동 진행
+//@display-name NyoruRPG 0.25.2 · 자동 진행
 //@api 3.0
-//@version 0.25.1
+//@allowed-ipc universal-rpg-engine provider-manager
+//@version 0.25.2
 //@update-url https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js
 (async()=>{
 "use strict";
-const __modules={"./action-gauge.js":function(module,exports,require){
+const __modules={"./abort-link.js":function(module,exports,require){
+'use strict';
+// Link one transport call, without cancelling another build/review/assistant.
+function link(signal,controller) {
+  if(!signal)return ()=>{};
+  const abort=()=>controller.abort();
+  if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});
+  return ()=>signal.removeEventListener('abort',abort);
+}
+module.exports={link};
+
+},
+"./action-gauge.js":function(module,exports,require){
 'use strict';
 // Logical combat time only. UI refresh, model latency and wall time never advance it.
 const {assert,escapeHTML:e}=require('./util.js');
 const LIMIT=100,UNIT=10,EPS=1e-7;
-const active=w=>w.combat?.turnMode==='gauge'&&!!w.combat.gauge;
+// Window/status readers may run before a world has been built or loaded.
+const active=w=>w?.combat?.turnMode==='gauge'&&!!w.combat.gauge;
 const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
 function inputs(w,a){
   if(w.meta.rulebook?.id==='erencha'){
@@ -706,9 +720,10 @@ function form(ui,key,title){
       (vertex?'<p class="muted">'+(serviceAccount?'JSON 키는 기기별 LocalPluginStorage에 보관하며 게임 백업·모델 프롬프트에 넣지 않습니다. 이 인증 방식은 Google Vertex 공식 API 주소에서 사용합니다.':p.vertexAuth==='access-token'?'직접 입력한 OAuth 토큰은 만료되면 새 토큰을 입력해야 합니다. 자동 갱신은 서비스 계정 JSON 방식을 선택하세요.':'Express Mode는 API 키를 사용합니다.')+'</p>':'')+
       '<details class="spaced"><summary>고급 옵션</summary><div class="fields spaced">'+(serviceAccount?'':flag('keyless','키 없는 프록시 사용'))+flag('allowLocalHTTP','localhost HTTP 허용')+flag('jsonMode','JSON 모드 요청')+choice('tokenParameter','출력 토큰 필드',{max_completion_tokens:'max_completion_tokens',max_tokens:'max_tokens'})+input('temperature','온도 (선택)')+input('topP','Top P (선택)')+input('reasoningEffort','추론 강도 (선택)')+input('serviceTier','서비스 티어 (선택)')+'<label class="wide">추가 본문 JSON<textarea data-connection="'+key+'" data-field="extraBody">'+e(JSON.stringify(p.extraBody||{},null,2))+'</textarea></label><label class="wide">추가 인증 헤더 JSON · 이 기기에 저장<textarea data-secret-headers="'+key+'">'+e(JSON.stringify(secret.headers||{},null,2))+'</textarea></label></div></details><button type="button" class="spaced" data-test="'+key+'">연결 확인 · API 사용</button>')+'</section>';
 }
-function render(ui){return (ui.app.credentials.notice?'<p class="notice error">'+e(ui.app.credentials.notice)+'</p>':'')+form(ui,'connection','기본 API')+form(ui,'buildConnection','시스템 정밀 구축용 API')+form(ui,'reviewConnection','검사용 API')+'<section class="panel"><p>검사 실행과 미해결 항목은 놓치지마 검사 카테고리에서 관리합니다.</p><button type="button" data-tab="review">놓치지마 검사 열기</button><label class="choice spaced"><input id="encounter-generation" type="checkbox" '+(ui.app.settings.encounterGeneration!==false?'checked':'')+'><span>새 인물이 등장하면 능력치·기술 자동 준비</span></label><button type="button" id="retry-encounters" class="spaced">실패한 인물 구축 다시 허용</button></section><button type="button" id="save-connection" class="primary">연결 설정 저장</button>';}
+function render(ui){return require('./provider-tool-ipc-ui.js').render(ui)+(ui.app.credentials.notice?'<p class="notice error">'+e(ui.app.credentials.notice)+'</p>':'')+form(ui,'connection','기본 API')+form(ui,'buildConnection','시스템 정밀 구축용 API')+form(ui,'reviewConnection','검사용 API')+'<section class="panel"><p>검사 실행과 미해결 항목은 놓치지마 검사 카테고리에서 관리합니다.</p><button type="button" data-tab="review">놓치지마 검사 열기</button><label class="choice spaced"><input id="encounter-generation" type="checkbox" '+(ui.app.settings.encounterGeneration!==false?'checked':'')+'><span>새 인물이 등장하면 능력치·기술 자동 준비</span></label><button type="button" id="retry-encounters" class="spaced">실패한 인물 구축 다시 허용</button></section><button type="button" id="save-connection" class="primary">연결 설정 저장</button>';}
 function reviewSettings(ui){return '<section class="panel"><label class="choice"><input id="review-enabled" type="checkbox" '+(ui.app.settings.reviewEnabled?'checked':'')+'><span>놓치지마 검사</span></label><p class="muted">새 입력을 보낼 때 직전 답변과 저장 결과를 검토합니다. 빠진 사건·소모품·거래와 아직 처리되지 않은 직전 행동을 저장된 규칙으로 계산해 플러그인 데이터에 직접 반영합니다. 이미 기록된 판정은 다시 굴리지 않으며, 과거 전투 전체를 재구성하거나 서술에 맞춰 수치를 덮어쓰지 않습니다. 켜면 답변 전에 검사 API를 사용합니다. 다른 플러그인보다 먼저 실행되는 것은 보장하지 않습니다.</p><label class="choice"><input id="review-start-notice" type="checkbox" '+(ui.app.settings.reviewStartNotice?'checked':'')+'><span>채팅 화면에 검사 시작 알림 표시</span></label><p class="muted">검사 시작 알림은 약 3초 뒤 사라집니다. 미해결 문제 알림은 이 설정과 관계없이 누를 때까지 표시되며, 클릭하면 해당 채팅의 수정 창이 열립니다.</p><button type="button" id="save-review-settings" class="primary">검사 설정 저장</button> <button type="button" id="preview-review-notice">채팅 알림 미리보기</button> <button type="button" data-tab="connection">검사용 API 설정</button><p class="muted">미리보기는 플러그인 창을 닫고 채팅 화면에 약 3초간 표시합니다. API를 호출하거나 게임을 바꾸지 않습니다. 처음에는 Risu의 메인 화면 접근 권한을 허용해 주세요.</p>'+(ui.app.reviewNotices?.notice?'<p class="notice error">'+e(ui.app.reviewNotices.notice)+'</p>':'')+'</section>';}
 function capture(ui){
+  require('./provider-tool-ipc-ui.js').capture(ui);
   for(const el of document.querySelectorAll('[data-api-shared]'))ui.app.settings[el.dataset.apiShared+'Shared']=el.checked;
   const enabled=document.getElementById('review-enabled');if(enabled)ui.app.settings.reviewEnabled=enabled.checked;
   const notice=document.getElementById('review-start-notice');if(notice)ui.app.settings.reviewStartNotice=notice.checked;
@@ -728,6 +743,7 @@ async function prepareSecrets(ui,onlyKey){
   for(const [key,account] of changes){secrets(ui,key).serviceAccount=account;ui.app.settings[key].vertexProject=account.project_id;ui.vertexJSON[key]='';}
 }
 function bind(ui){
+  require('./provider-tool-ipc-ui.js').bind(ui);
   for(const el of document.querySelectorAll('[data-api-shared]'))el.onchange=()=>{ui.capture();ui.render();};
   for(const el of document.querySelectorAll('[data-connection][data-field="format"]'))el.onchange=()=>ui.act(async()=>{
     const key=el.dataset.connection,next=el.value;el.value=ui.app.settings[key].format;
@@ -779,6 +795,7 @@ class App {
     this.repo.onIO=details=>this.host.record('storageSlow',details);
     this.moduleBridge = new (require('./module-bridge.js').ModuleBridge)(this);
     this.reviewNotices = new (require('./review-notifications.js').ReviewNotifications)(this);
+    this.providerTools = new (require('./provider-tool-ipc.js').ProviderToolIPC)(this);
     this.provider = new Provider(api);
     this.compiler = new Compiler(this.repo, this.provider, this.host);
     this.encounters = new EncounterBuilder(this);
@@ -799,6 +816,7 @@ class App {
       display: true,
       buildMode: 'on_demand',
       reviewStartNotice: false,
+      providerTools: {...require('./provider-tool-ipc.js').DEFAULTS},
       encounterGeneration: true
     };
     this.effectPresets = {};
@@ -1056,11 +1074,11 @@ class App {
     this.host.record('toolsListed',{count:schemas.length,rulebook:book?.meta.rulebook.id||null});
     return schemas;
   }
-  callSerialized(name, args) {
+  callSerialized(name, args, transport = {}) {
     const callId=++this.toolSequence,receivedAt=Date.now();
     const boundary=this.tx&&!this.tx.awaitingUser?{scope:clone(this.tx.scope),userMessageId:this.tx.userMessageId,anchor:clone(this.tx.anchor)}:null;
     this.host.record('toolReceived',{callId,tool:name,op:args?.op,actionId:args?.actionId,eventId:args?.eventId||null});
-    const p = this.queue.then(() => this.call(name, args,{callId,queueMs:Date.now()-receivedAt,boundary}));
+    const p = this.queue.then(() => this.call(name, args,{...transport,callId,queueMs:Date.now()-receivedAt,boundary}));
     this.queue = p.catch(() => {});
     return p;
   }
@@ -1077,6 +1095,7 @@ class App {
     try {
       const s = await this.currentScope();
       activeScope=s;
+      await this.providerTools.sync();
       const context=await this.moduleBridge.context(s);
       if(!context.active)return sourceMessages;
       const power=await require('./chat-power.js').read(this,s,context);
@@ -1103,7 +1122,7 @@ class App {
       }
       const manualEquipmentChanges=await require('./manual-changes.js').context(this,s,this.tx?.id);
       if(manualEquipmentChanges.length)digest+='\n'+JSON.stringify({manualEquipmentChanges})+'\n사용자가 플러그인에서 이미 변경한 장비입니다. 다음 장면에 자연스럽게 한 번 반영하고, 같은 변경을 도구로 다시 실행하지 마세요.';
-      digest+=Rulebooks.statusContext(info.state)+require('./turn-review.js').context(review);
+      digest+=Rulebooks.statusContext(info.state)+require('./turn-review.js').context(review)+this.providerTools.routeHint(s);
       digest+=await require('./review-issues.js').context(this,s,this.tx?.id);
       this.host.record('requestStatePrepared',{transactionId:info.staged?.id||null,revisionId:info.current?.id||null,reviewStatus:review?.status||null,reviewActions:(review?.results||[]).filter(r=>r.ok&&!r.alreadyRecorded&&!r.skipped).map(r=>r.actionId)});
       if (!info.state) digest += '\nRPG 상태 → 시스템 구축에서 규칙과 인물을 최초 적용해야 합니다. 준비되지 않은 판정을 성공한 것처럼 서술하지 마세요.';
@@ -1226,6 +1245,7 @@ class App {
         const s = await this.host.scope(),
           key = scopeKey(s);
         if (this.lastScopeKey && key !== this.lastScopeKey) {
+          this.providerTools.invalidate('채팅이 바뀌었습니다.');
           this.native.abort();
           require('./social-assistant.js').abort(this);require('./erencha-assistant.js').abort(this);
           for (const [id, c] of this.compiler.controllers) {
@@ -1235,7 +1255,7 @@ class App {
         }
         const changed=key!==this.lastScopeKey;
         this.lastScopeKey = key;
-        if(changed){void this.reviewNotices.scopeChanged(s);await require('./chat-power.js').welcome(this,s);}
+        if(changed){void this.reviewNotices.scopeChanged(s);void this.providerTools.sync();await require('./chat-power.js').welcome(this,s);}
       } catch {} finally {
         this.polling = false;
       }
@@ -1252,6 +1272,7 @@ class App {
     require('./social-assistant.js').abort(this);require('./erencha-assistant.js').abort(this);
     this.ruleController?.abort();
     this.unloaded = true;
+    await this.providerTools.dispose();
     this.ui?.updates?.dispose();
     clearInterval(this.poll);
     await this.reviewNotices.dispose();
@@ -1805,6 +1826,7 @@ async function save(app,scope,patch,{expectedMode}={}) {
   if(patch.mode==='on'||patch.mode==='setup')stops.delete(identity);
   if(patch.mode==='off')void app.reviewNotices?.hide();
   else if(patch.mode==='on')void app.reviewNotices?.refresh(scope);
+  if(patch.mode){app.providerTools?.invalidate('채팅 전원이 바뀌었습니다.');void app.providerTools?.sync();}
   return read(app,scope,context);
 }
 async function requireEnabled(app,scope,context=null) {
@@ -1816,6 +1838,7 @@ async function requireEnabled(app,scope,context=null) {
 async function turnOff(app,scope) {
   assert(await app.host.isCurrent(scope),'SCOPE_MISMATCH','전원을 끄는 중 채팅이 바뀌었습니다.');
   (app.powerStops ||= new Set()).add(scopeKey(scope));
+  app.providerTools?.invalidate('NyoruRPG 전원을 껐습니다.');
   // Cancel preparation, not recorded dice or already committed outcomes.
   app.native.abort();require('./social-assistant.js').abort(app);require('./erencha-assistant.js').abort(app);
   app.reviewController?.abort();void app.reviewNotices?.hide();
@@ -2088,7 +2111,7 @@ function automatic(w,a,t,s){
   if(r.accuracy<0&&!a.rangeRepositioned&&speed(w,a)>0){const p=w.combat?.range?.positions,range=profile(w,a,s);if(p){const sign=Math.sign(p[t.id]-p[a.id])||(w.combat.teams[a.id]===0?1:-1),pos=Math.max(0,Math.min(3,p[a.id]-sign*speed(w,a))),band=Math.min(4,Math.ceil(Math.abs(pos-p[t.id])-1e-8)+1);if(band<=range.max&&accuracy(w,a,range,band)>r.accuracy)return {direction:'retreat'};}}
   return null;
 }
-function snapshot(w,actorId){if(!w.combat)return null;const a=w.actors[actorId]||w.actors[w.combat.order[w.combat.index]?.actorId];if(!a)return null;return {actorId:a.id,name:a.name,movement:speed(w,a),targets:w.combat.order.filter(r=>r.actorId!==a.id&&w.actors[r.actorId]).map(r=>{const t=w.actors[r.actorId];return {actorId:t.id,name:t.name,...check(w,a,t,null),movement:speed(w,t)};})};}
+function snapshot(w,actorId){if(!w?.combat)return null;const a=w.actors[actorId]||w.actors[w.combat.order[w.combat.index]?.actorId];if(!a)return null;return {actorId:a.id,name:a.name,movement:speed(w,a),targets:w.combat.order.filter(r=>r.actorId!==a.id&&w.actors[r.actorId]).map(r=>{const t=w.actors[r.actorId];return {actorId:t.id,name:t.name,...check(w,a,t,null),movement:speed(w,t)};})};}
 const GUIDE='거리 규칙: 1 근접/2 가까움/3 멀리/4 아주 멀리. 새 교전은 장면의 실제 시작 거리 distance를 전달하고, 원거리 무기라는 이유로 거리를 임의로 늘리지 않습니다. act(action:접근 또는 후퇴,targets:[기준 인물],movement:{direction:approach|retreat,steps})는 이동력 이내 칸을 움직이며 일반 행동 한 번을 소비합니다. 적과 아군에 같은 사거리·거리별 명중 보정을 적용합니다. OUT_OF_RANGE는 미실행이며 명중·피해·탄약 소비를 만들지 않습니다. 이후 같은 호출의 NPC 단계는 실제 접근/공격 결과를 따릅니다. 사거리 안의 공격·연격·반격도 각각 현재 거리를 적용합니다.';
 const AUTHORING='거리·장비: 인물 movement는 행동당 이동 칸(기본1, 0~3, 소수 가능). 모든 무기/기술은 mechanics.range:{mode:"custom",max:1~4,accuracy:[근접,가까움,멀리,아주멀리 보정]} 또는 mode:"inherit". 저격총 예 max4,[-30,-15,0,0]; 장궁4,[-25,-10,0,0]; 권총2,[0,0,0,0]; 근접공격1. 기술 원문 사거리가 있으면 무기와 별도로 저장. 적도 동일. 새 효과 type:movement(이동 칸), rangeBonus(최대 사거리 증감; 1~4 한계), rangeAccuracy(거리별 명중 증감), rangePenalty(거리의 기본 음수 보정 크기 조절). rangeAccuracy/rangePenalty의 target은 "*" 또는 "1"~"4". 패널티 반감은 rangePenalty mode:multiply value:0.5, 50% 증폭은1.5; 명중+5는 rangeAccuracy add5. 장비 효과 각각 equipmentCondition:"carried"면 소지시/착용시 모두 유지, "equipped"면 착용시 추가. 기존 효과 기본은equipped. 같은 이름/정의의 소지 효과는 동일 항목별 한 번만 적용하며 수량만큼 증폭하지 않음. 소지 효과와 착용 추가 효과를 독립 행으로 작성. 무기/기술 사거리 설정은 효과가 없는 mechanics에서도 보존.';
 module.exports={LABELS,PRESETS,schema,fields,normalize,infer,profile,speed,init,join,units,distance,check,requireTargets,canApproach,move,automatic,snapshot,GUIDE,AUTHORING};
@@ -4326,7 +4349,7 @@ class EncounterBuilder {
     assert(await hash({sources:snapshot.sources,version:'1',schema:1})===sourceHash,'PROFILE_STALE','인물 생성 중 원문이 바뀌었습니다. 재분석 후 진행하세요.');
     return snapshot.sources;
   }
-  async prepare(scope,tx,args) {
+  async prepare(scope,tx,args,signal) {
     const app=this.app,w=tx.state,aliases=[args.name,...(args.aliases || [])];
     const known=findDefinition(w,args);
     if(known) return {definitionId:known,aliases,proposal:null};
@@ -4362,6 +4385,7 @@ class EncounterBuilder {
         pending.splice(0,1,...fitSourceBatches(pending[0],messages));
         const rows=pending.shift();feedback=null;
         for(;;) {
+          assert(!signal?.aborted,'CANCELLED','인물 준비 요청을 취소했습니다.');
           await this.guard(scope,tx,w.profileRef.sourceHash);
           const request=messages(rows);
           assert(canonical(request).length<=MAX_REQUEST_CHARS,'INPUT_LIMIT','인물 구축 요청이 너무 큽니다.');
@@ -4372,7 +4396,8 @@ class EncounterBuilder {
           app.host.record('actorBuildStarted',{name:args.name,requests:record.requests});
           let response=null,transportCounted=false;
           try {
-            response=await app.provider.request(request,app.settings.connection,app.secrets,undefined,{outputSchema});
+            response=await app.provider.request(request,app.settings.connection,app.secrets,signal,{outputSchema});
+            assert(!signal?.aborted,'CANCELLED','인물 준비 요청을 취소했습니다.');
             if(response.transportAttempts>1)record.requests+=response.transportAttempts-1;
             transportCounted=true;
             await this.guard(scope,tx,w.profileRef.sourceHash);
@@ -6344,9 +6369,10 @@ async function run({compiler,job,request,secrets}) {
   await compiler.save(job);
 }
 function abort(app){for(const c of controllers.get(app)||[])c.abort();}
-async function prepare(app,scope,tx,args,tool) {
+async function prepare(app,scope,tx,args,tool,signal) {
   const c=new AbortController(),pending=controllers.get(app)||new Set();controllers.set(app,pending);pending.add(c);
-  try {return await prepareValue(app,scope,tx,args,tool,c.signal);}finally{pending.delete(c);}
+  const unlink=require('./abort-link.js').link(signal,c);
+  try {return await prepareValue(app,scope,tx,args,tool,c.signal);}finally{unlink();pending.delete(c);}
 }
 async function prepareValue(app,scope,tx,args,tool,signal) {
   const key=await app.repo.key(scope)+'/prepared-erencha/'+await hash({tx:tx.id,tool,args,version:9});
@@ -8683,7 +8709,7 @@ class RisuHost {
       crossDeviceConcurrentWrites: false,
       nativeRedirectVerified: false,
       resourceWriteback: false,
-      api: Object.fromEntries(['nativeFetch', 'getCurrentCharacterIndex', 'getCurrentChatIndex', 'getCharacterFromIndex', 'getChatFromIndex', 'getDatabase', 'addRisuReplacer', 'addRisuChatListener', 'registerMCP'].map(k => [k, typeof this.api[k] === 'function'])),
+      api: Object.fromEntries(['nativeFetch', 'getCurrentCharacterIndex', 'getCurrentChatIndex', 'getCharacterFromIndex', 'getChatFromIndex', 'getDatabase', 'addRisuReplacer', 'addRisuChatListener', 'registerMCP', 'addPluginChannelListener', 'postPluginChannelMessage'].map(k => [k, typeof this.api[k] === 'function'])),
       events: clone(this.probeLog)
     };
   }
@@ -16136,7 +16162,7 @@ function render(ui) {
     if(w.combat)body+=require('./action-gauge.js').active(w)?section('전투',require('./action-gauge.js').html(require('./action-gauge.js').snapshot(w))):section('전투',w.combat.order.map((r,i)=>'<p>'+e(w.actors[r.actorId]?.name||r.actorId)+(w.combat.turnTable===false?' · '+(w.combat.ownTurns?.[r.actorId]||0)+'회 행동':i===w.combat.index?' · 현재 차례':'')+'</p>').join(''));
   }
   document.body.innerHTML='<main class="mini-shell"><header class="top"><h2>◈ 미니 상태</h2><div class="row"><button id="mini-refresh">새로 고침</button><button id="mini-close">닫기</button></div></header>'+body+'</main>';
-  document.getElementById('mini-close').onclick=()=>ui.app.api.hideContainer();
+  document.getElementById('mini-close').onclick=()=>ui.act(async()=>{await ui.app.api.hideContainer();await ui.app.reviewNotices.setPanelVisible(false);void ui.app.reviewNotices.refresh(ui.info.scope);});
   document.getElementById('mini-refresh').onclick=()=>ui.act(()=>ui.openMini());
   document.getElementById('mini-actor')?.addEventListener('change',ev=>{ui.miniActor=ev.target.value;render(ui);});
 }
@@ -16950,10 +16976,11 @@ function recalculate(w,id) {
 class NativeAssistant {
   constructor(app){this.app=app;this.controllers=new Set();}
   abort(){for(const controller of this.controllers)controller.abort();}
-  async prepare(scope,tx,tool,args) {
+  async prepare(scope,tx,tool,args,signal) {
     const controller=new AbortController();this.controllers.add(controller);
+    const unlink=require('./abort-link.js').link(signal,controller);
     try{return await this.prepareValue(scope,tx,tool,args,controller.signal);}
-    finally{this.controllers.delete(controller);}
+    finally{unlink();this.controllers.delete(controller);}
   }
   async prepareValue(scope,tx,tool,args,signal) {
     const app=this.app,w=tx.state,n=w.meta.native;
@@ -17699,7 +17726,7 @@ module.exports={KEYS,NAMES,number,norm,skillKey,sameSkill,key,proof,currencies,d
 },
 "./native-ui.js":function(module,exports,require){
 'use strict';
-const {escapeHTML:e,clone,uid,assert}=require('./util.js');
+const {escapeHTML:e,clone,uid,assert,scopeKey}=require('./util.js');
 const N=require('./native-rpg.js');
 const ItemEditor=require('./item-editor-ui.js');
 const SkillEditor=require('./skill-editor-ui.js');
@@ -17783,11 +17810,12 @@ function capture(ui) {
 function bind(ui,on) {
   if(ui.skillCreation)return;
   const w=ui.info?.state,a=selectedActor(ui);
-  const execute=async(tool,args)=>{await ui.app.adminExecute(tool,{actionId:uid('ui'),...args});ui.notify('반영했습니다.');await ui.refresh();};
   document.getElementById('native-preset')?.addEventListener('change',event=>{ui.nativeChoice=clone(choices().find(p=>p.id===event.target.value));ui.render();});
   document.getElementById('native-actor')?.addEventListener('change',event=>{ui.nativeItemEditor=null;ui.nativeSkillEditor=null;ui.nativeActor=event.target.value;ui.render();});
   on('native-to-setup',()=>{capture(ui);ui.tab='setup';ui.render();});
   if(!a)return;
+  const expectedScope=scopeKey(ui.info.scope);
+  const execute=async(tool,args)=>{await ui.app.adminExecute(tool,{actionId:uid('ui'),...args},expectedScope);ui.notify('반영했습니다.');await ui.refresh();};
   if(ui.tab==='inventory')ItemEditor.bind(ui,w,a);
   if(ui.tab==='stats')SkillEditor.bind(ui,w,a);
   const preview=()=>{const target=document.getElementById('native-preview');if(!target)return;const stat=document.getElementById('native-stat').value,points=Number(document.getElementById('native-points').value),s=N.sheet(w,a.id),v=viewActor(w,a.id).raw[stat];target.textContent='현재 '+v+' → '+(v+(s.applyAllocation?points:0))+' · 투자 기록 +'+points+(s.applyAllocation?'':' (현재 적용 꺼짐)');};
@@ -18253,6 +18281,310 @@ const DISCOVER=`List the actual characters and named abilities in these sources,
 const REVISION='Select which world rules or actor IDs the requested change affects. Return the requested JSON.';
 const CORRECTION=' Complete the missing fields and correct the response using feedback. Return JSON.';
 module.exports={WORLD,ACTOR,DISCOVER,REVISION,CORRECTION};
+
+},
+"./provider-tool-ipc-ui.js":function(module,exports,require){
+'use strict';
+const {escapeHTML:e,assert}=require('./util.js');
+function render(ui) {
+  const bridge=ui.app.providerTools,config=ui.providerToolDraft||bridge.config(),status=bridge.status;
+  return '<section class="panel"><h2>Provider Manager 도구 직접 연결</h2>'+
+    '<label class="choice"><input id="provider-tools-enabled" type="checkbox" '+(config.enabled?'checked':'')+'>Provider Manager에 직접 연결</label>'+
+    '<p class="muted">현재 채팅에서 가동한 룰북의 도구를 IPC로 연결합니다. 기존 판정·세이브·카드와 같은 실행 경로를 사용합니다.</p>'+
+    '<label>도구 결과 대기시간 (초)<input id="provider-tools-timeout" type="number" min="30" max="3600" step="1" value="'+e(config.timeoutSeconds)+'"></label>'+
+    '<p class="muted">기본 600초(10분)입니다. 보조 API의 요청 대기시간은 아래에서 별도로 설정합니다. 결과가 올 때까지 기다리며, 중간 처리 중 응답이나 자동 재호출은 사용하지 않습니다.</p>'+
+    '<p class="notice '+(status.state==='error'?'error':'')+'">'+e(status.message)+'</p>'+
+    '<button type="button" id="provider-tools-connect">직접 연결 저장·다시 등록</button>'+
+    '<details class="spaced"><summary>처음 연결하는 방법</summary><ol>'+
+    '<li>Provider Manager 플러그인의 <code>//@allowed-ipc</code> 줄 끝에 <code>universal-rpg-engine</code>을 추가하고 플러그인을 다시 로드하세요. 기존 허용 이름들은 유지하세요. NyoruRPG 쪽 선언은 이 배포본에 포함되어 있습니다.</li>'+
+    '<li>현재 채팅의 NyoruRPG 연결 모듈과 전원을 켠 뒤 이 화면에서 직접 연결을 켜고 저장·등록하세요.</li>'+
+    '<li>Provider Manager 도구 화면에서 <b>NyoruRPG · 직접 연결</b>을 켜고 사용할 모델에서 외부 도구를 허용하세요.</li>'+
+    '<li>같은 모델의 기존 <b>nyoruRPG 도구 (v3 broker)</b>는 꺼서 한 연결만 사용하세요. 다른 플러그인의 도구와 NyoruRPG 연결 모듈은 그대로 둡니다.</li></ol>'+
+    '<p class="muted">채팅이 바뀌거나 전원이 꺼지면 기존 채팅 연결을 해제합니다. Provider Manager 업데이트가 헤더를 교체하면 허용 이름을 다시 추가해야 합니다. 등록 응답만으로 모델의 도구 활성화나 실제 호출 성공까지 확인한 것은 아닙니다. 기존 MCP 연결은 유지하므로 직접 연결을 끄면 원래 경로를 사용할 수 있습니다.</p></details></section>';
+}
+function capture(ui) {
+  const enabled=document.getElementById('provider-tools-enabled'),timeout=document.getElementById('provider-tools-timeout');
+  if(enabled&&timeout)ui.providerToolDraft={enabled:enabled.checked,timeoutSeconds:Number(timeout.value)};
+}
+function bind(ui) {
+  for(const id of ['provider-tools-enabled','provider-tools-timeout']){const el=document.getElementById(id);if(el)el.onchange=()=>capture(ui);}
+  const button=document.getElementById('provider-tools-connect');
+  if(button)button.onclick=()=>ui.act(async()=>{
+    ui.capture();capture(ui);const config=ui.providerToolDraft;
+    assert(Number.isInteger(config.timeoutSeconds)&&config.timeoutSeconds>=30&&config.timeoutSeconds<=3600,'IPC_SETTINGS','도구 대기를 30~3600초로 입력하세요.');
+    const previous=ui.app.settings.providerTools;
+    ui.app.settings.providerTools={...config};
+    try{await ui.app.saveSettings();}catch(error){ui.app.settings.providerTools=previous;throw error;}
+    ui.app.providerTools.invalidate('직접 연결 설정을 변경했습니다.');
+    await ui.app.providerTools.sync({force:true});
+    ui.notify(ui.app.providerTools.status.message,ui.app.providerTools.status.state==='error');
+    ui.render();
+  });
+}
+module.exports={render,capture,bind};
+
+},
+"./provider-tool-ipc.js":function(module,exports,require){
+'use strict';
+const {assert,clone,canonical,uid,scopeKey,RPGError}=require('./util.js');
+const Books=require('./rulebook-runtime.js');
+const {toolFunction}=require('./provider-tool-schema.js');
+const {redact}=require('./provider.js');
+const PLUGIN='universal-rpg-engine',MANAGER='provider-manager',TOOL='nyoruRPG';
+const REQUEST='tool-ipc.v1/request',RESPONSE='tool-ipc.v1/response',EVENT='tool-ipc.v1/event';
+const DEFAULTS={enabled:false,timeoutSeconds:600};
+
+class ProviderToolIPC {
+  constructor(app) {
+    this.app=app;this.instanceId=uid('nyoru-ipc');this.listeners=new Set();
+    this.pending=new Map();this.calls=new Map();this.binding=null;
+    this.syncQueue=Promise.resolve();this.disposed=false;this.epoch=0;
+    this.status={state:'off',message:'직접 연결을 사용하지 않습니다.'};
+  }
+  config(){return {...DEFAULTS,...this.app.settings.providerTools};}
+  record(event,details={}){this.app.host.record('providerIpc'+event,details);}
+  setStatus(state,message){this.status={state,message};}
+  envelope(type,method,payload={},request=null) {
+    return {protocol:'tool-ipc',version:1,id:request?.id||uid('ipc'),type,method,
+      sender:{pluginName:PLUGIN,instanceId:this.instanceId},...payload,
+      meta:{traceId:request?.meta?.traceId||uid('trace'),createdAt:Date.now()}};
+  }
+  send(channel,envelope){return this.app.api.postPluginChannelMessage(MANAGER,channel,envelope);}
+  valid(message){return message?.protocol==='tool-ipc'&&message.version===1&&typeof message.id==='string'
+    &&message.sender?.pluginName===MANAGER&&typeof message.sender.instanceId==='string';}
+  async listen() {
+    for(const channel of [REQUEST,RESPONSE]) {
+      if(this.listeners.has(channel))continue;
+      await this.app.api.addPluginChannelListener(channel,message=>{
+        if(this.disposed||!this.valid(message))return;
+        // Return to the host channel immediately; completion uses the response
+        // channel, not the channel-listener callback's own RPC lifetime.
+        if(channel===RESPONSE)this.receiveResponse(message);
+        else void this.receiveRequest(message).catch(error=>this.record('HandlerFailed',{code:error.code||'INTERNAL_ERROR'}));
+      });
+      this.listeners.add(channel);
+    }
+  }
+  receiveResponse(message) {
+    const pending=this.pending.get(message.id);if(!pending)return;
+    if(message.method!=='tools/register')return;
+    if(message.type==='response'&&message.result?.ok===true)pending.finish(null,message);
+    else if(message.type==='error')pending.finish(new RPGError(message.error?.code||'IPC_REGISTER_FAILED',message.error?.message||'도구 등록이 거절되었습니다.'));
+  }
+  register(definition) {
+    const message=this.envelope('request','tools/register',{params:definition});message.meta.timeoutMs=10000;
+    return new Promise((resolve,reject)=>{
+      let interval,timer,finished=false,sending=false;
+      const finish=(error,result)=>{if(finished)return;finished=true;clearInterval(interval);clearTimeout(timer);this.pending.delete(message.id);error?reject(error):resolve(result);};
+      this.pending.set(message.id,{finish});
+      const send=async()=>{if(finished||sending)return;sending=true;try{await this.send(REQUEST,message);}catch(error){finish(error);}finally{sending=false;}};
+      // Only registration is retried. Gameplay calls are never resubmitted here.
+      timer=setTimeout(()=>finish(new RPGError('IPC_REGISTER_TIMEOUT','10초 동안 등록 응답이 없습니다. Provider Manager 실행·양쪽 IPC 허용 목록을 확인하세요.')),10000);
+      interval=setInterval(()=>{void send();},2000);void send();
+    });
+  }
+  invalidate(reason='채팅 연결이 바뀌었습니다.') {
+    this.epoch++;this.binding=null;
+    for(const job of this.calls.values())if(!job.done){job.cancelReason=reason;job.controller.abort();}
+    for(const pending of [...this.pending.values()])pending.finish(new RPGError('CANCELLED',reason));
+  }
+  async unregister() {
+    if(!this.listeners.size)return;
+    try{await this.send(EVENT,this.envelope('event','tools/unregister',{params:{toolId:TOOL}}));}
+    catch(error){this.record('UnregisterFailed',{code:error.code||'IPC_UNAVAILABLE'});}
+  }
+  // Separate from the gameplay queue: beforeRequest already holds that queue.
+  sync({force=false}={}) {
+    const task=this.syncQueue.then(()=>this.syncCurrent(force));
+    this.syncQueue=task.catch(()=>{});return task;
+  }
+  async syncCurrent(force) {
+    if(this.disposed)return;
+    const config=this.config();
+    if(!config.enabled) {
+      if(this.binding||this.status.state!=='off'){this.invalidate('직접 연결을 껐습니다.');await this.unregister();}
+      this.setStatus('off','직접 연결을 사용하지 않습니다.');return;
+    }
+    let scope,signature;
+    try {
+      scope=await this.app.currentScope();
+      const power=await require('./chat-power.js').read(this.app,scope);
+      if(!power.enabled) {
+        this.invalidate('현재 채팅의 NyoruRPG 전원 또는 모듈이 꺼져 있습니다.');await this.unregister();
+        this.setStatus('inactive','현재 채팅에서 NyoruRPG 전원과 연결 모듈을 켜면 등록합니다.');return;
+      }
+      const current=await this.app.repo.current(scope),world=current?.state;
+      assert(world,'SETUP_MISSING','현재 채팅의 시스템 구축을 먼저 완료하세요.');
+      const tools=Books.tools(world),key=scopeKey(scope),book=Books.select(world).id;
+      signature=canonical({key,book,tools,timeoutSeconds:config.timeoutSeconds});
+      if(!force&&this.binding?.signature===signature)return;
+      // Avoid an automatic 10-second retry on every subsequent model request.
+      // The explicit connect button retries failures; a changed chat/book also
+      // gets its own registration attempt.
+      if(!force&&this.failedSignature===signature)return;
+      this.invalidate('도구 연결을 갱신합니다.');await this.unregister();
+      const epoch=this.epoch;
+      await this.listen();
+      if(this.disposed||epoch!==this.epoch)return;
+      assert(Number.isInteger(config.timeoutSeconds)&&config.timeoutSeconds>=30&&config.timeoutSeconds<=3600,'IPC_SETTINGS','도구 대기는 30~3600초로 입력하세요.');
+      const token=uid('chat'),functions=new Map(tools.map(tool=>[tool.name,toolFunction(tool,token,config.timeoutSeconds*1000)]));
+      const binding={scope,key,book,signature,token,functions,epoch,managerInstance:null};
+      this.setStatus('registering','Provider Manager에 현재 채팅의 도구를 등록하고 있습니다.');
+      this.record('RegisterStarted',{rulebook:book,count:functions.size,timeoutMs:config.timeoutSeconds*1000});
+      const registered=await this.register({id:TOOL,name:'NyoruRPG · 직접 연결',
+        description:'현재 가동한 채팅의 NyoruRPG 도구입니다. 기존 v3 broker의 NyoruRPG와 중복으로 켜지 마세요.',
+        functions:[...functions.values()].map(row=>row.definition)});
+      if(this.disposed||epoch!==this.epoch||!this.config().enabled||!await this.app.host.isCurrent(scope)
+        ||!(await require('./chat-power.js').read(this.app,scope)).enabled){await this.unregister();return;}
+      binding.managerInstance=registered.sender.instanceId;
+      this.binding=binding;this.failedSignature=null;
+      this.setStatus('registered',functions.size+'개 도구 등록 응답을 받았습니다. Provider Manager에서 이 그룹을 활성화하세요.');
+      this.record('Registered',{rulebook:book,count:functions.size,timeoutMs:config.timeoutSeconds*1000});
+    }catch(error) {
+      if(this.disposed)return;
+      this.binding=null;if(signature)this.failedSignature=signature;
+      await this.unregister();
+      const message=redact(error.message||'IPC 연결을 사용할 수 없습니다.',this.app.secrets);
+      this.setStatus('error',message);this.record('RegisterFailed',{code:error.code||'IPC_UNAVAILABLE',message});
+    }
+  }
+  async reply(request,payload,type='response') {
+    try{await this.send(RESPONSE,this.envelope(type,request.method,payload,request));}
+    catch(error){this.record('ResponseFailed',{callId:request.params?.callId||null,code:error.code||'IPC_UNAVAILABLE'});}
+  }
+  async receiveRequest(request) {
+    if(request.type!=='request')return;
+    const params=request.params||{};
+    if(request.method==='tools/cancel') {
+      const job=this.calls.get(request.sender.instanceId+':'+params.callId);
+      if(job&&!job.done){job.cancelReason='Provider Manager에서 호출을 취소했습니다.';job.controller.abort();this.record('Cancelled',{callId:params.callId});}
+      return;
+    }
+    try {
+      if(request.method==='tools/challenge') {
+        assert(typeof params.nonce==='string','INVALID_ENVELOPE','확인용 nonce가 없습니다.');
+        if(this.binding&&this.binding.managerInstance!==request.sender.instanceId){
+          this.invalidate('Provider Manager가 다시 시작되었습니다.');void this.sync({force:true});
+        }
+        await this.reply(request,{result:{nonce:params.nonce}});return;
+      }
+      assert(request.method==='tools/call','INVALID_ENVELOPE','지원하지 않는 IPC 요청입니다.');
+      assert(typeof params.callId==='string'&&params.callId&&params.toolId===TOOL,'TOOL_NOT_FOUND','NyoruRPG 호출 식별자를 확인하세요.');
+      const binding=this.binding;
+      assert(this.config().enabled&&binding,'TOOL_OFFLINE','현재 채팅의 직접 연결을 먼저 등록하세요.');
+      assert(binding.managerInstance===request.sender.instanceId,'TOOL_OFFLINE','Provider Manager가 다시 시작되었습니다. 직접 연결을 다시 등록하세요.');
+      assert(await this.app.host.isCurrent(binding.scope),'SCOPE_MISMATCH','채팅이 바뀌었습니다. 현재 채팅의 도구 목록으로 다시 요청하세요.');
+      await require('./chat-power.js').requireEnabled(this.app,binding.scope);
+      assert(this.binding===binding,'SCOPE_MISMATCH','도구 연결이 바뀌었습니다.');
+      const adapter=binding.functions.get(params.functionId);
+      assert(adapter,'TOOL_NOT_FOUND','현재 룰북에서 지원하지 않는 도구입니다.');
+      const args=adapter.decode(params.arguments);
+      const key=request.sender.instanceId+':'+params.callId,input=canonical({scope:binding.key,functionId:params.functionId,args});
+      let job=this.calls.get(key);
+      if(job)assert(job.input===input,'INVALID_ARGUMENTS','같은 호출 ID에 다른 인수가 전달되었습니다.');
+      else {
+        const controller=new AbortController();job={input,controller,done:false,cancelReason:null};
+        this.calls.set(key,job);
+        const timeoutMs=adapter.definition.timeoutMs;
+        const timer=setTimeout(()=>{job.cancelReason='직접 연결의 도구 대기시간을 초과했습니다.';controller.abort();},timeoutMs);
+        this.record('CallReceived',{callId:params.callId,functionId:params.functionId,requestId:params.meta?.requestId||null,timeoutMs});
+        job.promise=Promise.resolve().then(()=>this.app.callSerialized(params.functionId,args,{signal:controller.signal,expectedScope:binding.key,expectedRulebook:binding.book,
+          transport:'provider-manager-ipc',ipcCallId:params.callId,ipcRequestId:params.meta?.requestId||null}))
+          .then(data=>({data:clone(data)}),error=>({error}))
+          .finally(()=>{clearTimeout(timer);job.done=true;this.trimCalls();});
+      }
+      const outcome=await job.promise;
+      if(outcome.error)throw outcome.error;
+      // Domain failures (insufficient resources, failed checks, missing actors)
+      // stay intact JSON results. They are not IPC transport exceptions.
+      this.record('CallReturned',{callId:params.callId,ok:outcome.data?.ok!==false,cancelRequested:job.controller.signal.aborted});
+      await this.reply(request,{result:{callId:params.callId,data:outcome.data}});
+    }catch(error) {
+      const codes=new Set(['INVALID_ENVELOPE','TOOL_NOT_FOUND','TOOL_OFFLINE','CANCELLED','TIMEOUT','SCHEMA_VALIDATION_FAILED']);
+      const code=codes.has(error.code)?error.code:'EXECUTION_FAILED';
+      await this.reply(request,{error:{code,message:redact(error.message||'도구 실행 오류입니다.',this.app.secrets),retryable:false,
+        data:{code:error.code||'INTERNAL_ERROR',instruction:'저장된 행동 결과를 먼저 조회하세요. 새 행동 ID로 자동 재시도하지 마세요.'}}},'error');
+    }
+  }
+  trimCalls(){if(this.calls.size>128)for(const [key,job] of this.calls){if(job.done)this.calls.delete(key);if(this.calls.size<=128)break;}}
+  routeHint(scope) {
+    return this.binding?.key===scopeKey(scope)?'\nProvider Manager 직접 연결: 지침의 rpg_* 도구는 nyoruRPG_rpg_* 함수로 호출합니다. _nyoruChat은 현재 함수 스키마의 값을 사용합니다. 기존 MCP 경로로 같은 행동을 중복 호출하지 마세요.':'';
+  }
+  async dispose() {
+    this.disposed=true;this.invalidate('플러그인을 종료했습니다.');await this.unregister();
+    // Channel listeners belong to this plugin runtime; inactive callbacks return
+    // immediately. No undocumented remove-listener API is invoked.
+  }
+}
+module.exports={ProviderToolIPC,DEFAULTS};
+
+},
+"./provider-tool-schema.js":function(module,exports,require){
+'use strict';
+const {assert,clone,parseJSON,safeData}=require('./util.js');
+
+// PM accepts a smaller schema profile than MCP. Preserve ordinary typed fields;
+// only polymorphic/dictionary fields use JSON text, decoded before validation by
+// the original rulebook catalog. Never weaken the engine's input contract.
+function adapt(source={}) {
+  const type=source.type;
+  if(!['string','number','integer','boolean','array','object'].includes(type)
+    ||source.oneOf||source.anyOf||source.allOf||source.$ref
+    ||type==='object'&&(!source.properties||source.additionalProperties!==false)) {
+    return {
+      schema:{type:'string',description:(source.description?source.description+'\n':'')+
+        'JSON text for this field only; encode its original value with JSON.stringify. Original shape: '+JSON.stringify(source)},
+      decode:value=>{assert(typeof value==='string','INVALID_ARGUMENTS','이 항목은 JSON 문자열로 전달하세요.');return parseJSON(value);}
+    };
+  }
+  const schema={type},notes=[];
+  if(source.description)notes.push(source.description);
+  for(const key of ['minLength','maxLength','pattern','minProperties','maxProperties','const'])
+    if(source[key]!==undefined)notes.push(key+': '+JSON.stringify(source[key]));
+  if(Array.isArray(source.enum)&&['string','number','integer'].includes(type))schema.enum=clone(source.enum);
+  else if(source.enum)notes.push('Allowed values: '+JSON.stringify(source.enum));
+  if(['number','integer'].includes(type))for(const key of ['minimum','maximum'])if(Number.isFinite(source[key]))schema[key]=source[key];
+  if(type==='string'&&['date','date-time','time','uri'].includes(source.format))schema.format=source.format;
+  if(notes.length)schema.description=notes.join('\n');
+  if(type==='object') {
+    const children=Object.fromEntries(Object.entries(source.properties).map(([key,value])=>[key,adapt(value)]));
+    schema.properties=Object.fromEntries(Object.entries(children).map(([key,value])=>[key,value.schema]));
+    schema.additionalProperties=false;
+    schema.required=(source.required||[]).filter(key=>Object.hasOwn(children,key));
+    return {schema,decode:value=>{
+      assert(value&&typeof value==='object'&&!Array.isArray(value),'INVALID_ARGUMENTS','객체 인수가 필요합니다.');
+      safeData(value);
+      return Object.fromEntries(Object.entries(value).map(([key,item])=>{
+        assert(Object.hasOwn(children,key),'INVALID_ARGUMENTS','알 수 없는 입력: '+key);
+        return [key,children[key].decode(item)];
+      }));
+    }};
+  }
+  if(type==='array') {
+    const child=adapt(source.items||{});schema.items=child.schema;
+    for(const key of ['minItems','maxItems'])if(Number.isInteger(source[key])&&source[key]>=0)schema[key]=source[key];
+    return {schema,decode:value=>{assert(Array.isArray(value),'INVALID_ARGUMENTS','배열 인수가 필요합니다.');return value.map(child.decode);}};
+  }
+  return {schema,decode:value=>value};
+}
+function toolFunction(tool,token,timeoutMs) {
+  const adapted=adapt(tool.inputSchema),inputSchema=adapted.schema;
+  assert(inputSchema.type==='object','INVALID_SCHEMA','도구의 최상위 입력은 객체여야 합니다.');
+  inputSchema.properties._nyoruChat={type:'string',enum:[token],description:'Copy this current-chat token exactly. Never reuse another chat\'s token.'};
+  inputSchema.required=[...new Set([...(inputSchema.required||[]),'_nyoruChat'])];
+  const prefix='NyoruRPG '+tool.name+' via Provider Manager IPC. Same saved rules, actionId receipts and result cards. Use this function for the corresponding rpg_* operation.\n';
+  const full=prefix+tool.description;
+  // Keep the complete operation guide even when it exceeds PM's function limit.
+  if(full.length>3000)inputSchema.description=[inputSchema.description,full].filter(Boolean).join('\n');
+  return {definition:{id:tool.name,name:'nyoruRPG_'+tool.name,
+    description:full.length<=3000?full:prefix+'Read the complete operation guide in inputSchema.description.',
+    uiDescription:tool.description,inputSchema,timeoutMs},
+    decode:value=>{
+      assert(value?._nyoruChat===token,'SCOPE_MISMATCH','이 도구 목록의 채팅이 현재 채팅과 다릅니다. 목록을 새로 연결하세요.');
+      const {_nyoruChat,...args}=value;return adapted.decode(args);
+    }};
+}
+module.exports={toolFunction};
 
 },
 "./provider.js":function(module,exports,require){
@@ -20059,12 +20391,14 @@ module.exports={read,pending,capture,acknowledge,saveDraft,dismiss,blocked,apply
 'use strict';
 const {clone,assert,escapeHTML:e}=require('./util.js');
 const Inbox=require('./review-issues.js');
-const ROOT='.nyoru-review-floating-root',SURFACE=ROOT+' > .nyoru-review-surface';
+// Risu's shared sanitizer prefixes HTML class names with x-risu-.
+// Use that stable prefix for HTML-created children and their selectors.
+const ROOT='.nyoru-review-floating-root',SURFACE=ROOT+' > .x-risu-nyoru-review-surface';
 const PANEL='box-sizing:border-box;width:100%;padding:14px 18px;border-radius:16px;border:1px solid #bc8495;background:#352a32;color:#fff5fa;font:14px/1.55 system-ui,sans-serif;box-shadow:0 6px 24px #0006;white-space:pre-line;text-align:left;';
 // A host-body surface independent of the plugin iframe and tool transaction.
 class ReviewNotifications {
   constructor(app){this.app=app;this.epoch=0;this.listeners=[];this.queue=Promise.resolve();this.notice='';this.panelVisible=false;}
-  schedule(fn){const next=this.queue.then(fn);this.queue=next.catch(error=>{if(!this.app.unloaded){const message=require('./provider.js').redact(error.message,this.app.secrets);this.notice='채팅 알림을 표시하지 못했습니다. '+message+' · 알림 미리보기에서 화면 접근 권한과 표시를 다시 확인하세요.';this.app.host.record('reviewNoticeUnavailable',{code:error.code||'MAIN_DOM_UNAVAILABLE',message});}return false;});return this.queue;}
+  schedule(fn){const next=this.queue.then(fn);this.queue=next.catch(error=>{if(!this.app.unloaded){const message=require('./provider.js').redact(error.message,this.app.secrets);this.notice='채팅 알림을 표시하지 못했습니다. '+message+(error.code==='MAIN_DOM_PERMISSION'?' · Risu의 메인 화면 접근 허용을 확인하세요. 브라우저 알림 권한과는 다릅니다.':' · '+(error.code||'MAIN_DOM_UNAVAILABLE')+' · 호스트 진단에 원인을 기록했습니다.');this.app.host.record('reviewNoticeUnavailable',{code:error.code||'MAIN_DOM_UNAVAILABLE',message});}return false;});return this.queue;}
   async clearElement(){
     for(const [target,type,id] of this.listeners)try{await target.removeEventListener(type,id);}catch{}
     this.listeners=[];if(this.shell)try{await this.shell.remove();}catch{}
@@ -20080,9 +20414,9 @@ class ReviewNotifications {
     const shell=await doc.createElement('div');
     try{
       await shell.addClass('nyoru-review-floating-root');
-      await shell.setInnerHTML('<div class="nyoru-review-surface" style="position:fixed;right:16px;bottom:calc(150px + env(safe-area-inset-bottom, 0px));z-index:100000;display:none;width:340px;max-width:calc(100vw - 32px);pointer-events:none;box-sizing:border-box"><div role="status" aria-live="polite" class="nyoru-review-start" style="'+PANEL+'margin-bottom:8px;display:none"></div><button type="button" class="nyoru-review-help" aria-label="쮸인님 이것 좀 도와달라냥! 미해결 검사 열기" style="'+PANEL+'pointer-events:auto;cursor:pointer;display:none"></button></div>');
+      await shell.setInnerHTML('<div class="x-risu-nyoru-review-surface" style="position:fixed;right:16px;bottom:calc(150px + env(safe-area-inset-bottom, 0px));z-index:100000;display:none;width:340px;max-width:calc(100vw - 32px);pointer-events:none;box-sizing:border-box"><div role="status" aria-live="polite" class="x-risu-nyoru-review-start" style="'+PANEL+'margin-bottom:8px;display:none"></div><button type="button" class="x-risu-nyoru-review-help" aria-label="쮸인님 이것 좀 도와달라냥! 미해결 검사 열기" style="'+PANEL+'pointer-events:auto;cursor:pointer;display:none"></button></div>');
       await body.appendChild(shell);
-      const element=await doc.querySelector(SURFACE),start=await doc.querySelector(ROOT+' .nyoru-review-start'),button=await doc.querySelector(ROOT+' .nyoru-review-help');
+      const element=await doc.querySelector(SURFACE),start=await doc.querySelector(ROOT+' .x-risu-nyoru-review-start'),button=await doc.querySelector(ROOT+' .x-risu-nyoru-review-help');
       assert(element&&start&&button,'MAIN_DOM_MISSING','알림 요소를 채팅 화면에 만들지 못했습니다.');
       const click=await button.addEventListener('click',event=>{void this.clicked(event).catch(error=>this.app.host.record('reviewNoticeClickFailed',{code:error.code||'MAIN_DOM_UNAVAILABLE'}));});this.listeners.push([button,'click',click]);
       const key=await button.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' ')void this.clicked(event,true).catch(()=>{});});this.listeners.push([button,'keydown',key]);
@@ -20093,7 +20427,7 @@ class ReviewNotifications {
   async clicked(event,keyboard=false){
     if(!this.scope||!this.count||this.panelVisible||this.opening||this.app.unloaded)return;
     // Some hosts attach SafeElement listeners to document: hit-test our button.
-    if(keyboard){if(!await this.doc.querySelector(ROOT+' .nyoru-review-help:focus'))return;}
+    if(keyboard){if(!await this.doc.querySelector(ROOT+' .x-risu-nyoru-review-help:focus'))return;}
     else {const r=await this.button.getBoundingClientRect();if(!r?.width||!r?.height||event.button!==0||event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)return;}
     const scope=clone(this.scope);if(!await this.app.host.isCurrent(scope))return;
     this.opening=true;try{await this.app.ui.openReviewIssues(scope);await Inbox.acknowledge(this.app,scope);this.count=0;await this.schedule(()=>this.paint());}finally{this.opening=false;}
@@ -20449,20 +20783,20 @@ function nativeRoute(world,tool,args) {
 // Preparation may call the auxiliary model; application may not. Preparation
 // happens before Repository.execute and mutates no live world. Only the finished
 // plan is applied to the repository's candidate world, with its saved authority.
-async function prepare(app,scope,tx,tool,args) {
+async function prepare(app,scope,tx,tool,args,signal) {
   const book=select(tx.state);
   if(book.id==='murim'&&tool==='rpg_progress')return {kind:'murim-growth'};
-  if(book.id==='murim'&&tool==='rpg_registry'&&args.op==='learn_manual')return {kind:'native',data:await app.native.prepare(scope,tx,tool,args)};
-  if(book.family==='social')return {kind:'social',data:await require('./social-assistant.js').prepare(app,scope,tx,args,tool)};
-  if(book.family==='erencha')return {kind:'erencha',data:await require('./erencha-assistant.js').prepare(app,scope,tx,args,tool)};
+  if(book.id==='murim'&&tool==='rpg_registry'&&args.op==='learn_manual')return {kind:'native',data:await app.native.prepare(scope,tx,tool,args,signal)};
+  if(book.family==='social')return {kind:'social',data:await require('./social-assistant.js').prepare(app,scope,tx,args,tool,signal)};
+  if(book.family==='erencha')return {kind:'erencha',data:await require('./erencha-assistant.js').prepare(app,scope,tx,args,tool,signal)};
   const call=nativeRoute(tx.state,tool,args);
   if(tx.state.meta.native && (call.tool==='rpg_play'||call.tool==='rpg_registry'&&['ensure_actor','ensure_actors','summon','dismiss_summon'].includes(call.args.op))) {
-    return {kind:'native',call,data:await app.native.prepare(scope,tx,call.tool,call.args)};
+    return {kind:'native',call,data:await app.native.prepare(scope,tx,call.tool,call.args,signal)};
   }
   if(!tx.state.meta.native&&tool==='rpg_registry'&&args.op==='ensure_actor') {
     assert(tx.authority.narrator||tx.authority.admin,'AUTHORING_REQUIRED','장면 진행 권한이 필요합니다.');
     assert(tx.state.meta.bindingAcknowledged,'RESOURCE_AUTHORITY_UNSUPPORTED','시스템 적용 시 자원 소유권 확인이 필요합니다.');
-    return {kind:'encounter',data:await app.encounters.prepare(scope,tx,args)};
+    return {kind:'encounter',data:await app.encounters.prepare(scope,tx,args,signal)};
   }
   return null;
 }
@@ -23614,11 +23948,12 @@ async function run({compiler,job,request,secrets,current}) {
   Books.validateWorld(job.socialCandidate);
   await compiler.save(job);
 }
-async function prepare(app,scope,tx,args,tool="rpg_play") {
+async function prepare(app,scope,tx,args,tool="rpg_play",signal) {
   const controller=new AbortController(),pending=controllers.get(app)||new Set();
   controllers.set(app,pending);pending.add(controller);
+  const unlink=require('./abort-link.js').link(signal,controller);
   try {return await prepareValue(app,scope,tx,args,controller.signal,tool);}
-  finally {pending.delete(controller);}
+  finally {unlink();pending.delete(controller);}
 }
 function abort(app) {for(const c of controllers.get(app)||[])c.abort();}
 async function prepareValue(app,scope,tx,args,signal,tool) {
@@ -25385,7 +25720,8 @@ function present(app,scope,txId,name,args,result,state,prepared,transaction,repl
 // Every MCP mutation uses the same lifecycle. There is no model router here:
 // the saved rulebook selects a preparer and the repository owns all persistence.
 async function call(app,name,args,trace={}) {
-  const {boundary,...callTrace}=trace;
+  const {boundary,signal,expectedScope,expectedRulebook,...callTrace}=trace;
+  const requireActive=()=>assert(!signal?.aborted,'CANCELLED','도구 호출이 취소되어 실행하지 않았습니다. 저장된 결과는 유지합니다.');
   const startedAt=Date.now(),timings={},details={...callTrace,tool:name,op:args?.op,actionId:args?.actionId,eventId:args?.eventId||null};
   let phase=null,phaseAt=startedAt,response,storedResult;
   const enter=next=>{
@@ -25398,12 +25734,15 @@ async function call(app,name,args,trace={}) {
     'GENERATION_BOUNDARY','호출을 받은 채팅 또는 사용자 입력이 바뀌었습니다. 이전 행동을 다른 입력에 적용하지 않습니다.');
   try {
     enter('scope');
+    requireActive();
     assert(!app.unloaded,'UNLOADED','플러그인이 종료되었습니다.');
     const scope=await app.currentScope();
+    assert(!expectedScope||scopeKey(scope)===expectedScope,'SCOPE_MISMATCH','호출을 받은 채팅이 현재 채팅과 다릅니다.');
     await require('./chat-power.js').requireEnabled(app,scope);
     if(boundary)await app.host.verifyTransaction(boundary);
     const validationState=app.tx&&scopeKey(app.tx.scope)===scopeKey(scope)
       ?(await app.repo.transaction(scope,app.tx.id)).state:(await app.repo.current(scope))?.state;
+    assert(!expectedRulebook||Books.select(validationState).id===expectedRulebook,'RULEBOOK_CHANGED','도구 등록 뒤 룰북이 바뀌었습니다. 현재 룰북의 도구 목록을 다시 연결하세요.');
     if(app.tx&&scopeKey(app.tx.scope)===scopeKey(scope))details.transactionId=app.tx.id;
     enter('validate');
     Books.validateCall(validationState,name,args);
@@ -25447,10 +25786,12 @@ async function call(app,name,args,trace={}) {
     // Existing invocation receipts are returned by Repository.execute. Do not
     // repeat auxiliary preparation for a retry, blocked result, or pending write.
     enter('prepare');
+    requireActive();
     if(!tx.actions[args.actionId]&&tx.state?.meta.native)require('./combat-options.js').guard(tx.state,tx.authority);
     const replayed=Boolean(tx.actions[args.actionId]);
-    const prepared=replayed?null:await Books.prepare(app,scope,tx,name,args);
+    const prepared=replayed?null:await Books.prepare(app,scope,tx,name,args,signal);
     enter('verify');
+    requireActive();
     await require('./chat-power.js').requireEnabled(app,scope);
     assertInputCurrent(tx);
     await app.host.verifyTransaction(tx);
@@ -25460,6 +25801,7 @@ async function call(app,name,args,trace={}) {
     const result=await app.repo.execute(scope,txId,args.actionId,input,
       async (world,authority)=>{
         await app.host.verifyTransaction(tx);
+        requireActive();
         // The explicit OFF switch may arrive during auxiliary preparation.
         assert(!app.powerStops?.has(scopeKey(scope)),'RPG_OFF','NyoruRPG 전원이 꺼져 이번 작업을 적용하지 않았습니다.');
         if(trace.review)require('./review-actions.js').consumption(world,name,args);
@@ -25674,6 +26016,7 @@ class UI {
     this.updates.onChange=()=>require('./update-ui.js').repaint(this);
     this.tab = 'overview';
     this.info = null;
+    this.loadError = null;
     this.sources = null;
     this.selected = new Set();
     this.sourceSelections = new Map();
@@ -25688,7 +26031,7 @@ class UI {
   async open() {
     this.mini=false;
     await this.refresh();
-    if(this.power?.moduleActive&&!this.power.welcomed)this.power=await require('./chat-power.js').save(this.app,this.info.scope,{welcomed:true});
+    if(!this.loadError&&this.info&&this.power?.moduleActive&&!this.power.welcomed)this.power=await require('./chat-power.js').save(this.app,this.info.scope,{welcomed:true});
     await this.app.api.showContainer('fullscreen');void this.app.reviewNotices.setPanelVisible(true);
     void require('./update-ui.js').onOpen(this).catch(()=>{});
   }
@@ -25696,17 +26039,22 @@ class UI {
     assert(await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','채팅이 바뀌었습니다.');
     this.mini=false;
     await this.refresh({synchronize:false});
+    if(this.loadError){await this.app.api.showContainer('fullscreen');void this.app.reviewNotices.setPanelVisible(true);assert(false,'UI_LOAD_FAILED',this.loadError);}
     assert(scopeKey(this.info?.scope||{})===scopeKey(scope)&&await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','채팅이 바뀌었습니다.');
     this.reviewHelp=true;this.tab='review';this.render();
     await this.app.api.showContainer('fullscreen');void this.app.reviewNotices.setPanelVisible(true);
   }
   async openMini() {
-    const scope=await this.app.currentScope();
-    this.power=await require('./chat-power.js').read(this.app,scope);
-    if(!this.power.enabled){this.tab='setup';return this.open();}
-    this.mini=true;
-    await this.app.serialized(()=>this.app.synchronize());
-    this.info=await this.app.inspect();
+    this.mini=true;this.loadError=null;
+    try {
+      const scope=await this.app.currentScope();
+      this.power=await require('./chat-power.js').read(this.app,scope);
+      if(!this.power.enabled){this.tab='setup';return this.open();}
+      await this.app.serialized(()=>this.app.synchronize());
+      const info=await this.app.inspect();
+      assert(scopeKey(info.scope)===scopeKey(scope)&&await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','정보를 읽는 중 채팅이 바뀌었습니다. 현재 채팅에서 새로 고침하세요.');
+      this.info=info;
+    } catch(err) {this.loadError=err?.message||'채팅 정보를 불러오지 못했습니다.';this.feedback=this.loadError;this.feedbackError=true;}
     this.render();
     await this.app.api.showContainer('fullscreen');void this.app.reviewNotices.setPanelVisible(true);
   }
@@ -25724,11 +26072,14 @@ class UI {
     card?.querySelector('[data-scheme-accept]')?.focus({preventScroll:true});
   }
   async refresh({synchronize=true}={}) {
+    const previousError=this.loadError;this.loadError=null;
     try {
       const scope=await this.app.currentScope();
       this.power=await require('./chat-power.js').read(this.app,scope);
       if(synchronize&&this.power.enabled)await this.app.serialized(() => this.app.synchronize());
-      this.info = await this.app.inspect({verify:this.power.enabled});
+      const info = await this.app.inspect({verify:this.power.enabled});
+      assert(scopeKey(info.scope)===scopeKey(scope),'SCOPE_MISMATCH','정보를 읽는 중 채팅이 바뀌었습니다. 현재 채팅에서 새로 고침하세요.');
+      this.info=info;
       this.ruleRows = this.app.ruleLibrary ? await this.app.ruleLibrary.list() : [];
       const ruleScope=scopeKey(this.info.scope);
       if(this.ruleScope!==ruleScope) {
@@ -25763,8 +26114,11 @@ class UI {
       this.lastReview=await this.app.repo.read((await this.app.repo.key(this.info.scope))+'/last-review');
       this.reviewInbox=await require('./review-issues.js').read(this.app,this.info.scope);
       try{await require('./storage-ui.js').remember(this);}catch{}
+      assert(await this.app.host.isCurrent(scope),'SCOPE_MISMATCH','정보를 읽는 중 채팅이 바뀌었습니다. 현재 채팅에서 새로 고침하세요.');
+      if(previousError&&this.feedback===previousError){this.feedback='';this.feedbackError=false;}
     } catch (err) {
-      this.feedback = err.message;
+      this.loadError=err?.message||'채팅 정보를 불러오지 못했습니다.';
+      this.feedback = this.loadError;
       this.feedbackError = true;
     }
     this.render();
@@ -25866,10 +26220,11 @@ class UI {
   rulesLibrary() {return require('./native-ui.js').active(this)?require('./native-ui.js').world(this):require('./rules-ui.js').render(this);}
   overview() {
     const w=this.info?.state,c=w?.combat;
+    const notice=this.sources?.engineActive===false?'<div class="notice error">이 채팅에 RPG 모듈이 연결되지 않았습니다. 가져온 모듈을 캐릭터/채팅에서 켜세요.</div>':'';
+    if(!w)return notice+'<section class="panel empty"><p>현재 채팅의 게임 상태가 준비되지 않았습니다.</p><p>처음 시작한다면 시스템을 구축하고, 기존 게임을 옮겼다면 백업을 가져와 주세요. 읽기 오류가 표시되면 오류 내용을 확인한 뒤 새로 고침하세요.</p><button type="button" data-tab="setup">시작·시스템 구축</button> <button type="button" data-tab="history">저장·복구</button></section>';
     const players=Object.values(w?.actors||{}).filter(a=>a.active&&a.kind==='player');
     const money=players.length?'<section class="panel"><h2>소지금</h2>'+players.map(a=>(players.length>1?'<h3>'+e(a.name)+'</h3>':'')+PlayView.wallet(w,a)).join('')+'</section>':'';
-    return (this.sources?.engineActive===false?'<div class="notice error">이 채팅에 RPG 모듈이 연결되지 않았습니다. 가져온 모듈을 캐릭터/채팅에서 켜세요.</div>':'')
-      + (!w?'<div class="notice">AI 연결 탭에서 API 설정 후 시스템 구축에서 설정하세요.</div>':'')
+    return notice
       + (require('./action-gauge.js').active(w)?'<section class="panel">'+require('./action-gauge.js').html(require('./action-gauge.js').snapshot(w))+'</section>':c&&c.turnTable!==false?'<section class="panel"><h2>턴테이블 · '+e(c.round)+' 라운드</h2><ol class="play-turns">'+c.order.map((x,i)=>'<li '+(i===c.index?'aria-current="step"':'')+'><span class="play-turn-number">'+(i+1)+'</span><div><b>'+e(w.actors[x.actorId]?.name||x.actorId)+'</b><small>'+e(i===c.index?'현재 턴':'선공 '+x.initiative)+'</small></div></li>').join('')+'</ol></section>':'')+money+this.actorCards()+require('./enemy-ui.js').render(w)+require('./combat-options.js').render(w)+require('./actor-presence.js').render(w);
   }
   connectionForm(key,title){return require('./api-settings-ui.js').form(this,key,title);}
@@ -26011,7 +26366,16 @@ class UI {
       admin: true
     })) + '</pre></details></section>') + '<section class="panel"><h2>호스트 진단</h2><p class="muted">기록은 계속 저장됩니다. 아래는 최근 200개이며, 내려받으면 현재 채팅의 이전 기록과 답변별 성공·실패 비교도 포함됩니다.</p><pre>' + textJSON(this.app.host.capabilities()) + '</pre><button id="diagnostics">진단 내려받기</button></section>' + (w ? '<section class="panel"><h2>최근 기록</h2>' + table(['작업', '행동 ID', '결과'], w.ledger.slice(-30).reverse().map(x => [x.tool + '.' + x.op, x.logicalActionId, x.result.outcome])) + '</section>' : '');
   }
+  renderUnavailable() {
+    this.navObserver?.disconnect();this.editorBarObserver?.disconnect();
+    let style=document.getElementById('urpg-style');if(!style){style=document.createElement('style');style.id='urpg-style';document.head.append(style);}style.textContent=this.css;
+    document.documentElement.dataset.theme=this.app.theme||'dark';document.body.classList.remove('editing');
+    document.body.innerHTML='<main class="mini-shell"><header class="top"><h2>NyoruRPG</h2><div class="row"><button id="load-retry">새로 고침</button><button id="load-close">닫기</button></div></header><section class="panel"><h3>현재 채팅 정보를 불러오지 못했습니다.</h3><div id="feedback" role="alert" class="notice error">'+e(this.loadError||'사용할 채팅을 선택한 뒤 새로 고침하세요.')+'</div><p>채팅과 연결 상태를 확인한 뒤 다시 불러와 주세요. 저장된 게임은 초기화하지 않습니다.</p></section></main>';
+    document.getElementById('load-retry').onclick=()=>this.act(()=>this.mini?this.openMini():this.refresh());
+    document.getElementById('load-close').onclick=()=>this.act(async()=>{await this.app.api.hideContainer();await this.app.reviewNotices.setPanelVisible(false);});
+  }
   render() {
+    if(this.loadError||!this.info){this.renderUnavailable();return;}
     if(this.mini){require('./mini-ui.js').render(this);return;}
     if(!this.tabs().some(([id])=>id===this.tab))this.tab=this.power?.enabled?'overview':'setup';
     const samePage=this.renderedPage===this.tab && this.renderedScope===this.selectionScope;
@@ -26026,8 +26390,8 @@ class UI {
     if(style.textContent!==this.css)style.textContent=this.css;
     document.documentElement.dataset.theme=this.app.theme || 'dark';
     const play=!['setup','connection','nyunyu','review','history'].includes(this.tab),selected=this.selectedRulebook(),active=this.currentRulebook();
-    const content = this.skillCreation ? require('./skill-authoring.js').render(this) : play && selected!==active ? '<section class="panel empty">시스템 구축에서 선택한 룰북을 준비하고 적용하면 표시됩니다. 현재 게임은 아직 변경되지 않았습니다.</section>' : play && selected==='murim' ? require('./murim-ui.js').render(this,this.tab) : play && selected==='erencha' ? require('./erencha-ui.js').render(this,this.tab) : play && ['romance','dating'].includes(selected) ? require('./social-ui.js').render(this,this.tab) : this[this.tab]();
-    const management=this.tab==='stats'&&selected===active&&!this.nativeSkillEditor?require('./native-management.js').render(this):'';
+    const content = play && !this.info?.state ? this.overview() : this.skillCreation ? require('./skill-authoring.js').render(this) : play && selected!==active ? '<section class="panel empty">시스템 구축에서 선택한 룰북을 준비하고 적용하면 표시됩니다. 현재 게임은 아직 변경되지 않았습니다.</section>' : play && selected==='murim' ? require('./murim-ui.js').render(this,this.tab) : play && selected==='erencha' ? require('./erencha-ui.js').render(this,this.tab) : play && ['romance','dating'].includes(selected) ? require('./social-ui.js').render(this,this.tab) : this[this.tab]();
+    const management=this.tab==='stats'&&this.info?.state&&selected===active&&!this.nativeSkillEditor?require('./native-management.js').render(this):'';
     document.body.innerHTML='<div class="shell">'+this.sidebar()+'<main class="content" id="rpg-content">'+this.header()+'<div class="page-body"><div id="feedback" role="status" aria-live="polite" class="notice '+(this.feedbackError?'error':'success')+'">'+e(this.feedback)+'</div><div id="nyoru-update-notice">'+require('./update-ui.js').notice(this)+'</div>'+content+management+'<footer id="nyoru-update-footer">'+require('./update-ui.js').footer(this)+'</footer></div></main></div>';
     document.body.classList.toggle('editing',!!document.querySelector('.item-editor-actions'));
     this.navObserver?.disconnect();
@@ -26287,8 +26651,17 @@ module.exports = {
 'use strict';
 // Public release notes. The build also publishes this as updates.json.
 module.exports={
-  latest:'0.25.1',
+  latest:'0.25.2',
   entries:[
+    {version:'0.25.2',date:'2026-10-02',title:'Provider Manager 직접 연결·채팅 알림·창 열기 수정',changes:[
+      'AI 연결에 Provider Manager IPC 직접 연결과 도구 대기시간 설정을 추가합니다. 기본 600초이며 기존 판정·저장·카드 경로를 재사용합니다. 중간 응답·자동 재호출은 추가하지 않습니다.',
+      '직접 연결의 등록·취소·채팅 전환·전원·룰북 구분을 연결하고, 지원하지 않는 스키마 부분만 JSON 문자열로 변환해 원래 룰북 입력 검사로 돌려보냅니다.',
+      'Risu의 HTML 정제 과정에서 알림 클래스 이름이 바뀌어 요소를 찾지 못하던 불일치를 수정합니다. 실제 권한 거부와 알림 생성 실패를 구분해 표시합니다.',
+      '현재 채팅의 게임 상태가 없을 때 행동 게이지와 전투 거리 표시가 combat을 읽으며 중단되던 오류를 수정합니다.',
+      '모든 룰북의 플레이 화면에서 상태가 준비되지 않았으면 시작·시스템 구축과 저장·복구 안내를 표시합니다. 읽기 오류는 화면에 남기며 빈 게임을 자동으로 생성하거나 기존 세이브를 초기화하지 않습니다.',
+      '채팅 정보 읽기가 실패해도 전체 창과 미니보드에서 원래 오류·새로 고침·닫기를 표시합니다. 읽는 도중 채팅이 바뀌면 섞인 정보를 표시하지 않습니다.',
+      '능력치 투자·장비 착용 등 공통 편집 버튼에 화면을 열었던 채팅을 전달해 다른 채팅으로 바뀐 뒤 저장되는 것을 막습니다. 미니보드를 닫으면 채팅 검사 알림의 표시 상태도 복원합니다.'
+    ],note:'연결 모듈 v1은 그대로 사용하고 플러그인만 업데이트합니다. 소스 경로 확인·수정과 배포 생성 범위이며 Provider Manager IPC·포켓리스·우분투 실사용 및 별도 최종 검사는 수행하지 않았습니다. 제보자의 설치 버전과 호출 스택은 미확인입니다.'},
     {version:'0.25.1',date:'2026-10-02',title:'오류 기록·입력 규격·탐험 준비 연결 수정',changes:[
       '검사 실패·중단 보고서나 구버전 보고서에 선택 항목이 없으면 미해결 목록 저장도 실패하던 오류를 수정합니다. 현재 채팅의 마지막 보고서를 한 번 다시 읽어 누락 항목을 보관하고 기존 초안·정리 내역은 유지합니다.',
       '공통 d100·헌터·무림의 소모품 검사에서 실제 물체 저장소를 참조하도록 수정합니다. 에렌샤도 물체 대상 소모품을 인물 생성으로 잘못 넘기지 않으며 미해결 대상 선택에 물체를 표시합니다.',
@@ -26722,7 +27095,7 @@ module.exports = {
 },
 "./version.js":function(module,exports,require){
 'use strict';
-module.exports={VERSION:'0.25.1'};
+module.exports={VERSION:'0.25.2'};
 
 },
 "./vertex-auth.js":function(module,exports,require){
