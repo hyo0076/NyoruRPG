@@ -1,5 +1,16 @@
 # NyoruRPG MCP 구조 · 0.24.1
 
+## 0.25.0 거리·장비·검사
+
+combat-range가 전투의 위치·사거리·거리별 보정·이동력을 계산한다. d100/헌터/무림과 에렌샤 엔진은 같은 거리 계산을 사용하고 각자의 명중·비용·자동 행동·턴 종료를 유지한다. 기술 mechanics.range와 네 거리 효과는 effect-model/effect-editor-ui에 포함된다. combat-range-ui는 편집·전투 옵션·전체/미니 표시를 제공한다. 새 전투의 distance는 시작 위치에만 적용하며 기존 전투를 다시 배치하지 않는다.
+
+equipment-presence가 소유·내구도·착용 조건을 한 번 계산해 기존 보정과 조합 효과에 공급한다. 소지와 착용 추가 행을 분리하며 기존 행은 equipped를 기본으로 읽는다. enhancement는 강화 한 번의 비용·판정·결과와 현재 가치를 공통으로 계산하고 enhancement-ui가 기존 관리자 저장 경로에 연결한다. 기본 가격은 유지하고 판매·경매·수리는 현재 가치를 사용한다.
+
+검사 화면은 review 카테고리로 분리한다. turn-review 계획의 notes는 설명, issues는 사용자 수정이 필요한 구체적인 미해결 사항이다. review-report는 구형 안내를 보수적으로 분류하고 실행 오류의 단계·코드·문구를 표시한다. review-issues는 기존 초안·결과·정리 내역을 보존하면서 정보성 안내만 도움 목록에서 제외한다. person-input은 실제 도구 스키마에서 선택인 신원 필드의 빈 값만 정규화하고 나머지는 엄격 검사를 유지한다. adventure.prepare는 장치 없는 출구의 오류 문구를 읽을 때 null을 역참조하지 않는다. 상세 범위는 [0.25.0 안내](nyoru-release-0.25.0.md)에 기록한다.
+
+
+review-notifications는 Risu SafeDocument로 메인 body에 독립 플로팅 루트를 붙이고 표시 완료 후에만 요소 참조를 보관한다. 실패 시 부분 생성과 리스너를 해제하며 입력창 측정은 부가 처리로 분리한다. ui의 열기/닫기가 플로팅 가시성을 전환하고 검사 설정 저장/미리보기에서 권한을 준비한다. 참고는 사용자가 제공한 유미 프로바이더의 플로팅 구조와 [공식 SafeElement 구현](https://github.com/kwaroran/Risuai/blob/main/src/ts/plugins/apiV3/v3.svelte.ts)이며 제품 코드는 자체 작성했다. 실제 호스트 표시·권한은 실사용 확인이 필요하다.
+
 ## 0.24.1 미해결 검사와 화면 알림
 
 `turn-review`는 보완 계획·실패 코드·원래 답변 해시와 저장 분기를 보존한다. `review-issues`는 채팅 키의 `/review-help`에 미해결 항목·입력 초안·적용 시도·확인 기록을 별도로 저장한다. 검사 결과의 실패 판정과 실행 전 오류를 구분하며, 개별 입력 수정은 기존 `rulebook-runtime.prepare/apply`와 Repository의 별도 수동 트랜잭션으로 처리한다. 저장된 시도는 결과를 이어받고 다시 굴리지 않는다. 사용자 적용 결과는 다음 요청의 상태와 이미 적용된 변경 문맥에 전달한다. 카드 배치·MCP 완료·재호출 방식은 그대로다.
