@@ -1,4 +1,6 @@
-# NyoruRPG 0.24.0
+# NyoruRPG 0.24.1
+
+0.24.1은 **놓치지마 검사 도움 알림과 미해결 항목 수정**을 추가합니다. 문제가 남으면 플러그인 창 밖에서도 `쮸인님 이것 좀 도와달라냥!` 알림을 누르고 인물·대상·물품 등의 입력을 고칠 수 있습니다. 성공한 작업은 반복하지 않고 해당 항목만 적용하며, 다음 검사 뒤에도 미해결 목록을 보관합니다. AI 연결의 검사 시작 알림은 선택 사항으로 약 3초간 표시합니다. 화면 알림에는 Risu의 메인 화면 접근 권한이 필요합니다. [사용 방법과 확인 범위](docs/nyoru-release-0.24.1.md). 실제 RisuAI·모바일·모델 호출은 미확인입니다.
 
 0.24.0은 **채팅별 전원과 시작 안내**를 추가합니다. 새 채팅은 기본 OFF이며, 백업 또는 새 구축 내용을 확인한 뒤 ON이 됩니다. 룰북 → 추가 요청·닉네임·테마 → 로어북 → 시작 인물 → 구축 초안 확인을 차례로 안내합니다. 기존 게임은 ON으로 이어받으며, 전원을 꺼도 세이브와 편집 내용은 남습니다. 연결 모듈 v1 사용자는 플러그인만 업데이트합니다. [이번 변경과 확인 범위](docs/nyoru-release-0.24.0.md). 실제 RisuAI·모델 호출은 미확인입니다.
 
@@ -18,7 +20,7 @@
 
 - [플러그인 NyoruRPG.js](https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js)
 - [새 설치용 연결 모듈 NyoruRPG.risum](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG.risum)
-- [0.24.0 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.24.0.zip)
+- [0.24.1 전체 배포 파일](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.24.1.zip)
 
 기존 사용자는 플러그인을 업데이트한 뒤 **시스템 구축 → 기존 모듈을 연결 전용으로 전환**을 한 번 실행하고 Risu를 새로 고침하세요. 모듈을 지우고 다시 가져오거나 게임을 재구축할 필요는 없습니다. 전환을 마쳤다면 이후 일반 업데이트는 플러그인만 교체합니다.
 
