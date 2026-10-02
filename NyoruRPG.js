@@ -1,7 +1,7 @@
 //@name universal-rpg-engine
-//@display-name NyoruRPG 0.23.2 · 자동 진행
+//@display-name NyoruRPG 0.24.0 · 자동 진행
 //@api 3.0
-//@version 0.23.2
+//@version 0.24.0
 //@update-url https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js
 (async()=>{
 "use strict";
@@ -833,12 +833,12 @@ class App {
     this.scope = s;
     return s;
   }
-  async inspect() {
+  async inspect({verify=true}={}) {
     const s = await this.currentScope(),
       current = await this.repo.current(s);
     let staged = null;
     if (this.tx && scopeKey(this.tx.scope) === scopeKey(s)) {
-      await this.host.verifyTransaction(this.tx);
+      if(verify)await this.host.verifyTransaction(this.tx);
       staged = await this.repo.transaction(s, this.tx.id);
     }
     return {
@@ -1018,11 +1018,17 @@ class App {
     return require('./tool-runtime.js').call(this,name,args,trace);
   }
   async listTools() {
-    // Listing tools must not verify an in-progress answer. Missing chat/storage
-    // context is not permission to hide gameplay tools from the host's broker.
+    // Explicit OFF/setup hides this chat's tools. Once ON, preserve the cached
+    // rulebook during transient reads and never verify an unfinished answer here.
     let scope,book;
     try {
       scope=await this.currentScope();
+      const power=await require('./chat-power.js').read(this,scope);
+      if(!power.enabled){
+        this.host.record('toolsListed',{count:0,power:power.mode});
+        if(power.moduleActive&&!power.welcomed)void require('./chat-power.js').welcome(this,scope,power).catch(()=>{});
+        return [];
+      }
       const current=await this.repo.current(scope);
       const state=current?.state||(this.tx&&scopeKey(this.tx.scope)===scopeKey(scope)?this.tx.state:null);
       if(state) {
@@ -1030,6 +1036,7 @@ class App {
         this.toolBooks.set(scopeKey(scope),book);
       } else this.toolBooks.delete(scopeKey(scope));
     } catch(e) {
+      if(!scope||!this.powerStates?.get(scopeKey(scope))?.enabled||this.powerStops?.has(scopeKey(scope)))return [];
       book=scope&&this.toolBooks.get(scopeKey(scope));
       this.host.record('toolListDeferred',{code:e.code||'STORAGE_UNAVAILABLE',cached:!!book});
     }
@@ -1060,6 +1067,8 @@ class App {
       activeScope=s;
       const context=await this.moduleBridge.context(s);
       if(!context.active)return sourceMessages;
+      const power=await require('./chat-power.js').read(this,s,context);
+      if(!power.enabled)return sourceMessages;
       const prefs=await this.moduleBridge.preferences(s,context);
       const injected=settings.inject(original,await this.moduleBridge.protocol(s,context,prefs),{active:true,legacy:context.legacy});
       messages=injected.messages;
@@ -1091,6 +1100,7 @@ class App {
       this.host.record('requestBlocked', { code: e.code || 'UNKNOWN' });
     }
     if(!await this.host.isCurrent(activeScope))return sourceMessages;
+    if(!(await require('./chat-power.js').read(this,activeScope)).enabled)return sourceMessages;
     // Assistant/tool content and provider metadata must round-trip unchanged.
     // A gateway may attach an opaque thought signature to either; even display
     // tokens belong to that original response. Only our own system state changes.
@@ -1130,7 +1140,7 @@ class App {
         let connected=false;
         try {
           const scope=await this.currentScope();
-          connected=(await this.moduleBridge.context(scope)).active;
+          connected=(await require('./chat-power.js').read(this,scope)).enabled;
           if(connected)await lifecycle.commitOutput(this, arg);
         }
         catch (e) { this.host.record('commitBlocked', { code: e.code || 'INTERNAL_ERROR' }); if(connected)this.ui?.notify?.('RPG 자동 저장 실패: ' + (e.code ? e.message : '저장·복구 진단을 확인하세요.'), true); }
@@ -1210,7 +1220,9 @@ class App {
           }
           this.host.record('scopeChanged');
         }
+        const changed=key!==this.lastScopeKey;
         this.lastScopeKey = key;
+        if(changed)await require('./chat-power.js').welcome(this,s);
       } catch {} finally {
         this.polling = false;
       }
@@ -1644,7 +1656,8 @@ function validateWorld(w) {
 }
 async function importBackup(repo, scope, data, {
   expected = null,
-  anchor = null
+  anchor = null,
+  rebindScope = false
 } = {}) {
   fields(data, ['format', 'schemaVersion', 'scope', 'head', 'revisions', 'transactions', 'displayBindings','effectPresets','chatSettings'], ['format', 'schemaVersion', 'scope', 'head', 'revisions', 'transactions']);
   assert(data.format === 'universal-rpg-backup' && data.schemaVersion === 1, 'UNSUPPORTED_SCHEMA', '이 백업 형식·버전은 지원하지 않습니다.');
@@ -1653,8 +1666,10 @@ async function importBackup(repo, scope, data, {
   assert(selected, 'INVALID_BACKUP', '백업의 선택 상태가 없습니다.');
   validateWorld(selected.state);
   assert((await hash(selected.state)) === selected.checksum, 'STORAGE_CORRUPT', '백업 체크섬이 다릅니다.');
-  assert(scopeKey(selected.state.scope) === scopeKey(scope), 'SCOPE_MISMATCH', '다른 대화의 백업입니다.');
+  const sameScope=scopeKey(selected.state.scope)===scopeKey(scope);
+  assert(sameScope||rebindScope===true, 'SCOPE_MISMATCH', '다른 대화의 백업입니다. 새 채팅의 시작 안내에서 가져오세요.');
   const state = clone(selected.state);
+  if(!sameScope)state.scope=clone(scope);
   if(data.chatSettings) {
     const choices=require('./module-settings.js');
     assert(choices.books.includes(data.chatSettings.rulebook)&&Number.isInteger(data.chatSettings.theme)&&choices.themes[data.chatSettings.theme],'INVALID_BACKUP','채팅의 룰북 지침·테마 설정이 잘못되었습니다.');
@@ -1664,7 +1679,7 @@ async function importBackup(repo, scope, data, {
   if(data.effectPresets){safeData(data.effectPresets);for(const [id,p] of Object.entries(data.effectPresets)){assert(p&&typeof p.name==='string'&&p.name.length<=300,'INVALID_BACKUP','효과 세팅 이름을 확인하세요.');presets[id]={id,name:p.name,...require('./effect-model.js').normalize(p)};}}
   // Restore only presentation bindings for outcomes in this selected ledger.
   // No provider messages or unvalidated transaction state are written back.
-  await require('./render.js').restoreDisplayBindings(repo,scope,data.displayBindings,state);
+  if(sameScope)await require('./render.js').restoreDisplayBindings(repo,scope,data.displayBindings,state);
   const imported=await repo.exclusive(() => repo.publish(scope, state, {
     expected,
     parent: expected,
@@ -1725,6 +1740,85 @@ function preview(theme) {
   return decorate(card,theme);
 }
 module.exports={scopeCSS,style,decorate,preview};
+
+},
+"./chat-power.js":function(module,exports,require){
+'use strict';
+const {assert,scopeKey,clone}=require('./util.js');
+const MODES=['off','setup','on'];
+
+// Deliberately outside the world/revision and backup. Turning a chat off must
+// survive rollback, and importing a save must not switch on another chat.
+async function read(app,scope,context=null) {
+  context ||= await app.moduleBridge.context(scope);
+  const key=(await app.repo.key(scope))+'/power',identity=scopeKey(scope);
+  let saved=await app.repo.read(key);
+  if(!saved) {
+    const current=await app.repo.current(scope);
+    saved={version:1,scope:identity,mode:current?'on':'off',welcomed:!!current,setup:null};
+    if(context.active) saved=await app.repo.exclusive(async()=>{
+      const previous=await app.repo.read(key);if(previous)return previous;
+      assert(await app.host.isCurrent(scope),'SCOPE_MISMATCH','전원을 준비하는 중 채팅이 바뀌었습니다.');
+      await app.repo.write(key,saved);return saved;
+    });
+  }
+  assert(saved.version===1&&saved.scope===identity&&MODES.includes(saved.mode),'POWER_SETTINGS','이 채팅의 전원 설정을 읽지 못했습니다.');
+  const enabled=context.active&&saved.mode==='on'&&!app.powerStops?.has(identity);
+  const result={...saved,moduleActive:context.active,enabled};
+  (app.powerStates ||= new Map()).set(identity,result);
+  return result;
+}
+async function save(app,scope,patch,{expectedMode}={}) {
+  assert(await app.host.isCurrent(scope),'SCOPE_MISMATCH','설정 중 채팅이 바뀌었습니다.');
+  const context=await app.moduleBridge.context(scope),previous=await read(app,scope,context);
+  assert(patch.mode===undefined||MODES.includes(patch.mode),'POWER_SETTINGS','전원 상태를 확인하세요.');
+  if(patch.mode&&patch.mode!=='off')assert(context.active,'MODULE_DISABLED','이 채팅에서 NyoruRPG 연결 모듈을 먼저 켜주세요.');
+  if(patch.mode==='on')assert(await app.repo.current(scope),'SETUP_MISSING','구축 초안 또는 백업 내용을 확인하고 적용하세요.');
+  const identity=scopeKey(scope),stops=app.powerStops ||= new Set();
+  if(patch.mode==='off')stops.add(identity);
+  let reviewStart;
+  if(patch.mode==='on'&&previous.mode!=='on') {
+    const messages=(await app.host.locate(scope)).chat.message||[];
+    reviewStart={lastMessageId:messages.at(-1)?.chatId||null,lastReplyId:[...messages].reverse().find(m=>m.role==='char')?.chatId||null};
+  }
+  await app.repo.exclusive(async()=>{
+    assert(await app.host.isCurrent(scope),'SCOPE_MISMATCH','설정 중 채팅이 바뀌었습니다.');
+    const key=(await app.repo.key(scope))+'/power',old=await app.repo.read(key)||previous;
+    if(expectedMode)assert(old.mode===expectedMode&&!(expectedMode==='setup'&&stops.has(identity)),'RPG_OFF','전원 상태가 바뀌었습니다. 저장된 내용을 확인한 뒤 다시 가동해 주세요.');
+    const {moduleActive,enabled,...stored}=old;
+    await app.repo.write(key,{...stored,...clone(patch),...(reviewStart?{reviewStart}:{}),version:1,scope:identity});
+  });
+  if(patch.mode==='on'||patch.mode==='setup')stops.delete(identity);
+  return read(app,scope,context);
+}
+async function requireEnabled(app,scope,context=null) {
+  const state=await read(app,scope,context);
+  assert(state.moduleActive,'MODULE_DISABLED','이 채팅에서 NyoruRPG 연결 모듈을 켜세요.');
+  assert(state.enabled,'RPG_OFF','이 채팅의 NyoruRPG 전원이 꺼져 있습니다. 시작 화면에서 준비를 마치고 켜주세요.');
+  return state;
+}
+async function turnOff(app,scope) {
+  assert(await app.host.isCurrent(scope),'SCOPE_MISMATCH','전원을 끄는 중 채팅이 바뀌었습니다.');
+  (app.powerStops ||= new Set()).add(scopeKey(scope));
+  // Cancel preparation, not recorded dice or already committed outcomes.
+  app.native.abort();require('./social-assistant.js').abort(app);require('./erencha-assistant.js').abort(app);
+  app.reviewController?.abort();
+  require('./nyunyu.js').clear(app);
+  if(app.ui?.job&&scopeKey(app.ui.info?.scope||{})===scopeKey(scope))app.compiler.controllers.get(app.ui.job.id)?.abort();
+  return save(app,scope,{mode:'off',welcomed:true});
+}
+async function welcome(app,scope,status=null) {
+  const identity=scopeKey(scope),pending=app.powerWelcomes ||= new Set();
+  if(pending.has(identity))return;
+  pending.add(identity);
+  try {
+    status ||= await read(app,scope);
+    if(!status.moduleActive||status.mode!=='off'||status.welcomed||app.unloaded)return;
+    await save(app,scope,{welcomed:true});
+    if(await app.host.isCurrent(scope)&&!app.unloaded)await app.ui.open();
+  }finally{pending.delete(identity);}
+}
+module.exports={read,save,requireEnabled,turnOff,welcome};
 
 },
 "./chat-presentation-ui.js":function(module,exports,require){
@@ -17763,6 +17857,146 @@ async function ask(app,scope,world,actorId,text,onProgress=()=>{}){
 module.exports={session,ask,clear,context};
 
 },
+"./onboarding-ui.js":function(module,exports,require){
+'use strict';
+const {escapeHTML:e,assert,clone,parseJSON,scopeKey}=require('./util.js');
+const Power=require('./chat-power.js'),Books=require('./module-settings.js');
+const STEPS=['backup','rulebook','requests','sources','roster','build','review','backupReview'];
+const descriptions={common:'어떤 세계관이든 능력치와 d100 판정으로 연결합니다.',hunters:'헌터의 능력치·기술·게이트 규칙으로 시작합니다.',romance:'관계와 마음, 명예와 궁정의 이야기를 만듭니다.',dating:'일상과 관계, 체력과 성장을 함께 기록합니다.',erencha:'스탯 대신 분야별 숙련도와 기술로 성장합니다.',murim:'외공·내공, 수련과 깨달음으로 경지를 높입니다.'};
+const isSetup=ui=>ui.power?.mode==='setup';
+const button=(id,label,primary=false,disabled=false)=>'<button type="button" id="'+id+'" class="'+(primary?'primary':'subtle')+'" '+(disabled?'disabled':'')+'>'+label+'</button>';
+const nav=(ui,back,next,label='다음')=>'<div class="onboarding-actions">'+(back?'<button type="button" data-onboard-step="'+back+'" '+(ui.busy?'disabled':'')+'>이전</button>':'')+(next?'<button type="button" data-onboard-step="'+next+'" class="primary" '+(ui.busy?'disabled':'')+'>'+label+'</button>':'')+'</div>';
+function hydrate(ui) {
+  const key=scopeKey(ui.info.scope);
+  if(ui.onboardingScope===key)return;
+  ui.onboardingScope=key;ui.onboardingBackup=null;ui.onboardingMultiple=false;
+  const flow=ui.power?.setup;
+  if(flow) {
+    ui.rulebookChoice=flow.book||null;ui.rulebookPrompts=clone(flow.requests||{});
+    ui.rosterText=flow.roster||ui.defaultRosterText();ui.erenchaNickname=flow.nickname||'';
+    ui.onboardingMultiple=flow.multiple===true;ui.nativeChoice=flow.nativeChoice||null;
+    if(Array.isArray(flow.sourceIds)) {
+      const available=new Set(ui.sources.sources.map(s=>s.id));
+      ui.selected.clear();for(const id of flow.sourceIds)if(available.has(id))ui.selected.add(id);
+    }
+  }
+  if(!ui.power?.enabled)ui.tab='setup';
+}
+function capture(ui) {
+  const id=document.getElementById('onboard-actor-id'),name=document.getElementById('onboard-actor-name');
+  if(id&&name) {
+    const extra=document.getElementById('onboard-extra-actors');
+    ui.rosterText=id.value.trim()+' | '+name.value.trim()+(ui.onboardingMultiple&&extra?.value.trim()?'\n'+extra.value.trim():'');
+  }
+}
+async function persist(ui,step,extra={},scope=ui.info.scope) {
+  assert(scopeKey(scope)===scopeKey(ui.info.scope),'SCOPE_MISMATCH','준비 중 채팅이 바뀌었습니다.');
+  ui.capture();
+  const flow={...(ui.power.setup||{}),step,book:ui.selectedRulebook(),requests:clone(ui.rulebookPrompts||{}),roster:ui.rosterText||ui.defaultRosterText(),nickname:ui.erenchaNickname||'',multiple:ui.onboardingMultiple===true,sourceIds:[...ui.selected],nativeChoice:ui.nativeChoice||null,...extra};
+  ui.power=await Power.save(ui.app,scope,{setup:flow});
+}
+async function start(ui) {
+  const scope=clone(ui.info.scope);
+  if(ui.info.state) {
+    ui.power=await ui.app.serialized(()=>Power.save(ui.app,scope,{mode:'on',welcomed:true,setup:null},{expectedMode:'off'}));
+    ui.tab='overview';await ui.refresh();ui.notify('NyoruRPG를 다시 켰습니다냥!');return;
+  }
+  const step=STEPS.includes(ui.power.setup?.step)?ui.power.setup.step:'backup';
+  ui.power=await Power.save(ui.app,scope,{mode:'setup',welcomed:true,setup:ui.power.setup||{step}},{expectedMode:'off'});
+  ui.tab='setup';ui.render();
+}
+function title(text,description='') {
+  return '<div class="onboarding-greeting"><span class="onboarding-cat" aria-hidden="true">◈</span><h2>'+text+'</h2>'+(description?'<p class="muted">'+description+'</p>':'')+'</div>';
+}
+function render(ui) {
+  const state=ui.power||{mode:'off'},flow=state.setup||{},step=flow.step||'backup',book=ui.selectedRulebook();
+  if(!state.moduleActive)return '<section class="panel onboarding">'+title('NyoruRPG를 연결해 주세요냥!','이 채팅에서 NyoruRPG 연결 모듈을 켠 뒤 새로 고침을 눌러 주세요. 전원은 아직 OFF입니다.')+'</section>';
+  if(state.mode==='off')return '<section class="panel onboarding">'+title('안녕하세냥!<br>뇨루 RPG를 가동하시겠냥?',ui.info.state?'저장한 게임이 있습니다. 다시 켜면 그 상태로 이어갑니다.':'지금은 OFF입니다. 확인을 마치기 전까지 RPG 도구와 지침은 들어가지 않습니다.')+'<div class="onboarding-actions">'+button('onboard-start',ui.info.state?'네, 이어서 가동해줘':flow?'네, 준비를 이어갈게요':'네',true)+button('onboard-later','지금은 안 쓸게요')+'</div></section>';
+  const progress=['backup','rulebook','requests','sources','roster','review'];
+  const index=step==='build'||step==='backupReview'?5:Math.max(0,progress.indexOf(step));
+  let body='';
+  if(step==='backup')body=title('백업이 있느냥?','기존 게임을 가져오거나 새 이야기의 규칙을 준비할 수 있습니다.')+'<label class="onboarding-file">게임 백업 첨부<input id="onboard-backup" type="file" accept=".json,application/json"></label>'+button('onboard-without-backup','없어요, 새로 시작할게요',true)+(ui.job&&ui.job.status!=='applied'?'<div class="spaced">'+button('onboard-saved-draft','작성하던 구축 초안 이어보기')+'</div>':'');
+  if(step==='rulebook')body=title('룰북은 무엇으로 하겠냥?')+'<div class="onboarding-books">'+Books.books.map((id,i)=>'<button type="button" data-onboard-book="'+id+'" class="onboarding-book '+(book===id?'selected':'')+'" aria-pressed="'+(book===id)+'"><b>'+e(Books.labels[i])+'</b><span>'+e(descriptions[id])+'</span></button>').join('')+'</div>'+nav(ui,'backup','requests');
+  if(step==='requests')body=title('추가하고 싶은 내용이 있냥?','비워 두어도 괜찮습니다. 선택한 봇 설정과 룰북을 기준으로 준비합니다.')+'<label>봇 설정 해석·추가 요청 (선택)<textarea id="social-instructions" rows="5" placeholder="예: 내 캐릭터는 검보다 연금술과 제작을 잘했으면 좋겠어.">'+e(ui.rulebookPrompt())+'</textarea></label>'+(book==='erencha'?'<label class="spaced">게임에서 사용할 닉네임 (선택)<input id="erencha-nickname" value="'+e(ui.erenchaNickname||'')+'" placeholder="본명과 같은 인물로 연결합니다"></label>':'')+require('./chat-presentation-ui.js').render(ui)+nav(ui,'rulebook','sources');
+  if(step==='sources')body=title('사용할 로어북을 고르냥!',['hunters','erencha'].includes(book)?'얼터네이티브 헌터·에렌샤는 사용자 페르소나를 선택하면 됩니다. 추가 설정이 있다면 해당 자료도 골라 주세요.':'사용자 페르소나와 함께 능력치·규칙·세계관 정보가 담긴 로어북을 골라 주세요.')+'<p class="muted">시스템 구축에 보낼 자료만 선택합니다. 봇의 로어북 활성 설정은 바꾸지 않습니다.</p>'+ui.sourceSelection()+nav(ui,'requests','roster');
+  if(step==='roster') {
+    const lines=(ui.rosterText||ui.defaultRosterText()).split(/\r?\n/),first=lines[0].split('|'),id=first.shift()?.trim()||'main',name=first.join('|').trim();
+    body=title('처음 적용할 인물은 한 명이면 충분하냥?','우선 사용자 인물 하나면 충분합니다. 나머지는 실제로 등장할 때 준비합니다.')+'<div class="fields"><label>사용자 인물 ID<input id="onboard-actor-id" value="'+e(id)+'" placeholder="main" maxlength="100"></label><label>이름'+(book==='erencha'?' · 본명':'')+'<input id="onboard-actor-name" value="'+e(name)+'" placeholder="'+e(ui.sources?.personaName||'주인공')+'"></label></div><p class="muted">ID는 main처럼 영문·숫자와 _ - . : 로 자유롭게 정하면 됩니다.</p><label class="spaced"><input id="onboard-multiple" type="checkbox" '+(ui.onboardingMultiple?'checked':'')+'> 처음부터 다른 인물도 함께 준비할래요</label>'+(ui.onboardingMultiple?'<label>추가 인물 · 한 줄에 ID | 이름<textarea id="onboard-extra-actors" rows="3" placeholder="companion | 동료 이름">'+e(lines.slice(1).join('\n'))+'</textarea></label>':'')+'<p class="muted">선택한 자료 '+ui.selected.size+'개 · '+e(Books.labels[Books.books.indexOf(book)])+'</p><div class="onboarding-actions"><button type="button" data-onboard-step="sources">이전</button>'+button('generate','구축 시작',true,ui.busy)+'</div><button type="button" data-tab="connection" class="subtle spaced">구축용 API 설정</button>';
+  }
+  if(step==='build'||step==='review') {
+    const job=flow.jobId===ui.job?.id?ui.job:null;
+    body=title(ui.busy?'뇨루가 열심히 만들고 있다냥!<br>기다려냥!':job?.status==='ready_to_apply'?'이런 내용은 어떠냥?':'준비하던 내용을 이어볼까요냥?',ui.busy?'완료되면 확인할 초안을 보여드릴게요.': '기술·수치·효과를 펼쳐서 편집하거나 말로 수정 요청할 수 있습니다.')+(job?ui.jobPanel(job):'<p class="notice">이어갈 초안이 없습니다. 이전 단계에서 구축을 시작해 주세요.</p>')+(job?.status==='applied'?button('onboard-enable-applied','확인, 저장된 시스템으로 가동',true):'')+(ui.busy?button('cancel-job','구축 중단'):nav(ui,'roster',null));
+  }
+  if(step==='backupReview') {
+    const backup=ui.onboardingBackup,world=backup?.state;
+    body=title('이런 내용은 어떠냥?',world?'백업 내용을 확인한 뒤 가동해 주세요. 원래 채팅은 바뀌지 않습니다.':'백업 파일을 다시 첨부해 주세요.')+(world?'<div class="onboarding-summary"><p><b>'+e(world.profile?.name||'저장된 게임')+'</b></p><p>'+e(Object.values(world.actors||{}).filter(a=>!a.retired&&a.kind!=='enemy').map(a=>a.name).join(' · '))+'</p><p>소지품 '+Object.keys(world.inventory||{}).length+'개 · 기술 '+Object.keys(world.definitions?.skills||{}).length+'개</p><p class="muted">'+e(backup.name)+'</p></div>'+button('onboard-import-confirm','확인, 백업으로 가동',true,ui.busy):'')+nav(ui,'backup',null);
+  }
+  return '<section class="onboarding"><div class="onboarding-progress" aria-label="시작 준비 '+(index+1)+' / 6"><span>시작 준비</span><span>'+(index+1)+' / 6 · 준비 중</span></div><div class="'+(['build','review'].includes(step)?'onboarding-review':'panel')+'">'+body+'</div></section>';
+}
+async function finish(ui,scope) {
+  assert(await ui.app.host.isCurrent(scope),'SCOPE_MISMATCH','적용 중 채팅이 바뀌었습니다. 저장한 게임은 보존됩니다.');
+  ui.power=await Power.save(ui.app,scope,{mode:'on',welcomed:true,setup:null},{expectedMode:'setup'});
+  ui.onboardingBackup=null;ui.rulebookChoice=null;ui.clearEditors();ui.tab='overview';
+}
+function bind(ui,on) {
+  on('chat-power',async()=>{
+    ui.capture();const scope=clone(ui.info.scope);
+    if(ui.power?.mode==='on'||ui.power?.mode==='setup') {
+      if(isSetup(ui))await persist(ui,ui.power.setup?.step||'backup',{},scope);
+      ui.power=await Power.turnOff(ui.app,scope);ui.tab='setup';ui.render();ui.notify('이 채팅의 NyoruRPG를 껐습니다. 저장된 게임은 그대로입니다.');
+    } else await start(ui);
+  });
+  on('onboard-start',()=>start(ui));
+  on('onboard-enable-applied',async()=>{await finish(ui,ui.info.scope);await ui.refresh();});
+  on('onboard-later',async()=>{ui.power=await Power.save(ui.app,ui.info.scope,{mode:'off',welcomed:true});await ui.app.api.hideContainer();});
+  on('onboard-without-backup',async()=>{await persist(ui,'rulebook');ui.render();});
+  on('onboard-saved-draft',async()=>{
+    const job=ui.job;ui.rulebookChoice=job.pipeline==='hunters-v1'?'hunters':job.rulebookId||'common';
+    ui.rosterText=job.roster.map(a=>a.id+' | '+a.name).join('\n');ui.erenchaNickname=job.roster[0]?.nickname||'';
+    ui.selected.clear();for(const id of job.sourceIds)ui.selected.add(id);
+    (ui.rulebookPrompts ||= {})[ui.rulebookChoice]=job.userInstruction||'';
+    await persist(ui,'review',{jobId:job.id});ui.render();
+  });
+  for(const b of document.querySelectorAll('[data-onboard-step]'))b.onclick=()=>ui.act(async()=>{await persist(ui,b.dataset.onboardStep);ui.render();});
+  for(const b of document.querySelectorAll('[data-onboard-book]'))b.onclick=()=>ui.act(async()=>{
+    ui.capture();ui.rulebookChoice=b.dataset.onboardBook;
+    // Built-in settings need only the player's source; do not send every NPC.
+    ui.selected.clear();
+    for(const s of ui.sources.sources)if(/^persona:.*:description$/.test(s.id)||!['hunters','erencha'].includes(ui.rulebookChoice)&&s.condition?.alwaysActive)ui.selected.add(s.id);
+    await persist(ui,'rulebook',{jobId:null});ui.render();
+  });
+  document.getElementById('onboard-multiple')?.addEventListener('change',ev=>{ui.capture();ui.onboardingMultiple=ev.target.checked;ui.render();});
+  document.getElementById('onboard-backup')?.addEventListener('change',ev=>ui.act(async()=>{
+    const file=ev.target.files[0],scope=clone(ui.info.scope);if(!file)return;
+    assert(file.size<=20000000,'INPUT_LIMIT','백업 파일은 20MB 이내로 첨부해 주세요.');
+    const data=parseJSON(await file.text(),20000000);
+    assert(await ui.app.host.isCurrent(scope),'SCOPE_MISMATCH','첨부 중 채팅이 바뀌었습니다.');
+    assert(data.format==='universal-rpg-backup'&&data.schemaVersion===1&&Array.isArray(data.revisions),'INVALID_BACKUP','NyoruRPG 게임 백업 JSON을 첨부해 주세요.');
+    const state=data.revisions.find(r=>r.id===data.head?.revision)?.state;
+    assert(state?.actors&&state.inventory&&state.definitions,'INVALID_BACKUP','백업의 게임 상태를 찾지 못했습니다.');
+    ui.onboardingBackup={data,state,name:file.name,scope:scopeKey(scope)};
+    await persist(ui,'backupReview');ui.render();
+  }));
+  on('onboard-import-confirm',async()=>{
+    const backup=ui.onboardingBackup,scope=clone(ui.info.scope),expected=ui.info.current?.id??null;
+    assert(backup?.scope===scopeKey(scope),'SCOPE_MISMATCH','이 채팅에서 백업을 다시 첨부해 주세요.');
+    assert(!ui.busy,'JOB_RUNNING','진행 중인 작업이 끝난 뒤 가져오세요.');ui.busy=true;ui.render();
+    try {
+      await ui.app.serialized(async()=>{
+        assert(!ui.app.tx||scopeKey(ui.app.tx.scope)!==scopeKey(scope),'TRANSACTION_OPEN','확정하지 않은 임시 저장이 있습니다. 저장·복구에서 먼저 확인해 주세요.');
+        assert(await ui.app.host.isCurrent(scope),'SCOPE_MISMATCH','백업을 적용하는 중 채팅이 바뀌었습니다.');
+        const result=await require('./backup.js').importBackup(ui.app.repo,scope,backup.data,{expected,anchor:await ui.app.host.anchor(scope),rebindScope:true});
+        if(result.state.meta.hunters)await require('./hunter-status.js').enable(ui.app.host,scope);
+        ui.app.effectPresets=await ui.app.repo.read('urpg/effect-presets')||{};
+        await finish(ui,scope);
+      });
+      ui.notify('백업을 불러왔습니다. 뇨루 RPG 가동 완료냥!');
+    }finally{ui.busy=false;await ui.refresh();}
+  });
+}
+module.exports={render,bind,capture,hydrate,persist,finish,isSetup};
+
+},
 "./play-ui.js":function(module,exports,require){
 'use strict';
 
@@ -24575,7 +24809,7 @@ async function call(app,name,args,trace={}) {
     enter('scope');
     assert(!app.unloaded,'UNLOADED','플러그인이 종료되었습니다.');
     const scope=await app.currentScope();
-    assert((await app.moduleBridge.context(scope)).active,'MODULE_DISABLED','이 채팅에서 NyoruRPG 연결 모듈을 켜세요. 다른 채팅의 게임은 실행하지 않습니다.');
+    await require('./chat-power.js').requireEnabled(app,scope);
     if(boundary)await app.host.verifyTransaction(boundary);
     const validationState=app.tx&&scopeKey(app.tx.scope)===scopeKey(scope)
       ?(await app.repo.transaction(scope,app.tx.id)).state:(await app.repo.current(scope))?.state;
@@ -24626,6 +24860,7 @@ async function call(app,name,args,trace={}) {
     const replayed=Boolean(tx.actions[args.actionId]);
     const prepared=replayed?null:await Books.prepare(app,scope,tx,name,args);
     enter('verify');
+    await require('./chat-power.js').requireEnabled(app,scope);
     assertInputCurrent(tx);
     await app.host.verifyTransaction(tx);
     assert(!app.unloaded,'UNLOADED','플러그인이 종료되었습니다.');
@@ -24634,6 +24869,8 @@ async function call(app,name,args,trace={}) {
     const result=await app.repo.execute(scope,txId,args.actionId,input,
       async (world,authority)=>{
         await app.host.verifyTransaction(tx);
+        // The explicit OFF switch may arrive during auxiliary preparation.
+        assert(!app.powerStops?.has(scopeKey(scope)),'RPG_OFF','NyoruRPG 전원이 꺼져 이번 작업을 적용하지 않았습니다.');
         if(trace.review)require('./review-actions.js').consumption(world,name,args);
         return Books.apply(app,world,prepared,name,args,trace.combatRepair?{...authority,playerActions:false}:authority,{});
       },stored);
@@ -24682,6 +24919,7 @@ function permitted(tool,op,args){return ALLOWED[tool]?.includes(op)&&!(tool==='r
 function operations(w){const catalog=Books.catalog(w);return Object.entries(catalog.operations).flatMap(([tool,ops])=>Object.keys(ops).filter(op=>ALLOWED[tool]?.includes(op)).map(op=>({tool,op,schema:catalog.shape(tool,op)})));}
 async function runReview(app,scope,phase){
   if(!app.settings.reviewEnabled||!app.tx?.automatic||app.tx.awaitingUser)return null;
+  const power=await require('./chat-power.js').read(app,scope);if(!power.enabled)return null;
   const tx=await app.repo.transaction(scope,app.tx.id);
   if(Object.keys(tx.actions||{}).length)return app.previousTurnReview?.transactionId===tx.id?app.previousTurnReview.value:null; // Already inside a tool continuation.
   const located=await app.host.locate(scope),messages=located.chat.message,index=messages.findIndex(m=>m.chatId===tx.userMessageId);
@@ -24689,6 +24927,9 @@ async function runReview(app,scope,phase){
   let previous=index-1;while(previous>=0&&messages[previous].role!=='char')previous--;
   if(previous<0)return null;
   const prior=messages[previous],narrative=story(prior.data);if(!narrative)return null;
+  // Enabling RPG is not permission to retrofit the preceding OFF conversation.
+  const start=power.reviewStart,boundary=start?.lastMessageId?messages.findIndex(m=>m.chatId===start.lastMessageId):-1;
+  if(start&&(prior.chatId===start.lastReplyId||boundary>=0&&previous<=boundary))return null;
   const fingerprint=(await hash({user:tx.userMessageId,message:prior.chatId,text:narrative,parent:tx.parentRevision})).slice(0,32),base=await app.repo.key(scope),key=base+'/review/'+fingerprint;
   let saved=await app.repo.read(key);
   phase('checking');
@@ -24848,10 +25089,14 @@ class UI {
   async open() {
     this.mini=false;
     await this.refresh();
+    if(this.power?.moduleActive&&!this.power.welcomed)this.power=await require('./chat-power.js').save(this.app,this.info.scope,{welcomed:true});
     await this.app.api.showContainer('fullscreen');
     void require('./update-ui.js').onOpen(this).catch(()=>{});
   }
   async openMini() {
+    const scope=await this.app.currentScope();
+    this.power=await require('./chat-power.js').read(this.app,scope);
+    if(!this.power.enabled){this.tab='setup';return this.open();}
     this.mini=true;
     await this.app.serialized(()=>this.app.synchronize());
     this.info=await this.app.inspect();
@@ -24873,8 +25118,10 @@ class UI {
   }
   async refresh({synchronize=true}={}) {
     try {
-      if(synchronize)await this.app.serialized(() => this.app.synchronize());
-      this.info = await this.app.inspect();
+      const scope=await this.app.currentScope();
+      this.power=await require('./chat-power.js').read(this.app,scope);
+      if(synchronize&&this.power.enabled)await this.app.serialized(() => this.app.synchronize());
+      this.info = await this.app.inspect({verify:this.power.enabled});
       this.ruleRows = this.app.ruleLibrary ? await this.app.ruleLibrary.list() : [];
       const ruleScope=scopeKey(this.info.scope);
       if(this.ruleScope!==ruleScope) {
@@ -24889,7 +25136,7 @@ class UI {
       if (this.selectionScope !== key) {
         this.clearEditors();
         this.rulebookChoice=null;this.rulebookPrompts={};
-        this.erenchaEditor=null;this.erenchaActor=null;this.murimEditor=null;this.rosterText = null;this.nativeChoice=null;this.nativeActor=null;this.hunterSearch='';
+        this.erenchaEditor=null;this.erenchaActor=null;this.erenchaNickname='';this.murimEditor=null;this.rosterText = null;this.nativeChoice=null;this.nativeActor=null;this.hunterSearch='';
       }
       if (!this.sourceSelections.has(key)) this.sourceSelections.set(key, new Set(this.sources.sources.filter(s => !s.condition || s.condition.alwaysActive).map(s => s.id)));
       this.selectionScope = key;
@@ -24898,6 +25145,7 @@ class UI {
       for (const id of this.selected) if (!available.has(id)) this.selected.delete(id);
       const current = await this.app.repo.read((await this.app.repo.key(this.info.scope)) + '/current-job');
       this.job = current ? await this.app.compiler.job(this.info.scope, current.id) : null;
+      require('./onboarding-ui.js').hydrate(this);
       if(this.job?.status==='applied')this.clearDraftEditors();
       if(this.changeJobId !== this.job?.id) {
         this.changeJobId=this.job?.id;
@@ -24944,12 +25192,12 @@ class UI {
   sidebar() {
     const tabs=this.tabs(),groups=[['플레이',tabs.filter(([id])=>!['setup','connection','nyunyu','history'].includes(id)).map(([id])=>id)],['준비',['setup','connection','nyunyu']],['기록',['history']]];
     return '<aside class="sidebar"><div class="sidebar-brand"><div class="brand"><span class="brand-mark" aria-hidden="true">◈</span><h1>NyoruRPG</h1></div></div><nav class="nav" aria-label="RPG 메뉴">'
-      + groups.map(([label,ids])=>'<div class="nav-group"><span class="nav-label">'+label+'</span>'+ids.map(id=>'<button type="button" data-tab="'+id+'" class="'+(id===this.tab?'selected':'')+'" '+(id===this.tab?'aria-current="page"':'')+' aria-controls="rpg-content">'+tabs.find(t=>t[0]===id)[1]+'</button>').join('')+'</div>').join('')
+      + groups.map(([label,ids])=>[label,ids.filter(id=>tabs.some(t=>t[0]===id))]).filter(([,ids])=>ids.length).map(([label,ids])=>'<div class="nav-group"><span class="nav-label">'+label+'</span>'+ids.map(id=>'<button type="button" data-tab="'+id+'" class="'+(id===this.tab?'selected':'')+'" '+(id===this.tab?'aria-current="page"':'')+' aria-controls="rpg-content">'+tabs.find(t=>t[0]===id)[1]+'</button>').join('')+'</div>').join('')
       + '</nav><div class="theme-picker" role="group" aria-label="화면 테마">'+[['light','☀','라이트'],['dark','☾','다크']].map(([theme,icon,label])=>'<button type="button" data-theme-choice="'+theme+'" aria-label="'+label+' 모드" aria-pressed="'+((this.app.theme || 'dark')===theme)+'"><span aria-hidden="true">'+icon+'</span>'+label+'</button>').join('')+'</div></aside>';
   }
   header() {
     const w=this.info?.state,count=require('./actor-presence.js').people(w).length;
-    return '<header class="top"><div class="context-block"><h2 class="chat-context">'+e(this.sources?.characterName || '채팅을 선택하세요')+'</h2><div class="context-status"><span>'+e(this.tabs().find(t=>t[0]===this.tab)?.[1] || '')+'</span><span>'+e(w?.profile.name || '시스템 준비 전')+'</span>'+(w?'<span>활성 인물 '+count+'명</span>':'')+'</div></div><div class="row top-actions"><button id="refresh" class="subtle">새로 고침</button><button id="close" class="subtle" aria-label="RPG 창 닫기">닫기</button></div></header>';
+    return '<header class="top"><div class="context-block"><h2 class="chat-context">'+e(this.sources?.characterName || '채팅을 선택하세요')+'</h2><div class="context-status"><span>'+e(this.tabs().find(t=>t[0]===this.tab)?.[1] || '')+'</span><span>'+e(w?.profile.name || '시스템 준비 전')+'</span>'+(w?'<span>활성 인물 '+count+'명</span>':'')+'</div></div><div class="row top-actions"><button id="chat-power" class="power-switch" role="switch" aria-checked="'+!!this.power?.enabled+'" aria-label="이 채팅의 NyoruRPG 전원" '+(!this.power?.moduleActive?'disabled':'')+'>⏻ '+(this.power?.enabled?'ON':this.power?.mode==='setup'?'준비 중':'OFF')+'</button><button id="refresh" class="subtle">새로 고침</button><button id="close" class="subtle" aria-label="RPG 창 닫기">닫기</button></div></header>';
   }
   selectedRulebook() {
     if(this.rulebookChoice)return this.rulebookChoice;
@@ -24957,7 +25205,7 @@ class UI {
     return this.currentRulebook();
   }
   currentRulebook(){return this.info?.state?.meta.hunters?'hunters':this.info?.state?.meta.rulebook?.id || 'common';}
-  tabs() {const id=this.selectedRulebook();const list=id==='common'?TABS:id==='hunters'?[...TABS.slice(0,2),['hunterCatalog','등록 인물'],...TABS.slice(2)]:[...(id==='murim'?require('./murim-ui.js').navigation():id==='erencha'?require('./erencha-ui.js').navigation():require('./social-ui.js').navigation(id)),['setup','시스템 구축'],['connection','AI 연결'],['history','저장·복구']];return [...list,['nyunyu','뉴뉴 AI']];}
+  tabs() {if(!this.power?.enabled)return [['setup','시작하기'],['connection','AI 연결'],['history','저장·복구']];const id=this.selectedRulebook();const list=id==='common'?TABS:id==='hunters'?[...TABS.slice(0,2),['hunterCatalog','등록 인물'],...TABS.slice(2)]:[...(id==='murim'?require('./murim-ui.js').navigation():id==='erencha'?require('./erencha-ui.js').navigation():require('./social-ui.js').navigation(id)),['setup','시스템 구축'],['connection','AI 연결'],['history','저장·복구']];return [...list,['nyunyu','뉴뉴 AI']];}
   rulebookPrompt() {
     const id=this.selectedRulebook();
     if(id==='hunters')return this.rulebookPrompts?.hunters ?? (this.job?.pipeline==='hunters-v1'?this.job.userInstruction:this.info?.state?.meta.hunters?.instructions || '') ?? '';
@@ -25019,6 +25267,7 @@ class UI {
   connection(){return require('./api-settings-ui.js').render(this);}
   nyunyu(){return require('./nyunyu-ui.js').render(this);}
   setup() {
+    if(!this.power?.enabled)return require('./onboarding-ui.js').render(this);
     if(this.selectedRulebook()==='hunters')return this.rulebookSelection()+require('./hunter-ui.js').setup(this);
     if(this.selectedRulebook()!=='common')return this.rulebookSelection()+'<div class="split"><section class="panel"><h2>1. 자료 선택</h2>'+this.sourceSelection()+'</section><section class="panel"><h2>2. 시작 인물</h2><label>한 줄에 ID | 이름<textarea id="roster">'+e(this.rosterText || this.defaultRosterText())+'</textarea></label>'+(this.selectedRulebook()==='erencha'?'<label>사용자 게임 닉네임 · 선택<input id="erencha-nickname" value="'+e(this.erenchaNickname||'')+'" placeholder="본명과 같은 인물로 저장됩니다"></label>':'')+'<p class="muted">첫 인물은 사용자 인물로 준비합니다. 다른 인물은 등장할 때 자동으로 준비합니다.<br>ID는 임의로 마음대로 지어도 괜찮습니다.</p><div class="toolbar"><button id="generate" class="primary" '+(this.busy?'disabled':'')+'>시스템 구축하기</button><button id="cancel-job" '+(!this.job || this.job.status==='applied'?'disabled':'')+'>취소</button></div></section></div>'+this.jobPanel(this.job);
     if(this.info?.state?.meta.rulebook)return this.rulebookSelection()+require('./native-ui.js').setup(this);
@@ -25036,13 +25285,13 @@ class UI {
     if(applied)return '<section class="panel"><h2>3. 시스템 적용 완료</h2><p>현재 인물의 기술과 소지품은 플레이 화면에서 편집합니다. 이 구축 기록을 다시 적용하지 않습니다.</p><button type="button" data-tab="'+(this.selectedRulebook()==='erencha'?'proficiencies':['romance','dating'].includes(this.selectedRulebook())?'overview':'stats')+'">현재 인물 보기</button> <button type="button" id="export-draft">구축 기록 내려받기</button></section>';
     const retry=['prepared','failed','cancelled'].includes(job.status);
     const message=job.error?.message || (job.status==='cancelled' ? '요청이 중단되었습니다.' : '');
-    return '<section class="panel"><h2>3. 초안 확인 · '+e(labels[job.status] || job.status)+'</h2><p class="muted">요청 '+job.requests+'회</p>'
+    return '<section class="panel"><h2>'+(this.power?.mode==='setup'?'구축 초안':'3. 초안 확인')+' · '+e(labels[job.status] || job.status)+'</h2><p class="muted">요청 '+job.requests+'회</p>'
       + (job.progress && this.busy ? '<p class="muted">'+e(job.progress.phase)+' '+e(job.progress.current)+' / '+e(job.progress.total)+'</p>' : '')
       + (message ? '<p class="notice error" role="alert">'+e(message.replace(/\s+/g,' ').slice(0,1000))+'</p>' : '')
       + (retry ? '<button id="repair-job" class="primary" '+(this.busy?'disabled':'')+'>다시 시도</button>' : '')
       + (job.murimCandidate ? require('./murim-ui.js').preview(this,job) : job.erenchaCandidate ? require('./erencha-ui.js').preview(this,job) : job.socialCandidate ? require('./social-ui.js').preview(this,job) : job.candidate ? this.preview(job.candidate)+require('./draft-editor-ui.js').render(this,job) : '')
       + ((ready || applied) ? this.changeRequest(!this.busy) : '')
-      + ((ready || applied) ? '<div class="toolbar spaced">'+(ready?'<button id="apply-job" class="primary" '+(this.busy?'disabled':'')+'>적용</button>':'')+'<button id="export-draft">내려받기</button></div>' : '')
+      + ((ready || applied) ? '<div class="toolbar spaced">'+(ready?'<button id="apply-job" class="primary" '+(this.busy?'disabled':'')+'>'+(this.power?.mode==='setup'?'확인, 이대로 가동':'적용')+'</button>':'')+'<button id="export-draft">내려받기</button></div>' : '')
       + (ready ? '<p class="muted">적용하면 이 엔진이 자원과 판정을 관리합니다. '+(this.info?.state && this.currentRulebook()!==(job.pipeline==='hunters-v1'?'hunters':job.rulebookId || 'common')?'다른 룰북으로 바꾸면 새 초기 상태로 시작하며 이전 저장 버전은 남습니다.':'같은 룰북에서 진행한 현재값은 유지합니다.')+'</p>' : '')+'</section>';
   }
   changeRequest(editable) {
@@ -25155,7 +25404,7 @@ class UI {
   }
   render() {
     if(this.mini){require('./mini-ui.js').render(this);return;}
-    if(!this.tabs().some(([id])=>id===this.tab))this.tab='overview';
+    if(!this.tabs().some(([id])=>id===this.tab))this.tab=this.power?.enabled?'overview':'setup';
     const samePage=this.renderedPage===this.tab && this.renderedScope===this.selectionScope;
     const detailKey=el=>el.closest('.source')?.querySelector('[data-source]')?.dataset.source || el.id || el.querySelector('summary')?.textContent;
     const opened=samePage?new Set([...document.querySelectorAll('details[open]')].map(detailKey)):new Set();
@@ -25184,6 +25433,7 @@ class UI {
   }
   bind() {
     const on = (id, fn) => document.getElementById(id)?.addEventListener('click', () => this.act(fn));
+    require('./onboarding-ui.js').bind(this,on);
     require('./storage-ui.js').bind(this);
     require('./update-ui.js').bind(this);
     require('./api-settings-ui.js').bind(this);
@@ -25203,8 +25453,9 @@ class UI {
     if(this.tab==='setup')require('./draft-editor-ui.js').bind(this);
     document.getElementById('system-rulebook')?.addEventListener('change',event=>{this.capture();this.rulebookChoice=event.target.value;this.render();});
     for(const b of document.querySelectorAll('[data-theme-choice]'))b.onclick=()=>this.act(()=>this.changeTheme(b.dataset.themeChoice));
-    for (const b of document.querySelectorAll('[data-tab]')) b.onclick = () => this.act(() => {
+    for (const b of document.querySelectorAll('[data-tab]')) b.onclick = () => this.act(async () => {
       this.capture();
+      if(this.power?.mode==='setup'&&this.tab==='setup')await require('./onboarding-ui.js').persist(this,this.power.setup?.step||'backup');
       if(this.skillCreation){this.skillCreation=null;this.nativeSkillEditor=null;}
       if(this.tab==='nyunyu'&&b.dataset.tab!=='nyunyu'){if(this.nyunyuProposal?.itemCreation)this.nativeItemEditor=null;this.nyunyuProposal=null;}
       if(this.tab==='setup'&&b.dataset.tab!=='setup')this.clearDraftEditors();
@@ -25212,7 +25463,7 @@ class UI {
       this.tab = b.dataset.tab;
       this.render();
     });
-    on('close', () => this.app.api.hideContainer());
+    on('close', async () => {if(this.power?.mode==='setup')await require('./onboarding-ui.js').persist(this,this.power.setup?.step||'backup');return this.app.api.hideContainer();});
     require('./combat-options.js').bind(this);require('./actor-presence.js').bindUI(this);
     on('refresh', () => { this.capture(); return this.refresh(); });
     for (const el of document.querySelectorAll('[data-source]')) el.addEventListener('change', () => {
@@ -25252,14 +25503,20 @@ class UI {
     on('generate', async () => {
       this.capture();
       assert(!this.busy, 'JOB_RUNNING', '이미 생성 중입니다.');
+      const scope=clone(this.info.scope),onboarding=this.power?.mode==='setup';
+      const options=this.prepareOptions();
+      if(onboarding){assert(options.sourceIds.length,'SOURCE_REQUIRED','구축에 사용할 사용자 페르소나 또는 로어북을 선택해 주세요.');await require('./onboarding-ui.js').persist(this,'build',{jobId:null});}
       this.busy = true;
       try {
         await this.app.saveSettings();
-        this.job = await this.app.compiler.prepare(this.info.scope, this.prepareOptions());
+        this.job = await this.app.compiler.prepare(scope, options);
+        if(onboarding)await require('./onboarding-ui.js').persist(this,'build',{jobId:this.job.id},scope);
+        const jobId=this.job.id;
         this.render();
-        this.notify('구축용 AI에 자료를 전송합니다.');
-        await this.app.compiler.run(this.info.scope, this.job.id, require('./ai-connections.js').select(this.app,'buildConnection').secrets, p => this.notify((p.progress ? p.progress.phase + ' ' + p.progress.current + ' / ' + p.progress.total : labels[p.stage] || p.stage) + ' · API 호출 ' + p.requests + '회'));
-        this.notify('초안 검증을 마쳤습니다. 원본 수치·현재값·가정을 검토하고 적용하세요.');
+        this.notify(onboarding?'뇨루가 열심히 만들고 있다냥! 기다려냥!':'구축용 AI에 자료를 전송합니다.');
+        await this.app.compiler.run(scope, jobId, require('./ai-connections.js').select(this.app,'buildConnection').secrets, p => {if(this.info&&scopeKey(this.info.scope)===scopeKey(scope))this.notify((p.progress ? p.progress.phase + ' ' + p.progress.current + ' / ' + p.progress.total : labels[p.stage] || p.stage) + ' · API 호출 ' + p.requests + '회');});
+        if(await this.app.host.isCurrent(scope)&&onboarding&&this.power?.mode==='setup')await require('./onboarding-ui.js').persist(this,'review',{jobId},scope);
+        this.notify(onboarding?'이런 내용은 어떠냥? 내용을 확인하고 가동해 주세요.':'초안 검증을 마쳤습니다. 원본 수치·현재값·가정을 검토하고 적용하세요.');
       } finally {
         this.busy = false;
         await this.refresh();
@@ -25280,17 +25537,19 @@ class UI {
     on('apply-job', async () => {
       this.capture();
       assert(!this.busy,'JOB_RUNNING','진행 중인 구축이 끝난 뒤 적용하세요.');
+      const scope=clone(this.info.scope),jobId=this.job.id,book=this.selectedRulebook(),onboarding=this.power?.mode==='setup';
       this.busy=true;
       this.render();
       try {
-        const anchor=await this.app.host.anchor(this.info.scope);
-        await this.app.compiler.apply(this.info.scope,this.job.id,{
-          bindingAcknowledged:true,agency:'inherit',anchor
+        await this.app.serialized(async()=>{
+          const anchor=await this.app.host.anchor(scope);
+          await this.app.compiler.apply(scope,jobId,{bindingAcknowledged:true,agency:'inherit',anchor});
+          await this.app.moduleBridge.save(scope,{rulebook:book});
+          if(onboarding)await require('./onboarding-ui.js').finish(this,scope);
         });
-        await this.app.moduleBridge.save(this.info.scope,{rulebook:this.selectedRulebook()});
         this.clearEditors();
         this.rulebookChoice=null;
-        this.notify('시스템을 적용했습니다.');
+        this.notify(onboarding?'뇨루 RPG 가동 완료냥! 이제 이야기를 시작해 주세요.':'시스템을 적용했습니다.');
       } finally {
         this.busy=false;
         await this.refresh();
@@ -25373,6 +25632,7 @@ class UI {
     const nickname=document.getElementById('erencha-nickname');if(nickname)this.erenchaNickname=nickname.value.trim();
     const roster = document.getElementById('roster');
     if (roster) this.rosterText = roster.value;
+    require('./onboarding-ui.js').capture(this);
 
   }
   prepareOptions() {
@@ -25388,7 +25648,7 @@ class UI {
     if(this.selectedRulebook()==='erencha')return {sourceIds:[...this.selected],roster,autoActors:false,pipeline:'erencha-v1',rulebookId:'erencha',userInstruction:this.rulebookPrompt(),buildMode:'on_demand',ruleBase:null,connection:clone(require('./ai-connections.js').select(this.app,'buildConnection').connection),budget:{maxInputChars:200000}};
     if(this.selectedRulebook()==='hunters')return {sourceIds:[...this.selected],roster,autoActors:false,pipeline:'hunters-v1',rulebookId:'hunters',userInstruction:this.rulebookPrompt(),buildMode:'on_demand',ruleBase:null,connection:clone(require('./ai-connections.js').select(this.app,'buildConnection').connection),budget:{maxInputChars:200000}};
     if(this.selectedRulebook()!=='common')return {sourceIds:[...this.selected],roster,autoActors:false,pipeline:'social-v1',rulebookId:this.selectedRulebook(),userInstruction:this.rulebookPrompt(),buildMode:'on_demand',ruleBase:null,connection:clone(require('./ai-connections.js').select(this.app,'buildConnection').connection),budget:{maxInputChars:200000}};
-    return {
+    const options={
       ruleBase: require('./rules-ui.js').find(this,this.ruleBaseChoice) || null,
       sourceIds: [...this.selected],
       roster,
@@ -25399,6 +25659,8 @@ class UI {
       budget: {maxInputChars: 200000},
       ...(require('./native-ui.js').active(this) || this.info?.state?.meta.rulebook?require('./native-ui.js').options(this):{})
     };
+    options.userInstruction=[options.userInstruction,this.rulebookPrompt()].filter(Boolean).join('\n\n');
+    return options;
   }
   download(name, data) {
     return require('./download.js').offer(this,name,JSON.stringify(data,null,2));
@@ -25413,8 +25675,15 @@ module.exports = {
 'use strict';
 // Public release notes. The build also publishes this as updates.json.
 module.exports={
-  latest:'0.23.2',
+  latest:'0.24.0',
   entries:[
+    {version:'0.24.0',date:'2026-10-02',title:'채팅별 전원과 처음 시작하는 안내',changes:[
+      '새 채팅은 OFF로 시작합니다. OFF와 준비 중에는 MCP 도구 목록·진행 지침·게임 상태를 메인 AI에 제공하지 않고 놓치지마 검사와 자동 게임 저장을 실행하지 않습니다.',
+      '시작 안내에서 백업 첨부 또는 새 구축을 선택합니다. 룰북, 추가 요청·에렌샤 닉네임·카드 테마, 로어북 자료, 시작 인물을 차례로 정하고 초안을 확인한 뒤 가동합니다.',
+      '처음에는 사용자 인물 한 명으로 준비하며 필요하면 추가 인물을 지정할 수 있습니다. 기존 구축 초안의 기술·효과 편집과 말로 수정 요청을 그대로 사용합니다.',
+      '시작 안내에서 다른 채팅의 게임 백업을 가져올 수 있습니다. 저장 수치와 편집 내용은 이어받고 원래 채팅과 과거 답변의 카드 연결은 옮기지 않습니다.',
+      '전체 창 위쪽 전원 버튼으로 채팅별로 끄고 다시 켭니다. 기존 게임은 ON으로 이어받으며, 꺼 둔 게임과 작성하던 초안을 삭제하지 않습니다. 다시 켜기 전 서술을 놓치지마 검사로 소급 반영하지 않습니다.'
+    ],note:'연결 모듈 v1과 기존 세이브를 그대로 사용합니다. 소스 수정·배포 생성 범위이며 별도 최종 검사·브라우저·실제 RisuAI·모델 호출은 하지 않았습니다. 호스트가 이미 보관한 도구 목록의 갱신 시점은 실사용 확인이 필요하며 OFF 상태의 호출은 실행 경로에서도 차단합니다.'},
     {version:'0.23.2',date:'2026-10-02',title:'호출 조건·장소 기록과 서술 지침 정리',changes:[
       '서술 분량·문체·공방 묘사 압축을 지시하던 공통 문구를 제거합니다. 전투가 길어는 기존 규칙으로 최대 6라운드(게이지는 최대 60회 행동)를 계산해 반환하며 실제 사용자 선택과 전투 종료를 따릅니다.',
       '필드·숲·사냥터·던전·유적·채집 구역의 실제 입장, 구역 이동, 조사, 조작·채집, 퇴장에 필요한 탐험 호출을 명시합니다. 활성 탐험이 없을 때도 입장 호출 안내를 상태에 제공합니다.',
@@ -25819,7 +26088,7 @@ module.exports = {
 },
 "./version.js":function(module,exports,require){
 'use strict';
-module.exports={VERSION:'0.23.2'};
+module.exports={VERSION:'0.24.0'};
 
 },
 "./vertex-auth.js":function(module,exports,require){
@@ -25926,5 +26195,5 @@ class VertexAuth {
 module.exports={account,importAccount,VertexAuth,MAX_FILE_SIZE};
 
 }};const __cache={};function require(id){if(__cache[id])return __cache[id].exports;if(!__modules[id])throw new Error("Unknown local module "+id);const m={exports:{}};__cache[id]=m;__modules[id](m,m.exports,require);return m.exports;}
-const {App}=require("./app.js"),{UI}=require("./ui.js");const app=new App(Risuai),ui=new UI(app,"/* NyoruRPG UI · refined draft. Palette unchanged; only layering, spacing and sizing tokens added. */\n#storage-manager .storage-toolbar{display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin:16px 0}\n#storage-manager .storage-toolbar>label{flex:1;min-width:180px}\n#storage-manager .storage-list{display:grid;gap:12px}\n#storage-manager .storage-row{padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--surface);display:grid;gap:10px;min-width:0}\n#storage-manager .storage-choice{display:flex;align-items:center;gap:12px;cursor:pointer;margin:0}\n#storage-manager .storage-choice>input{width:18px;height:18px;flex:none;margin:0}\n#storage-manager .storage-choice>span{display:grid;gap:3px;overflow-wrap:anywhere}\n#storage-manager .storage-choice>span>span,#storage-manager .storage-meta{color:var(--muted);font-size:12px}\n#storage-manager .storage-meta,#storage-manager .storage-row-actions{display:flex;gap:8px 16px;flex-wrap:wrap}\n#storage-manager .storage-danger{color:var(--danger);border-color:var(--danger-border);background:var(--danger-bg)}\n#storage-manager .storage-confirm{border:1px solid var(--danger-border);border-radius:12px;padding:16px;margin:16px 0;background:var(--danger-bg)}\n#storage-manager .storage-confirm ul{max-height:180px;overflow:auto;padding-left:24px}\n#storage-manager .storage-diagnostics{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:20px;padding-top:16px;border-top:1px solid var(--border)}\n@media(max-width:640px){#storage-manager .storage-toolbar>button,#storage-manager .storage-row-actions>button{flex:1 1 130px;white-space:normal;min-height:40px}#storage-manager .storage-diagnostics{align-items:stretch;flex-direction:column}}\n:root{\n  color-scheme:dark;font:14px/1.65 Inter,'Pretendard','Noto Sans KR',system-ui,'Malgun Gothic',sans-serif;\n  --bg:#252422;--sidebar:#211f1d;--surface:#302e2b;--panel:#34312e;--field:#282624;--inset:#292725;\n  --text:#fffcf2;--muted:#ccc5b9;--border:#554f48;--border-strong:#797168;\n  --button:#403d39;--hover:#504a43;--primary:#eb5e28;--primary-text:#252422;--primary-hover:#f47d51;\n  --accent:#ffb28e;--accent-bg:#49352d;--accent-border:#a77862;--focus:#f6b896;\n  --good:#bcd9bc;--good-bg:#293a2e;--good-border:#57705b;\n  --danger:#ffb6b2;--danger-bg:#4b2d2c;--danger-border:#ab6c66;--shadow:#0004;\n  --hl:#ffffff0a;--meter:linear-gradient(90deg,var(--primary),var(--accent));\n  --h-sm:30px;--h-md:36px;--side:244px;--ease:.15s ease;\n  --line:var(--border);background:var(--bg);color:var(--text)\n}\n:root[data-theme=\"light\"]{\n  color-scheme:light;--bg:#faf7ef;--sidebar:#f4eddf;--surface:#fffdf7;--panel:#fffaf0;--field:#fffdf8;--inset:#f5f0e6;\n  --text:#403d39;--muted:#71695f;--border:#d8cebf;--border-strong:#aca08f;\n  --button:#f3ecdf;--hover:#eadfcd;--primary:#f4bfbf;--primary-text:#403d39;--primary-hover:#f6b896;\n  --accent:#3b627d;--accent-bg:#e2edf2;--accent-border:#8caebf;--focus:#3b627d;\n  --good:#3e6249;--good-bg:#e6efdf;--good-border:#a3b795;\n  --danger:#9d3839;--danger-bg:#f9e5e1;--danger-border:#ce9890;--shadow:#403d391a;\n  --hl:#ffffffb3;--meter:linear-gradient(90deg,var(--accent-border),var(--accent))\n}\n*{box-sizing:border-box}body{margin:0;min-width:0;-webkit-font-smoothing:antialiased}button,input,textarea,select{font:inherit}\n\n/* Buttons: two fixed heights (sm/md) shared by every control. */\nbutton{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:var(--h-md);padding:5px 14px;border:1px solid var(--border);border-radius:8px;background:var(--button);color:var(--text);font-size:13px;font-weight:550;line-height:1.4;cursor:pointer;box-shadow:inset 0 1px 0 var(--hl);transition:background-color var(--ease),border-color var(--ease),color var(--ease)}\nbutton:hover:not(:disabled){background:var(--hover);border-color:var(--border-strong)}button:active:not(:disabled){transform:translateY(1px)}button:disabled{opacity:.42;cursor:default}\nbutton.primary{background:var(--primary);color:var(--primary-text);border-color:transparent;font-weight:700}button.primary:hover:not(:disabled){background:var(--primary-hover);border-color:transparent}\nbutton.subtle{background:transparent;box-shadow:none}\nbutton.danger,button.danger:hover:not(:disabled){color:var(--danger);border-color:var(--danger-border);background:var(--danger-bg)}\n.top-actions button,.panel-head>button,.play-card-head button,.play-list-row>button,.play-gear button,.fx-heading button,.fx-groups button,.fx-detail button,.source-preview-button,td button{min-height:var(--h-sm);padding:3px 11px;font-size:12px}\n:focus-visible{outline:2px solid var(--focus);outline-offset:2px}\n\n/* Fields */\ninput,textarea,select{width:100%;max-width:100%;min-width:0;padding:9px 12px;border:1px solid var(--border-strong);border-radius:8px;background:var(--field);color:var(--text);font-size:14px;font-weight:400;transition:border-color var(--ease),box-shadow var(--ease)}\ninput:hover,textarea:hover,select:hover{border-color:var(--accent-border)}\ninput:focus-visible,textarea:focus-visible,select:focus-visible{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}\ninput::placeholder,textarea::placeholder{color:var(--muted);opacity:1}\ninput[type=checkbox]{width:20px;height:20px;padding:0;accent-color:var(--accent);vertical-align:middle;flex-shrink:0}\ntextarea{min-height:110px;resize:vertical;line-height:1.7}\nlabel{display:block;font-size:12.5px;font-weight:550;color:var(--muted)}label input,label select,label textarea{margin-top:6px}label+label{margin-top:14px}.fields>label+label{margin-top:0}\n\n/* Type */\nh1,h2,h3,p{overflow-wrap:anywhere}h2{margin:0 0 16px;font-size:18px;line-height:1.45;font-weight:700;letter-spacing:-.2px}h3{margin:0 0 10px;font-size:15px;line-height:1.55;font-weight:650}p{margin:10px 0 16px}\n.muted,small{color:var(--muted)}small{font-size:12px}.spaced{margin-top:18px}.hidden,[hidden]{display:none!important}\n.panel>h2,h2:has(+.cards),.panel-head{display:flex;align-items:center;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--border)}\n.panel>h2::before,h2:has(+.cards)::before,.panel-head>h2::before{content:'';flex-shrink:0;width:3px;height:1.05em;border-radius:2px;background:var(--accent)}\n.panel-head{justify-content:space-between;margin:0 0 16px}.panel-head>h2{display:flex;align-items:center;gap:10px;min-width:0;margin:0}.panel-head>button{flex-shrink:0}\n.cards+h2{margin-top:8px}\n\n/* Shell */\n.shell{display:grid;grid-template-columns:var(--side) minmax(0,1fr);height:100vh;height:100dvh;overflow:hidden}\n.sidebar{position:sticky;top:0;display:flex;flex-direction:column;gap:20px;height:100vh;height:100dvh;min-width:0;padding:22px 12px 16px;background:var(--sidebar);border-right:1px solid var(--border)}\n.sidebar-brand{padding:0 8px}.brand{display:flex;align-items:center;gap:10px}\n.brand-mark{display:grid;place-items:center;flex-shrink:0;width:32px;height:32px;border:1px solid var(--accent-border);border-radius:9px;background:var(--accent-bg);color:var(--accent);font-size:16px;line-height:1}\n.brand h1{margin:0;font-size:18px;line-height:1.3;font-weight:750;letter-spacing:-.4px}\n.nav{display:flex;flex-direction:column;gap:14px;min-height:0;overflow-y:auto;scrollbar-width:thin}.nav-group{display:grid;gap:2px}\n.nav-label{padding:0 12px 4px;color:var(--muted);font-size:10.5px;font-weight:650;letter-spacing:.08em;opacity:.8}\n.nav button{position:relative;justify-content:flex-start;width:100%;min-height:38px;padding:0 12px;border:0;background:transparent;box-shadow:none;color:var(--muted);font-size:13.5px;font-weight:500;text-align:left}\n.nav button:hover{background:var(--button);color:var(--text)}\n.nav button.selected{background:var(--accent-bg);color:var(--accent);font-weight:650}\n.nav button.selected::before{content:'';position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:var(--accent)}\n.theme-picker{display:flex;gap:3px;margin-top:auto;padding:3px;border:1px solid var(--border);border-radius:10px;background:var(--field)}\n.theme-picker button{flex:1;min-height:30px;padding:0 6px;border:0;background:transparent;box-shadow:none;color:var(--muted);font-size:12px;white-space:nowrap}\n.theme-picker button[aria-pressed=\"true\"]{background:var(--button);color:var(--text);box-shadow:0 1px 3px var(--shadow),inset 0 1px 0 var(--hl)}\n.content{width:100%;height:100%;min-width:0;min-height:0;max-width:1450px;margin:0 auto;padding:0 32px 90px;overflow-y:auto}\n.top{position:sticky;top:0;z-index:30;display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:24px;padding:22px 0 16px;background:var(--bg);border-bottom:1px solid var(--border)}\n.context-block{flex:1;min-width:0}.chat-context{margin:0 0 8px;font-size:22px;line-height:1.35;font-weight:750;letter-spacing:-.5px}\n.context-status{display:flex;flex-wrap:wrap;align-items:center;gap:6px;color:var(--muted);font-size:12px}\n.context-status span{display:inline-flex;align-items:center;min-height:22px;padding:0 9px;border:1px solid var(--border);border-radius:99px;background:var(--inset)}\n.context-status span:first-child{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent)}\n.top-actions{flex-shrink:0}.row,.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.toolbar{margin-bottom:14px}.row>*{min-width:0}\n\n/* Surfaces */\n.panel{min-width:0;margin:0 0 18px;padding:22px 24px;background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:inset 0 1px 0 var(--hl),0 1px 2px var(--shadow)}\n.card{min-width:0;padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:12px;transition:border-color var(--ease)}.card:hover{border-color:var(--border-strong)}.card+.card{margin-top:12px}\n.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-bottom:22px}.cards>.card{margin:0}\n.grid,.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 18px}.wide{grid-column:1/-1}.split{display:grid;grid-template-columns:1.15fr 1fr;gap:20px;align-items:start}.split>.panel{min-width:0}\n.badge,.tag{display:inline-flex;align-items:center;min-height:22px;padding:0 9px;border:1px solid var(--border-strong);border-radius:99px;background:var(--inset);color:var(--muted);font-size:11px;font-weight:600;line-height:1.4;white-space:nowrap}.badge{font-size:12px}\n.number,.stat strong,td{font-variant-numeric:tabular-nums}\n.stat{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-top:12px;font-size:13px}.stat span{color:var(--muted)}.stat strong,.stat b{font-weight:650}\n.bar,.play-meter{height:7px;margin:7px 0 14px;overflow:hidden;border-radius:99px;background:var(--inset);box-shadow:inset 0 0 0 1px var(--border)}.bar span,.play-meter>span{display:block;height:100%;border-radius:inherit;background:var(--meter)}\n.metric{margin:5px 0;color:var(--accent);font-size:28px;line-height:1.2;font-weight:700}\n.notice{margin:0 0 18px;padding:13px 16px;border:1px solid var(--accent-border);border-left-width:3px;border-radius:10px;background:var(--accent-bg);line-height:1.7;overflow-wrap:anywhere}\n.success{border-color:var(--good-border);background:var(--good-bg);color:var(--good)}.error{border-color:var(--danger-border);background:var(--danger-bg);color:var(--danger)}\n#feedback{position:fixed;right:24px;bottom:20px;z-index:80;width:max-content;max-width:min(670px,calc(100vw - 32px));max-height:32vh;margin:0;padding:12px 18px;overflow:auto;box-shadow:0 8px 28px var(--shadow);white-space:pre-wrap}#feedback:empty{display:none}\n.empty{margin-bottom:18px;padding:56px 24px;border:1px dashed var(--border-strong);border-radius:14px;background:transparent;box-shadow:none;color:var(--muted);text-align:center}\n.empty::before{content:'◈';display:block;margin-bottom:10px;color:var(--accent-border);font-size:22px;line-height:1}\ndetails>summary{padding:7px 0;color:var(--text);font-weight:550;line-height:1.7;cursor:pointer}summary::marker{color:var(--accent)}details[open]>summary{margin-bottom:10px}\n.panel details.spaced{padding-top:8px;border-top:1px solid var(--border)}\npre{max-height:420px;padding:14px 16px;overflow:auto;border:1px solid var(--border);border-radius:10px;background:var(--inset);white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,Consolas,monospace}\n.scroll{max-width:100%;overflow:auto;border:1px solid var(--border);border-radius:10px;scrollbar-width:thin}table{width:100%;border-collapse:collapse;font-size:13px}\nth,td{padding:11px 12px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:var(--inset);color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap}tbody tr:last-child>td{border-bottom:0}tbody tr:hover{background:var(--inset)}\nol>li.selected{color:var(--accent);font-weight:650}\n\n/* Setup & sources */\n.sourcelist{max-height:520px;margin:0 0 14px;overflow:auto;border:1px solid var(--border);border-radius:10px;background:var(--surface);scrollbar-width:thin}.source{position:relative;border-bottom:1px solid var(--border)}.source:last-child{border-bottom:0}\n.source input[type=checkbox]{position:absolute;left:12px;top:13px;z-index:1;width:26px;height:26px;margin:0;cursor:pointer}.source details{min-width:0}\n.source summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:54px;margin:0;padding:12px 12px 12px 50px;list-style:none;font-weight:400;overflow-wrap:anywhere}\n.source summary::-webkit-details-marker{display:none}.source summary:hover{background:var(--inset)}.source summary:focus-visible{outline-offset:-3px}.source-name{min-width:0;color:var(--text);font-size:13px}.source-hint{flex-shrink:0;color:var(--muted);font-size:12px}.source-hint:before{content:'▸ ';color:var(--accent)}.source details[open] .source-hint:before{content:'▾ '}.source pre{max-height:260px;margin:0 12px 14px 50px}\n.source-choice{display:flex;align-items:center;gap:12px;min-height:54px;padding:12px 12px 12px 50px;cursor:pointer}.source-choice .source-name{flex:1}.source-choice:has(input:checked){background:var(--accent-bg)}\n.choice,.partial-catalog{display:flex;align-items:flex-start;gap:10px}.choice{padding:10px 0;color:var(--text);font-weight:400;font-size:13px;cursor:pointer;overflow-wrap:anywhere}.choice input[type=checkbox],.partial-catalog input[type=checkbox]{width:22px;height:22px;margin:0}\n.draft-editor{margin-bottom:18px;padding:16px;border:1px solid var(--border);border-radius:10px}.draft-editor>summary{font-weight:650}.draft-json{min-height:360px;tab-size:2;white-space:pre;overflow:auto;font:12px/1.65 ui-monospace,Consolas,monospace}.design-brief{min-height:260px;line-height:1.8}.draft-error{overflow-wrap:anywhere}.draft-error pre{white-space:pre-wrap}.draft-error p{margin:8px 0}\n.initial-actors{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;max-height:320px;padding:12px;overflow:auto;border:1px solid var(--border);border-radius:10px}.initial-actors legend{padding:0 6px;color:var(--muted)}\n.initial-actors label{display:flex;align-items:flex-start;gap:10px;margin:0;padding:10px;border-radius:8px;background:var(--inset);color:var(--text);font-weight:400;cursor:pointer}.initial-actors input[type=checkbox]{width:22px;height:22px;margin:0}.initial-actors span{min-width:0;overflow-wrap:anywhere}.initial-actors small{display:block;font-size:11px}\n.issue-choice{margin:14px 0;padding:16px;border:1px solid var(--accent-border);border-radius:10px;background:var(--accent-bg);overflow-wrap:anywhere}.issue-choice p{margin:8px 0}.issue-choice small{display:block;margin-top:8px}\n\n/* Editors */\n.item-editor-row>td{padding:12px 0 20px}.item-editor{padding:18px;border:1px solid var(--accent-border);border-radius:12px;background:var(--surface)}.item-editor-body{min-width:0;margin:0;padding:0;border:0}.item-editor-body>legend{margin-bottom:18px;padding:0;font-size:16px;font-weight:650}\n.item-editor h4{margin:20px 0 12px;font-size:14px}.item-editor textarea{min-height:80px}.item-editor-actions{margin-top:22px}.item-editor .fields+.fields{margin-top:16px}\n.item-slots{display:flex;flex-wrap:wrap;gap:12px 18px;margin:22px 0 0;padding:14px;border:1px solid var(--border);border-radius:10px}.item-slots legend{padding:0 6px;color:var(--muted)}.item-slots label{display:flex;align-items:center;gap:8px;margin:0;color:var(--text);font-weight:400;cursor:pointer}.item-slots input{margin:0}\n.item-effect{min-width:0;margin:0 0 12px;padding:12px;border:1px solid var(--border);border-radius:10px}.item-effect legend{padding:0 6px;color:var(--muted)}.item-effect-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px}.item-effect-fields>label+label{margin-top:0}.item-effect-footer{justify-content:flex-end;margin-top:12px}.item-effect-footer small{margin-right:auto}.item-ammo>.fields{margin:14px 0}\n.editor-workspace{max-width:960px;margin:18px auto;scroll-margin-top:145px}.editor-workspace .item-editor-body>legend{margin-bottom:4px}.editor-brief{margin:0 0 18px;color:var(--muted);font-size:12px}\n.editor-tabs{display:flex;flex-wrap:wrap;gap:3px;margin:0 0 18px;padding:3px;border:1px solid var(--border);border-radius:10px;background:var(--inset)}\n.editor-tabs button{min-height:32px;padding:0 14px;border-color:transparent;background:transparent;box-shadow:none;color:var(--muted)}\n.editor-tabs button[aria-selected=\"true\"]{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent);font-weight:650}\n.editor-page{min-height:190px}.editor-page>section+section{margin-top:18px;padding-top:14px;border-top:1px solid var(--border)}.editor-page .fields{gap:12px 18px}.editor-page .fields+.fields{margin-top:14px}.editor-page section>h4:first-child{margin-top:0}\n.editor-workspace .item-editor-actions{position:sticky;bottom:0;z-index:4;margin-top:20px;padding:14px 0 4px;border-top:1px solid var(--border);background:var(--surface)}.editor-delete{margin-left:auto;color:var(--muted)}\n.fx-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0 10px}.fx-heading h4{margin:0;font-size:14px}.fx-heading h4 small{margin-left:5px;font-weight:400}\n.fx-targets{padding-bottom:10px;border-bottom:1px solid var(--border)}.fx-targets>summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;font-weight:650}.fx-targets>summary:before{content:'▸';color:var(--muted)}.fx-targets[open]>summary:before{content:'▾'}.fx-targets>summary span{color:var(--muted);font-size:12px;font-weight:400}\n.fx-targets .fx-chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.fx-chips .choice{align-items:center;gap:7px;margin:0;padding:5px 11px;border:1px solid var(--border);border-radius:99px;background:var(--field)}.fx-chips .choice:has(input:checked){border-color:var(--accent-border);background:var(--accent-bg)}.fx-chips input[type=checkbox]{width:18px;height:18px}.fx-activation{max-width:330px;margin:12px 0}.fx-targets .choice{align-items:center}\n.fx-list{display:grid;gap:8px}.fx-entry{min-width:0;overflow:hidden;border:1px solid var(--border);border-radius:10px;background:var(--field)}.fx-entry.is-open{border-color:var(--accent-border)}\n.fx-summary{justify-content:space-between;gap:14px;width:100%;min-height:0;padding:12px 14px;border:0;border-radius:0;background:transparent;box-shadow:none;text-align:left;font-weight:400}.fx-summary>span:first-child{min-width:0}.fx-summary strong{display:block;font-size:14px}.fx-summary small{display:block;margin-top:2px;line-height:1.7;overflow-wrap:anywhere}.fx-summary .fx-edit-label{flex-shrink:0;color:var(--accent);font-size:12px;white-space:nowrap}.fx-entry.is-open>.fx-summary{background:var(--accent-bg)}\n.fx-detail{padding:16px;border-top:1px solid var(--border)}.fx-detail .item-effect{margin:0;padding:0;border:0}.fx-detail .item-effect>legend{display:none}.fx-detail .item-effect-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 18px}\n.fx-detail button[data-skill-effect-remove],.fx-detail button[data-item-effect-remove],.fx-detail button[data-erencha-effect-remove],.fx-detail button[data-fx-remove]{margin-top:14px;color:var(--muted)}\n.fx-advanced{margin:14px 0 10px;padding-top:6px;border-top:1px solid var(--border)}.fx-advanced>summary,.fx-save-preset>summary{color:var(--muted);font-size:12px}.fx-empty{margin:0;padding:22px 12px;border:1px dashed var(--border);border-radius:10px;color:var(--muted);font-size:13px;text-align:center}\n.fx-save-preset{margin-top:14px}.fx-save-preset .toolbar{align-items:flex-end}.fx-save-preset label{flex:1;max-width:420px}\n.fx-library{margin:10px 0 16px;padding:14px;border:1px solid var(--accent-border);border-radius:10px;background:var(--surface)}.fx-library>.fx-heading{margin:0 0 8px}.fx-library .fx-search{font-size:12px}.fx-library p{margin:12px 0 0;font-size:12px}\n.fx-groups{display:flex;flex-wrap:wrap;gap:5px;margin:12px 0}.fx-groups button{border-radius:99px;background:transparent;box-shadow:none}.fx-groups button[aria-pressed=\"true\"]{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent)}\n.fx-library-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;max-height:290px;overflow-y:auto;scrollbar-width:thin}\n.fx-pick{display:block;min-height:0;padding:10px 12px;background:var(--field);text-align:left;font-weight:400}.fx-pick strong{font-size:13px}.fx-pick small{display:-webkit-box;margin-top:4px;overflow:hidden;font-size:11px;line-height:1.6;-webkit-line-clamp:2;-webkit-box-orient:vertical}\nfooter{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);color:var(--muted);font-size:11px;letter-spacing:.04em}\n\n/* Play pages */\n.play-name{margin:22px 0 16px;font-size:22px;letter-spacing:-.4px}\n.play-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:16px 0}\n.play-facts>div{min-width:0;padding:10px 14px;border:1px solid var(--border);border-radius:10px;background:var(--inset)}\n.play-facts dt{margin-bottom:2px;color:var(--muted);font-size:11.5px}.play-facts dd{margin:0;font-size:18px;font-weight:650;line-height:1.4;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}\n.play-wallet dd{color:var(--accent);font-size:22px}\n.play-traits{margin:18px 0}.play-traits-three{grid-template-columns:repeat(3,minmax(0,1fr))}.play-traits-three>div:nth-child(2){text-align:center}.play-traits-three>div:nth-child(3){text-align:right}\n.play-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:20px 0}\n.play-stat{position:relative;display:flex;flex-direction:column;gap:4px;min-width:0;padding:16px 18px;overflow:hidden;border:1px solid var(--border);border-radius:12px;background:var(--surface);transition:border-color var(--ease)}\n.play-stat::before{content:'';position:absolute;inset:0 0 auto;height:2px;background:var(--meter);opacity:.75}.play-stat:hover{border-color:var(--border-strong)}\n.play-stat>span{color:var(--muted);font-size:12.5px}.play-stat>strong{font-size:28px;line-height:1.25;font-weight:700;font-variant-numeric:tabular-nums}.play-stat>small{line-height:1.6}.play-growth{margin-top:auto;padding-top:10px}.play-growth .play-meter{margin-bottom:0}\n.play-relations{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px}\n.play-relation{padding:18px;border:1px solid var(--border);border-radius:12px;background:var(--surface)}.play-relation h3{margin:0 0 14px}.play-relation .play-facts{margin:0}.play-relation .play-facts dd{font-size:22px}\nbutton.play-person-link{min-height:0;padding:0;border:0;background:none;box-shadow:none;color:var(--text);font-size:16px;font-weight:650;text-align:left}\nbutton.play-person-link:hover:not(:disabled){background:none;color:var(--accent);text-decoration:underline;text-underline-offset:4px}\n.play-card-head,.play-list-row{display:flex;align-items:center;justify-content:space-between;gap:14px}.play-card-head>*,.play-list-row>*{min-width:0}.play-card-head h3{margin:0}\n.play-card-head>button,.play-card-head>.tag,.play-card-head>.row{flex-shrink:0}.play-card-head .row{justify-content:flex-end;gap:6px}\n.play-list-row{padding:14px 0;border-bottom:1px solid var(--border)}.play-list-row:last-child{border-bottom:0}.play-list-row small{display:block;margin-top:4px}.play-list-row>button,.play-list-row>.tag{flex-shrink:0}\n.play-stakes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.play-stakes p{margin:0;padding:14px 16px;border:1px solid var(--border);border-radius:10px;background:var(--inset)}.play-stakes small{display:block;margin-bottom:6px}\n.play-skills,.play-items{display:grid;gap:12px}\n.play-skill,.play-item{min-width:0;padding:18px;border:1px solid var(--border);border-radius:12px;background:var(--surface);transition:border-color var(--ease)}.play-skill:hover,.play-item:hover{border-color:var(--border-strong)}\n.play-skill h3 small{font-weight:400}.play-skill .play-facts dd{font-size:14px}.play-skill-growth{padding-top:12px;border-top:1px solid var(--border);color:var(--muted);font-size:12px}\n.play-item>p:last-child{margin-bottom:0}.play-item .item-editor{margin-top:18px}.play-inline-editor{min-width:0}.play-inline-editor .item-editor{border-color:var(--accent-border)}\n.play-equipment{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}\n.play-gear{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:14px;row-gap:2px;padding:14px 16px;border:1px solid var(--border);border-left:3px solid var(--accent-border);border-radius:10px;background:var(--surface)}\n.play-gear small,.play-gear b{grid-column:1;overflow-wrap:anywhere}.play-gear button{grid-column:2;grid-row:1/3}\n.play-turns{display:flex;flex-wrap:wrap;gap:8px;margin:0;padding:0;list-style:none}.play-turns li{display:flex;align-items:center;gap:12px;min-width:150px;padding:12px 16px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}\n.play-turns li[aria-current=\"step\"]{border-color:var(--accent-border);background:var(--accent-bg)}.play-turns small{display:block}.play-turn-number{color:var(--accent);font-size:20px;font-weight:700}.play-budget{margin-bottom:0;font-size:12px}\n.play-paths{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.play-paths>div{padding:13px 14px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}.play-paths small{display:block;margin-top:3px}\n[data-scheme-card]{scroll-margin-top:130px}\n\n/* Mini window & dialogs */\n.mini-shell{max-width:640px;height:100vh;height:100dvh;margin:auto;padding:12px 16px 40px;overflow-y:auto}.mini-shell .top{top:0}.mini-shell .panel{margin-bottom:12px;padding:14px}.mini-shell .play-facts{gap:6px}.mini-shell .play-facts dd{font-size:15px}.mini-shell details{padding:8px 0;border-bottom:1px solid var(--border)}\n.download-dialog{max-width:calc(100vw - 24px);padding:22px 24px;border:1px solid var(--border);border-radius:14px;background:var(--surface);color:var(--text);box-shadow:0 12px 40px var(--shadow)}.download-dialog::backdrop{background:#0008}\n.download-link{display:inline-flex;align-items:center;min-height:var(--h-md);padding:5px 14px;border-radius:8px;background:var(--primary);color:var(--primary-text);font-size:13px;font-weight:700;text-decoration:none}\n/* Release information lives in the plugin window, outside game state and prompts. */\n.update-link{flex-wrap:wrap;gap:8px;font-size:12px}.update-link>span:first-child{color:var(--accent)}\n.update-link .tag{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent)}\n.update-notice{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:18px;padding:14px 16px;border:1px solid var(--accent-border);border-radius:12px;background:var(--accent-bg)}\n.update-notice>div{flex:1;min-width:180px}.update-notice small{display:block;margin-top:3px;color:var(--muted)}\n.update-dialog{width:min(660px,calc(100vw - 24px));max-width:calc(100vw - 24px);max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);margin:auto;padding:0;border:1px solid var(--border-strong);border-radius:16px;background:var(--panel);color:var(--text);box-shadow:0 18px 60px var(--shadow);overflow:hidden}\n.update-dialog[open]{display:flex;flex-direction:column}.update-dialog::backdrop{background:#0009}\n.update-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-shrink:0;padding:20px 22px 16px;border-bottom:1px solid var(--border)}\n.update-dialog-head h2{margin:5px 0 0;font-size:21px}.update-dialog-head small{color:var(--muted)}\n.update-dialog-body{display:flex;flex-direction:column;min-height:0;padding:16px 22px;overflow:auto;overscroll-behavior:contain}\n.update-status{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}.update-status p{flex:1;min-width:160px;margin:0;font-size:13px}.update-status button{flex-shrink:0}\n.update-dialog-body>.notice{margin:12px 0 0;font-size:13px}.update-log{flex-shrink:0;margin-top:18px}\n.update-entry{padding:12px 0;border-top:1px solid var(--border)}.update-entry summary{display:flex;align-items:baseline;justify-content:space-between;gap:12px;list-style:none}.update-entry summary::-webkit-details-marker{display:none}.update-entry summary>span::before{content:'▸';display:inline-block;width:18px;color:var(--accent)}.update-entry[open] summary>span::before{content:'▾'}\n.update-entry summary small{flex-shrink:0;color:var(--muted);font-size:11px}.update-entry ul{margin:8px 0 12px;padding-left:22px;font-size:13px;line-height:1.8}.update-entry li+li{margin-top:6px}.update-entry-note{margin:8px 0 0;padding:12px;border-radius:9px;background:var(--accent-bg);font-size:12px;line-height:1.75}\n.update-dialog-foot{display:flex;flex-direction:column;gap:8px;flex-shrink:0;margin:0;padding:14px 22px calc(16px + env(safe-area-inset-bottom));border-top:1px solid var(--border);background:var(--surface);text-align:left}\n.update-auto{display:flex;align-items:center;gap:8px;margin:0;font-size:13px}.update-auto input{flex-shrink:0;margin:0}.update-dialog-foot>button{align-self:flex-end;min-width:116px}.update-dialog-foot>small{font-size:11px}.update-dialog-foot>p{margin:0;font-size:12px}\n@media(max-width:600px){.update-dialog-head,.update-dialog-body,.update-dialog-foot{padding-left:16px;padding-right:16px}.update-entry summary{align-items:flex-start;flex-direction:column;gap:3px}.update-entry summary small{padding-left:18px}.update-dialog-foot>button{width:100%}}\nbody.editing .page-body{padding-bottom:calc(var(--editor-actions-height,90px) + 24px)}body.editing #feedback{bottom:calc(var(--editor-actions-height,90px) + 12px);max-height:25vh}\nbody.editing .item-editor-actions{position:fixed;bottom:0;left:var(--side);right:0;z-index:65;margin:0;padding:12px 24px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--border);background:var(--surface);box-shadow:0 -4px 18px var(--shadow)}\n\n@media(max-width:1150px){.split{grid-template-columns:minmax(0,1fr)}}\n@media(max-width:900px){\n  /* max-content rows: auto rows let the overflow-x nav collapse to 0 (original mobile bug). */\n  .shell{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:max-content max-content max-content 1fr;align-content:start;overflow-x:hidden;overflow-y:auto}\n  .sidebar,.content{display:contents}\n  .sidebar-brand{grid-column:1;grid-row:1;display:flex;align-items:center;padding:10px 14px;background:var(--sidebar)}.brand-mark{width:28px;height:28px;border-radius:8px;font-size:14px}.brand h1{font-size:16px}\n  .theme-picker{grid-column:2;grid-row:1;align-items:center;gap:0;margin:0;padding:0 14px 0 0;border:0;border-radius:0;background:var(--sidebar)}\n  .theme-picker button{flex:none;width:34px;min-height:30px;padding:0;border:1px solid var(--border);border-radius:0;background:var(--field);font-size:0}\n  .theme-picker button:first-child{border-radius:8px 0 0 8px}.theme-picker button:last-child{border-left:0;border-radius:0 8px 8px 0}.theme-picker button span{font-size:14px}.theme-picker button[aria-pressed=\"true\"]{background:var(--button)}\n  /* One scrollable tab strip; group labels stay visible and the right edge fades until the end. */\n  .nav{grid-column:1/-1;grid-row:2;position:sticky;top:0;z-index:50;flex-direction:row;align-items:center;gap:0;padding:6px 12px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--sidebar);border-bottom:1px solid var(--border);-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 36px),#0000);mask-image:linear-gradient(90deg,#000 calc(100% - 36px),#0000)}\n  .nav::-webkit-scrollbar{display:none}.nav[data-end=\"true\"]{-webkit-mask-image:none;mask-image:none}\n  .nav-group{display:flex;flex-shrink:0;align-items:center;gap:2px}.nav-group+.nav-group{margin-left:8px;padding-left:10px;border-left:1px solid var(--border)}\n  .nav-label{display:none}\n  .nav button{flex-shrink:0;width:auto;min-height:34px;padding:0 11px;white-space:nowrap}\n  .nav button.selected::before{top:auto;bottom:3px;left:11px;right:11px;width:auto;height:2px;border-radius:2px}\n  .top{grid-column:1/-1;grid-row:3;top:var(--mobile-nav-height,47px);z-index:45;flex-wrap:nowrap;gap:10px;margin:0;padding:10px 14px}\n  .chat-context{margin:0 0 4px;font-size:18px}.context-status{gap:4px;font-size:11px}.context-status span{min-height:20px;padding:0 7px}.top-actions{gap:5px}\n  .page-body{grid-column:1/-1;grid-row:4;min-width:0;padding:16px 12px 60px}\n  .cards{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}\n  body.editing .item-editor-actions{left:0;padding-left:12px;padding-right:12px}.editor-workspace{scroll-margin-top:155px}\n}\n@media(max-width:600px){\n  :root{--h-md:40px}\n  .chat-context{font-size:17px}\n  .grid,.fields,.cards,.play-relations,.play-equipment,.play-stakes{grid-template-columns:minmax(0,1fr)}.wide{grid-column:auto}\n  .panel{padding:16px;border-radius:12px}.card,.play-stat,.play-relation,.play-skill,.play-item{padding:15px}\n  .play-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.play-facts{grid-template-columns:repeat(auto-fit,minmax(100px,1fr))}.play-traits-three{gap:8px}.play-traits-three dd{font-size:16px}\n  .play-card-head{flex-wrap:wrap}.play-card-head>.row{margin-left:auto}.play-list-row{flex-wrap:wrap}.play-turns li{flex:1}\n  .toolbar button{flex:1 1 120px}.source summary{gap:8px}.source pre{margin-left:12px}.source-hint{font-size:11px}\n  th,td{padding:10px 8px}.scroll table{min-width:440px}#feedback{right:12px;bottom:12px;max-width:calc(100vw - 24px);padding:12px 15px}\n  .editor-workspace{margin:12px 0;padding:14px}.editor-tabs button{padding:0 10px;font-size:12px}.editor-workspace .item-editor-actions{gap:6px}\n  .fx-detail{padding:12px}.fx-detail .item-effect-fields,.editor-workspace .fields,.fx-library-grid{grid-template-columns:1fr}.fx-targets>summary span{flex-basis:100%;padding-left:22px}.fx-summary{padding:11px}\n}\n@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}\n\n/* In-plugin assistant, using the same palette and editor workflow. */\n.nyunyu-chat{max-width:960px}.nyunyu-messages{display:flex;flex-direction:column;gap:12px;margin:20px 0}.nyunyu-message{max-width:94%;padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:var(--inset)}.nyunyu-message.user{align-self:flex-end;background:var(--accent-bg);border-color:var(--accent-border)}.nyunyu-message.assistant{align-self:flex-start}.nyunyu-text{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:6px}.nyunyu-message button{white-space:normal;text-align:left}\n/* Card theme previews share the chat renderer; no iframe or simulated play. */\n.card-theme-preview { margin: 18px 0 8px; max-width: 760px; container-type: inline-size; }\n.chat-presentation > label { max-width: 360px; }\n.chat-presentation details > label { margin-top: 14px; }\n\n/* Logical action gauge; shared full and mini board. */\n\n.urpgdice-gauge{box-sizing:border-box;padding:18px 20px;border:1px solid currentColor;border-radius:14px;margin:12px 0;color:inherit;background:transparent;text-align:left;max-width:100%;overflow:hidden}\n.urpgdice-gauge>p{font-size:.85em;line-height:1.5;opacity:.8;margin:8px 0 14px}\n.urpgdice-gauge-row{display:grid;grid-template-columns:minmax(0,1fr);gap:6px;padding:10px 0;border-top:1px solid color-mix(in srgb,currentColor 18%,transparent)}\n.urpgdice-gauge-row strong{overflow-wrap:anywhere;font-size:.96em}.urpgdice-gauge-row[aria-current=step]{border-left:3px solid currentColor;padding-left:10px}\n.urpgdice-gauge-row progress{display:block;width:100%;height:9px;accent-color:var(--accent,currentColor)}\n.urpgdice-gauge-row small{font-size:.8em;line-height:1.5;opacity:.8}\n");try{await app.install(ui);}catch(error){await app.dispose();document.body.textContent="NyoruRPG 초기화 실패: "+(error.code?error.message:"호스트 기능·권한을 확인하세요.");try{await Risuai.showContainer("fullscreen");}catch{}}
+const {App}=require("./app.js"),{UI}=require("./ui.js");const app=new App(Risuai),ui=new UI(app,"/* NyoruRPG UI · refined draft. Palette unchanged; only layering, spacing and sizing tokens added. */\n.onboarding{max-width:940px;margin:0 auto;min-width:0}\n.onboarding>.panel{padding:clamp(20px,3vw,38px)}\n.onboarding-greeting{margin:0 0 26px}\n.onboarding-greeting h2{margin:10px 0 12px;font-size:clamp(21px,3vw,28px);line-height:1.5;border:0;padding:0}\n.onboarding-greeting p{max-width:680px;margin:0;line-height:1.8}\n.onboarding-cat{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:14px;background:var(--accent-bg);color:var(--accent);font-size:26px}\n.onboarding-progress{display:flex;justify-content:space-between;gap:12px;padding:0 4px 14px;color:var(--muted);font-size:13px}\n.onboarding-actions{display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap;margin-top:28px;padding-top:20px;border-top:1px solid var(--border)}\n.onboarding-actions>button{min-height:44px;padding:10px 20px}\n.onboarding-books{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}\n.onboarding-books .onboarding-book{display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:8px;min-height:120px;padding:20px;text-align:left;white-space:normal;border:1px solid var(--border);background:var(--field);box-shadow:none}\n.onboarding-book b{font-size:16px}.onboarding-book span{font-size:13px;line-height:1.7;color:var(--muted)}\n.onboarding-books .onboarding-book.selected{border-color:var(--accent-border);background:var(--accent-bg);box-shadow:inset 0 0 0 1px var(--accent-border)}\n.onboarding-file{padding:20px;border:1px dashed var(--border-strong);border-radius:12px;margin-bottom:24px;background:var(--field)}\n.onboarding-file input{margin-top:12px;max-width:100%}\n.onboarding-summary{padding:18px;background:var(--inset);border:1px solid var(--border);border-radius:12px;margin-bottom:20px;overflow-wrap:anywhere}\n.onboarding .chat-presentation{margin-top:24px;box-shadow:none}\n.onboarding .sourcelist{max-height:min(52vh,520px)}\n.top-actions .power-switch{white-space:nowrap;min-width:78px;min-height:36px}\n.power-switch[aria-checked=\"true\"]{background:var(--good-bg);border-color:var(--good-border);color:var(--good)}\n@media(max-width:600px){.onboarding-books{grid-template-columns:1fr}.onboarding-books .onboarding-book{min-height:92px;padding:16px}.onboarding-actions>button{flex:1}.onboarding-progress{font-size:12px}.top .top-actions{flex-wrap:wrap;gap:6px}.top-actions .power-switch{min-width:65px}}\n#storage-manager .storage-toolbar{display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin:16px 0}\n#storage-manager .storage-toolbar>label{flex:1;min-width:180px}\n#storage-manager .storage-list{display:grid;gap:12px}\n#storage-manager .storage-row{padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--surface);display:grid;gap:10px;min-width:0}\n#storage-manager .storage-choice{display:flex;align-items:center;gap:12px;cursor:pointer;margin:0}\n#storage-manager .storage-choice>input{width:18px;height:18px;flex:none;margin:0}\n#storage-manager .storage-choice>span{display:grid;gap:3px;overflow-wrap:anywhere}\n#storage-manager .storage-choice>span>span,#storage-manager .storage-meta{color:var(--muted);font-size:12px}\n#storage-manager .storage-meta,#storage-manager .storage-row-actions{display:flex;gap:8px 16px;flex-wrap:wrap}\n#storage-manager .storage-danger{color:var(--danger);border-color:var(--danger-border);background:var(--danger-bg)}\n#storage-manager .storage-confirm{border:1px solid var(--danger-border);border-radius:12px;padding:16px;margin:16px 0;background:var(--danger-bg)}\n#storage-manager .storage-confirm ul{max-height:180px;overflow:auto;padding-left:24px}\n#storage-manager .storage-diagnostics{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:20px;padding-top:16px;border-top:1px solid var(--border)}\n@media(max-width:640px){#storage-manager .storage-toolbar>button,#storage-manager .storage-row-actions>button{flex:1 1 130px;white-space:normal;min-height:40px}#storage-manager .storage-diagnostics{align-items:stretch;flex-direction:column}}\n:root{\n  color-scheme:dark;font:14px/1.65 Inter,'Pretendard','Noto Sans KR',system-ui,'Malgun Gothic',sans-serif;\n  --bg:#252422;--sidebar:#211f1d;--surface:#302e2b;--panel:#34312e;--field:#282624;--inset:#292725;\n  --text:#fffcf2;--muted:#ccc5b9;--border:#554f48;--border-strong:#797168;\n  --button:#403d39;--hover:#504a43;--primary:#eb5e28;--primary-text:#252422;--primary-hover:#f47d51;\n  --accent:#ffb28e;--accent-bg:#49352d;--accent-border:#a77862;--focus:#f6b896;\n  --good:#bcd9bc;--good-bg:#293a2e;--good-border:#57705b;\n  --danger:#ffb6b2;--danger-bg:#4b2d2c;--danger-border:#ab6c66;--shadow:#0004;\n  --hl:#ffffff0a;--meter:linear-gradient(90deg,var(--primary),var(--accent));\n  --h-sm:30px;--h-md:36px;--side:244px;--ease:.15s ease;\n  --line:var(--border);background:var(--bg);color:var(--text)\n}\n:root[data-theme=\"light\"]{\n  color-scheme:light;--bg:#faf7ef;--sidebar:#f4eddf;--surface:#fffdf7;--panel:#fffaf0;--field:#fffdf8;--inset:#f5f0e6;\n  --text:#403d39;--muted:#71695f;--border:#d8cebf;--border-strong:#aca08f;\n  --button:#f3ecdf;--hover:#eadfcd;--primary:#f4bfbf;--primary-text:#403d39;--primary-hover:#f6b896;\n  --accent:#3b627d;--accent-bg:#e2edf2;--accent-border:#8caebf;--focus:#3b627d;\n  --good:#3e6249;--good-bg:#e6efdf;--good-border:#a3b795;\n  --danger:#9d3839;--danger-bg:#f9e5e1;--danger-border:#ce9890;--shadow:#403d391a;\n  --hl:#ffffffb3;--meter:linear-gradient(90deg,var(--accent-border),var(--accent))\n}\n*{box-sizing:border-box}body{margin:0;min-width:0;-webkit-font-smoothing:antialiased}button,input,textarea,select{font:inherit}\n\n/* Buttons: two fixed heights (sm/md) shared by every control. */\nbutton{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:var(--h-md);padding:5px 14px;border:1px solid var(--border);border-radius:8px;background:var(--button);color:var(--text);font-size:13px;font-weight:550;line-height:1.4;cursor:pointer;box-shadow:inset 0 1px 0 var(--hl);transition:background-color var(--ease),border-color var(--ease),color var(--ease)}\nbutton:hover:not(:disabled){background:var(--hover);border-color:var(--border-strong)}button:active:not(:disabled){transform:translateY(1px)}button:disabled{opacity:.42;cursor:default}\nbutton.primary{background:var(--primary);color:var(--primary-text);border-color:transparent;font-weight:700}button.primary:hover:not(:disabled){background:var(--primary-hover);border-color:transparent}\nbutton.subtle{background:transparent;box-shadow:none}\nbutton.danger,button.danger:hover:not(:disabled){color:var(--danger);border-color:var(--danger-border);background:var(--danger-bg)}\n.top-actions button,.panel-head>button,.play-card-head button,.play-list-row>button,.play-gear button,.fx-heading button,.fx-groups button,.fx-detail button,.source-preview-button,td button{min-height:var(--h-sm);padding:3px 11px;font-size:12px}\n:focus-visible{outline:2px solid var(--focus);outline-offset:2px}\n\n/* Fields */\ninput,textarea,select{width:100%;max-width:100%;min-width:0;padding:9px 12px;border:1px solid var(--border-strong);border-radius:8px;background:var(--field);color:var(--text);font-size:14px;font-weight:400;transition:border-color var(--ease),box-shadow var(--ease)}\ninput:hover,textarea:hover,select:hover{border-color:var(--accent-border)}\ninput:focus-visible,textarea:focus-visible,select:focus-visible{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}\ninput::placeholder,textarea::placeholder{color:var(--muted);opacity:1}\ninput[type=checkbox]{width:20px;height:20px;padding:0;accent-color:var(--accent);vertical-align:middle;flex-shrink:0}\ntextarea{min-height:110px;resize:vertical;line-height:1.7}\nlabel{display:block;font-size:12.5px;font-weight:550;color:var(--muted)}label input,label select,label textarea{margin-top:6px}label+label{margin-top:14px}.fields>label+label{margin-top:0}\n\n/* Type */\nh1,h2,h3,p{overflow-wrap:anywhere}h2{margin:0 0 16px;font-size:18px;line-height:1.45;font-weight:700;letter-spacing:-.2px}h3{margin:0 0 10px;font-size:15px;line-height:1.55;font-weight:650}p{margin:10px 0 16px}\n.muted,small{color:var(--muted)}small{font-size:12px}.spaced{margin-top:18px}.hidden,[hidden]{display:none!important}\n.panel>h2,h2:has(+.cards),.panel-head{display:flex;align-items:center;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--border)}\n.panel>h2::before,h2:has(+.cards)::before,.panel-head>h2::before{content:'';flex-shrink:0;width:3px;height:1.05em;border-radius:2px;background:var(--accent)}\n.panel-head{justify-content:space-between;margin:0 0 16px}.panel-head>h2{display:flex;align-items:center;gap:10px;min-width:0;margin:0}.panel-head>button{flex-shrink:0}\n.cards+h2{margin-top:8px}\n\n/* Shell */\n.shell{display:grid;grid-template-columns:var(--side) minmax(0,1fr);height:100vh;height:100dvh;overflow:hidden}\n.sidebar{position:sticky;top:0;display:flex;flex-direction:column;gap:20px;height:100vh;height:100dvh;min-width:0;padding:22px 12px 16px;background:var(--sidebar);border-right:1px solid var(--border)}\n.sidebar-brand{padding:0 8px}.brand{display:flex;align-items:center;gap:10px}\n.brand-mark{display:grid;place-items:center;flex-shrink:0;width:32px;height:32px;border:1px solid var(--accent-border);border-radius:9px;background:var(--accent-bg);color:var(--accent);font-size:16px;line-height:1}\n.brand h1{margin:0;font-size:18px;line-height:1.3;font-weight:750;letter-spacing:-.4px}\n.nav{display:flex;flex-direction:column;gap:14px;min-height:0;overflow-y:auto;scrollbar-width:thin}.nav-group{display:grid;gap:2px}\n.nav-label{padding:0 12px 4px;color:var(--muted);font-size:10.5px;font-weight:650;letter-spacing:.08em;opacity:.8}\n.nav button{position:relative;justify-content:flex-start;width:100%;min-height:38px;padding:0 12px;border:0;background:transparent;box-shadow:none;color:var(--muted);font-size:13.5px;font-weight:500;text-align:left}\n.nav button:hover{background:var(--button);color:var(--text)}\n.nav button.selected{background:var(--accent-bg);color:var(--accent);font-weight:650}\n.nav button.selected::before{content:'';position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:var(--accent)}\n.theme-picker{display:flex;gap:3px;margin-top:auto;padding:3px;border:1px solid var(--border);border-radius:10px;background:var(--field)}\n.theme-picker button{flex:1;min-height:30px;padding:0 6px;border:0;background:transparent;box-shadow:none;color:var(--muted);font-size:12px;white-space:nowrap}\n.theme-picker button[aria-pressed=\"true\"]{background:var(--button);color:var(--text);box-shadow:0 1px 3px var(--shadow),inset 0 1px 0 var(--hl)}\n.content{width:100%;height:100%;min-width:0;min-height:0;max-width:1450px;margin:0 auto;padding:0 32px 90px;overflow-y:auto}\n.top{position:sticky;top:0;z-index:30;display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:24px;padding:22px 0 16px;background:var(--bg);border-bottom:1px solid var(--border)}\n.context-block{flex:1;min-width:0}.chat-context{margin:0 0 8px;font-size:22px;line-height:1.35;font-weight:750;letter-spacing:-.5px}\n.context-status{display:flex;flex-wrap:wrap;align-items:center;gap:6px;color:var(--muted);font-size:12px}\n.context-status span{display:inline-flex;align-items:center;min-height:22px;padding:0 9px;border:1px solid var(--border);border-radius:99px;background:var(--inset)}\n.context-status span:first-child{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent)}\n.top-actions{flex-shrink:0}.row,.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.toolbar{margin-bottom:14px}.row>*{min-width:0}\n\n/* Surfaces */\n.panel{min-width:0;margin:0 0 18px;padding:22px 24px;background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:inset 0 1px 0 var(--hl),0 1px 2px var(--shadow)}\n.card{min-width:0;padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:12px;transition:border-color var(--ease)}.card:hover{border-color:var(--border-strong)}.card+.card{margin-top:12px}\n.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-bottom:22px}.cards>.card{margin:0}\n.grid,.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 18px}.wide{grid-column:1/-1}.split{display:grid;grid-template-columns:1.15fr 1fr;gap:20px;align-items:start}.split>.panel{min-width:0}\n.badge,.tag{display:inline-flex;align-items:center;min-height:22px;padding:0 9px;border:1px solid var(--border-strong);border-radius:99px;background:var(--inset);color:var(--muted);font-size:11px;font-weight:600;line-height:1.4;white-space:nowrap}.badge{font-size:12px}\n.number,.stat strong,td{font-variant-numeric:tabular-nums}\n.stat{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-top:12px;font-size:13px}.stat span{color:var(--muted)}.stat strong,.stat b{font-weight:650}\n.bar,.play-meter{height:7px;margin:7px 0 14px;overflow:hidden;border-radius:99px;background:var(--inset);box-shadow:inset 0 0 0 1px var(--border)}.bar span,.play-meter>span{display:block;height:100%;border-radius:inherit;background:var(--meter)}\n.metric{margin:5px 0;color:var(--accent);font-size:28px;line-height:1.2;font-weight:700}\n.notice{margin:0 0 18px;padding:13px 16px;border:1px solid var(--accent-border);border-left-width:3px;border-radius:10px;background:var(--accent-bg);line-height:1.7;overflow-wrap:anywhere}\n.success{border-color:var(--good-border);background:var(--good-bg);color:var(--good)}.error{border-color:var(--danger-border);background:var(--danger-bg);color:var(--danger)}\n#feedback{position:fixed;right:24px;bottom:20px;z-index:80;width:max-content;max-width:min(670px,calc(100vw - 32px));max-height:32vh;margin:0;padding:12px 18px;overflow:auto;box-shadow:0 8px 28px var(--shadow);white-space:pre-wrap}#feedback:empty{display:none}\n.empty{margin-bottom:18px;padding:56px 24px;border:1px dashed var(--border-strong);border-radius:14px;background:transparent;box-shadow:none;color:var(--muted);text-align:center}\n.empty::before{content:'◈';display:block;margin-bottom:10px;color:var(--accent-border);font-size:22px;line-height:1}\ndetails>summary{padding:7px 0;color:var(--text);font-weight:550;line-height:1.7;cursor:pointer}summary::marker{color:var(--accent)}details[open]>summary{margin-bottom:10px}\n.panel details.spaced{padding-top:8px;border-top:1px solid var(--border)}\npre{max-height:420px;padding:14px 16px;overflow:auto;border:1px solid var(--border);border-radius:10px;background:var(--inset);white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,Consolas,monospace}\n.scroll{max-width:100%;overflow:auto;border:1px solid var(--border);border-radius:10px;scrollbar-width:thin}table{width:100%;border-collapse:collapse;font-size:13px}\nth,td{padding:11px 12px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:var(--inset);color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap}tbody tr:last-child>td{border-bottom:0}tbody tr:hover{background:var(--inset)}\nol>li.selected{color:var(--accent);font-weight:650}\n\n/* Setup & sources */\n.sourcelist{max-height:520px;margin:0 0 14px;overflow:auto;border:1px solid var(--border);border-radius:10px;background:var(--surface);scrollbar-width:thin}.source{position:relative;border-bottom:1px solid var(--border)}.source:last-child{border-bottom:0}\n.source input[type=checkbox]{position:absolute;left:12px;top:13px;z-index:1;width:26px;height:26px;margin:0;cursor:pointer}.source details{min-width:0}\n.source summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:54px;margin:0;padding:12px 12px 12px 50px;list-style:none;font-weight:400;overflow-wrap:anywhere}\n.source summary::-webkit-details-marker{display:none}.source summary:hover{background:var(--inset)}.source summary:focus-visible{outline-offset:-3px}.source-name{min-width:0;color:var(--text);font-size:13px}.source-hint{flex-shrink:0;color:var(--muted);font-size:12px}.source-hint:before{content:'▸ ';color:var(--accent)}.source details[open] .source-hint:before{content:'▾ '}.source pre{max-height:260px;margin:0 12px 14px 50px}\n.source-choice{display:flex;align-items:center;gap:12px;min-height:54px;padding:12px 12px 12px 50px;cursor:pointer}.source-choice .source-name{flex:1}.source-choice:has(input:checked){background:var(--accent-bg)}\n.choice,.partial-catalog{display:flex;align-items:flex-start;gap:10px}.choice{padding:10px 0;color:var(--text);font-weight:400;font-size:13px;cursor:pointer;overflow-wrap:anywhere}.choice input[type=checkbox],.partial-catalog input[type=checkbox]{width:22px;height:22px;margin:0}\n.draft-editor{margin-bottom:18px;padding:16px;border:1px solid var(--border);border-radius:10px}.draft-editor>summary{font-weight:650}.draft-json{min-height:360px;tab-size:2;white-space:pre;overflow:auto;font:12px/1.65 ui-monospace,Consolas,monospace}.design-brief{min-height:260px;line-height:1.8}.draft-error{overflow-wrap:anywhere}.draft-error pre{white-space:pre-wrap}.draft-error p{margin:8px 0}\n.initial-actors{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;max-height:320px;padding:12px;overflow:auto;border:1px solid var(--border);border-radius:10px}.initial-actors legend{padding:0 6px;color:var(--muted)}\n.initial-actors label{display:flex;align-items:flex-start;gap:10px;margin:0;padding:10px;border-radius:8px;background:var(--inset);color:var(--text);font-weight:400;cursor:pointer}.initial-actors input[type=checkbox]{width:22px;height:22px;margin:0}.initial-actors span{min-width:0;overflow-wrap:anywhere}.initial-actors small{display:block;font-size:11px}\n.issue-choice{margin:14px 0;padding:16px;border:1px solid var(--accent-border);border-radius:10px;background:var(--accent-bg);overflow-wrap:anywhere}.issue-choice p{margin:8px 0}.issue-choice small{display:block;margin-top:8px}\n\n/* Editors */\n.item-editor-row>td{padding:12px 0 20px}.item-editor{padding:18px;border:1px solid var(--accent-border);border-radius:12px;background:var(--surface)}.item-editor-body{min-width:0;margin:0;padding:0;border:0}.item-editor-body>legend{margin-bottom:18px;padding:0;font-size:16px;font-weight:650}\n.item-editor h4{margin:20px 0 12px;font-size:14px}.item-editor textarea{min-height:80px}.item-editor-actions{margin-top:22px}.item-editor .fields+.fields{margin-top:16px}\n.item-slots{display:flex;flex-wrap:wrap;gap:12px 18px;margin:22px 0 0;padding:14px;border:1px solid var(--border);border-radius:10px}.item-slots legend{padding:0 6px;color:var(--muted)}.item-slots label{display:flex;align-items:center;gap:8px;margin:0;color:var(--text);font-weight:400;cursor:pointer}.item-slots input{margin:0}\n.item-effect{min-width:0;margin:0 0 12px;padding:12px;border:1px solid var(--border);border-radius:10px}.item-effect legend{padding:0 6px;color:var(--muted)}.item-effect-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px}.item-effect-fields>label+label{margin-top:0}.item-effect-footer{justify-content:flex-end;margin-top:12px}.item-effect-footer small{margin-right:auto}.item-ammo>.fields{margin:14px 0}\n.editor-workspace{max-width:960px;margin:18px auto;scroll-margin-top:145px}.editor-workspace .item-editor-body>legend{margin-bottom:4px}.editor-brief{margin:0 0 18px;color:var(--muted);font-size:12px}\n.editor-tabs{display:flex;flex-wrap:wrap;gap:3px;margin:0 0 18px;padding:3px;border:1px solid var(--border);border-radius:10px;background:var(--inset)}\n.editor-tabs button{min-height:32px;padding:0 14px;border-color:transparent;background:transparent;box-shadow:none;color:var(--muted)}\n.editor-tabs button[aria-selected=\"true\"]{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent);font-weight:650}\n.editor-page{min-height:190px}.editor-page>section+section{margin-top:18px;padding-top:14px;border-top:1px solid var(--border)}.editor-page .fields{gap:12px 18px}.editor-page .fields+.fields{margin-top:14px}.editor-page section>h4:first-child{margin-top:0}\n.editor-workspace .item-editor-actions{position:sticky;bottom:0;z-index:4;margin-top:20px;padding:14px 0 4px;border-top:1px solid var(--border);background:var(--surface)}.editor-delete{margin-left:auto;color:var(--muted)}\n.fx-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0 10px}.fx-heading h4{margin:0;font-size:14px}.fx-heading h4 small{margin-left:5px;font-weight:400}\n.fx-targets{padding-bottom:10px;border-bottom:1px solid var(--border)}.fx-targets>summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;font-weight:650}.fx-targets>summary:before{content:'▸';color:var(--muted)}.fx-targets[open]>summary:before{content:'▾'}.fx-targets>summary span{color:var(--muted);font-size:12px;font-weight:400}\n.fx-targets .fx-chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.fx-chips .choice{align-items:center;gap:7px;margin:0;padding:5px 11px;border:1px solid var(--border);border-radius:99px;background:var(--field)}.fx-chips .choice:has(input:checked){border-color:var(--accent-border);background:var(--accent-bg)}.fx-chips input[type=checkbox]{width:18px;height:18px}.fx-activation{max-width:330px;margin:12px 0}.fx-targets .choice{align-items:center}\n.fx-list{display:grid;gap:8px}.fx-entry{min-width:0;overflow:hidden;border:1px solid var(--border);border-radius:10px;background:var(--field)}.fx-entry.is-open{border-color:var(--accent-border)}\n.fx-summary{justify-content:space-between;gap:14px;width:100%;min-height:0;padding:12px 14px;border:0;border-radius:0;background:transparent;box-shadow:none;text-align:left;font-weight:400}.fx-summary>span:first-child{min-width:0}.fx-summary strong{display:block;font-size:14px}.fx-summary small{display:block;margin-top:2px;line-height:1.7;overflow-wrap:anywhere}.fx-summary .fx-edit-label{flex-shrink:0;color:var(--accent);font-size:12px;white-space:nowrap}.fx-entry.is-open>.fx-summary{background:var(--accent-bg)}\n.fx-detail{padding:16px;border-top:1px solid var(--border)}.fx-detail .item-effect{margin:0;padding:0;border:0}.fx-detail .item-effect>legend{display:none}.fx-detail .item-effect-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 18px}\n.fx-detail button[data-skill-effect-remove],.fx-detail button[data-item-effect-remove],.fx-detail button[data-erencha-effect-remove],.fx-detail button[data-fx-remove]{margin-top:14px;color:var(--muted)}\n.fx-advanced{margin:14px 0 10px;padding-top:6px;border-top:1px solid var(--border)}.fx-advanced>summary,.fx-save-preset>summary{color:var(--muted);font-size:12px}.fx-empty{margin:0;padding:22px 12px;border:1px dashed var(--border);border-radius:10px;color:var(--muted);font-size:13px;text-align:center}\n.fx-save-preset{margin-top:14px}.fx-save-preset .toolbar{align-items:flex-end}.fx-save-preset label{flex:1;max-width:420px}\n.fx-library{margin:10px 0 16px;padding:14px;border:1px solid var(--accent-border);border-radius:10px;background:var(--surface)}.fx-library>.fx-heading{margin:0 0 8px}.fx-library .fx-search{font-size:12px}.fx-library p{margin:12px 0 0;font-size:12px}\n.fx-groups{display:flex;flex-wrap:wrap;gap:5px;margin:12px 0}.fx-groups button{border-radius:99px;background:transparent;box-shadow:none}.fx-groups button[aria-pressed=\"true\"]{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent)}\n.fx-library-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;max-height:290px;overflow-y:auto;scrollbar-width:thin}\n.fx-pick{display:block;min-height:0;padding:10px 12px;background:var(--field);text-align:left;font-weight:400}.fx-pick strong{font-size:13px}.fx-pick small{display:-webkit-box;margin-top:4px;overflow:hidden;font-size:11px;line-height:1.6;-webkit-line-clamp:2;-webkit-box-orient:vertical}\nfooter{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);color:var(--muted);font-size:11px;letter-spacing:.04em}\n\n/* Play pages */\n.play-name{margin:22px 0 16px;font-size:22px;letter-spacing:-.4px}\n.play-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:16px 0}\n.play-facts>div{min-width:0;padding:10px 14px;border:1px solid var(--border);border-radius:10px;background:var(--inset)}\n.play-facts dt{margin-bottom:2px;color:var(--muted);font-size:11.5px}.play-facts dd{margin:0;font-size:18px;font-weight:650;line-height:1.4;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}\n.play-wallet dd{color:var(--accent);font-size:22px}\n.play-traits{margin:18px 0}.play-traits-three{grid-template-columns:repeat(3,minmax(0,1fr))}.play-traits-three>div:nth-child(2){text-align:center}.play-traits-three>div:nth-child(3){text-align:right}\n.play-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:20px 0}\n.play-stat{position:relative;display:flex;flex-direction:column;gap:4px;min-width:0;padding:16px 18px;overflow:hidden;border:1px solid var(--border);border-radius:12px;background:var(--surface);transition:border-color var(--ease)}\n.play-stat::before{content:'';position:absolute;inset:0 0 auto;height:2px;background:var(--meter);opacity:.75}.play-stat:hover{border-color:var(--border-strong)}\n.play-stat>span{color:var(--muted);font-size:12.5px}.play-stat>strong{font-size:28px;line-height:1.25;font-weight:700;font-variant-numeric:tabular-nums}.play-stat>small{line-height:1.6}.play-growth{margin-top:auto;padding-top:10px}.play-growth .play-meter{margin-bottom:0}\n.play-relations{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px}\n.play-relation{padding:18px;border:1px solid var(--border);border-radius:12px;background:var(--surface)}.play-relation h3{margin:0 0 14px}.play-relation .play-facts{margin:0}.play-relation .play-facts dd{font-size:22px}\nbutton.play-person-link{min-height:0;padding:0;border:0;background:none;box-shadow:none;color:var(--text);font-size:16px;font-weight:650;text-align:left}\nbutton.play-person-link:hover:not(:disabled){background:none;color:var(--accent);text-decoration:underline;text-underline-offset:4px}\n.play-card-head,.play-list-row{display:flex;align-items:center;justify-content:space-between;gap:14px}.play-card-head>*,.play-list-row>*{min-width:0}.play-card-head h3{margin:0}\n.play-card-head>button,.play-card-head>.tag,.play-card-head>.row{flex-shrink:0}.play-card-head .row{justify-content:flex-end;gap:6px}\n.play-list-row{padding:14px 0;border-bottom:1px solid var(--border)}.play-list-row:last-child{border-bottom:0}.play-list-row small{display:block;margin-top:4px}.play-list-row>button,.play-list-row>.tag{flex-shrink:0}\n.play-stakes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.play-stakes p{margin:0;padding:14px 16px;border:1px solid var(--border);border-radius:10px;background:var(--inset)}.play-stakes small{display:block;margin-bottom:6px}\n.play-skills,.play-items{display:grid;gap:12px}\n.play-skill,.play-item{min-width:0;padding:18px;border:1px solid var(--border);border-radius:12px;background:var(--surface);transition:border-color var(--ease)}.play-skill:hover,.play-item:hover{border-color:var(--border-strong)}\n.play-skill h3 small{font-weight:400}.play-skill .play-facts dd{font-size:14px}.play-skill-growth{padding-top:12px;border-top:1px solid var(--border);color:var(--muted);font-size:12px}\n.play-item>p:last-child{margin-bottom:0}.play-item .item-editor{margin-top:18px}.play-inline-editor{min-width:0}.play-inline-editor .item-editor{border-color:var(--accent-border)}\n.play-equipment{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}\n.play-gear{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:14px;row-gap:2px;padding:14px 16px;border:1px solid var(--border);border-left:3px solid var(--accent-border);border-radius:10px;background:var(--surface)}\n.play-gear small,.play-gear b{grid-column:1;overflow-wrap:anywhere}.play-gear button{grid-column:2;grid-row:1/3}\n.play-turns{display:flex;flex-wrap:wrap;gap:8px;margin:0;padding:0;list-style:none}.play-turns li{display:flex;align-items:center;gap:12px;min-width:150px;padding:12px 16px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}\n.play-turns li[aria-current=\"step\"]{border-color:var(--accent-border);background:var(--accent-bg)}.play-turns small{display:block}.play-turn-number{color:var(--accent);font-size:20px;font-weight:700}.play-budget{margin-bottom:0;font-size:12px}\n.play-paths{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.play-paths>div{padding:13px 14px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}.play-paths small{display:block;margin-top:3px}\n[data-scheme-card]{scroll-margin-top:130px}\n\n/* Mini window & dialogs */\n.mini-shell{max-width:640px;height:100vh;height:100dvh;margin:auto;padding:12px 16px 40px;overflow-y:auto}.mini-shell .top{top:0}.mini-shell .panel{margin-bottom:12px;padding:14px}.mini-shell .play-facts{gap:6px}.mini-shell .play-facts dd{font-size:15px}.mini-shell details{padding:8px 0;border-bottom:1px solid var(--border)}\n.download-dialog{max-width:calc(100vw - 24px);padding:22px 24px;border:1px solid var(--border);border-radius:14px;background:var(--surface);color:var(--text);box-shadow:0 12px 40px var(--shadow)}.download-dialog::backdrop{background:#0008}\n.download-link{display:inline-flex;align-items:center;min-height:var(--h-md);padding:5px 14px;border-radius:8px;background:var(--primary);color:var(--primary-text);font-size:13px;font-weight:700;text-decoration:none}\n/* Release information lives in the plugin window, outside game state and prompts. */\n.update-link{flex-wrap:wrap;gap:8px;font-size:12px}.update-link>span:first-child{color:var(--accent)}\n.update-link .tag{border-color:var(--accent-border);background:var(--accent-bg);color:var(--accent)}\n.update-notice{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:18px;padding:14px 16px;border:1px solid var(--accent-border);border-radius:12px;background:var(--accent-bg)}\n.update-notice>div{flex:1;min-width:180px}.update-notice small{display:block;margin-top:3px;color:var(--muted)}\n.update-dialog{width:min(660px,calc(100vw - 24px));max-width:calc(100vw - 24px);max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);margin:auto;padding:0;border:1px solid var(--border-strong);border-radius:16px;background:var(--panel);color:var(--text);box-shadow:0 18px 60px var(--shadow);overflow:hidden}\n.update-dialog[open]{display:flex;flex-direction:column}.update-dialog::backdrop{background:#0009}\n.update-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-shrink:0;padding:20px 22px 16px;border-bottom:1px solid var(--border)}\n.update-dialog-head h2{margin:5px 0 0;font-size:21px}.update-dialog-head small{color:var(--muted)}\n.update-dialog-body{display:flex;flex-direction:column;min-height:0;padding:16px 22px;overflow:auto;overscroll-behavior:contain}\n.update-status{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}.update-status p{flex:1;min-width:160px;margin:0;font-size:13px}.update-status button{flex-shrink:0}\n.update-dialog-body>.notice{margin:12px 0 0;font-size:13px}.update-log{flex-shrink:0;margin-top:18px}\n.update-entry{padding:12px 0;border-top:1px solid var(--border)}.update-entry summary{display:flex;align-items:baseline;justify-content:space-between;gap:12px;list-style:none}.update-entry summary::-webkit-details-marker{display:none}.update-entry summary>span::before{content:'▸';display:inline-block;width:18px;color:var(--accent)}.update-entry[open] summary>span::before{content:'▾'}\n.update-entry summary small{flex-shrink:0;color:var(--muted);font-size:11px}.update-entry ul{margin:8px 0 12px;padding-left:22px;font-size:13px;line-height:1.8}.update-entry li+li{margin-top:6px}.update-entry-note{margin:8px 0 0;padding:12px;border-radius:9px;background:var(--accent-bg);font-size:12px;line-height:1.75}\n.update-dialog-foot{display:flex;flex-direction:column;gap:8px;flex-shrink:0;margin:0;padding:14px 22px calc(16px + env(safe-area-inset-bottom));border-top:1px solid var(--border);background:var(--surface);text-align:left}\n.update-auto{display:flex;align-items:center;gap:8px;margin:0;font-size:13px}.update-auto input{flex-shrink:0;margin:0}.update-dialog-foot>button{align-self:flex-end;min-width:116px}.update-dialog-foot>small{font-size:11px}.update-dialog-foot>p{margin:0;font-size:12px}\n@media(max-width:600px){.update-dialog-head,.update-dialog-body,.update-dialog-foot{padding-left:16px;padding-right:16px}.update-entry summary{align-items:flex-start;flex-direction:column;gap:3px}.update-entry summary small{padding-left:18px}.update-dialog-foot>button{width:100%}}\nbody.editing .page-body{padding-bottom:calc(var(--editor-actions-height,90px) + 24px)}body.editing #feedback{bottom:calc(var(--editor-actions-height,90px) + 12px);max-height:25vh}\nbody.editing .item-editor-actions{position:fixed;bottom:0;left:var(--side);right:0;z-index:65;margin:0;padding:12px 24px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--border);background:var(--surface);box-shadow:0 -4px 18px var(--shadow)}\n\n@media(max-width:1150px){.split{grid-template-columns:minmax(0,1fr)}}\n@media(max-width:900px){\n  /* max-content rows: auto rows let the overflow-x nav collapse to 0 (original mobile bug). */\n  .shell{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:max-content max-content max-content 1fr;align-content:start;overflow-x:hidden;overflow-y:auto}\n  .sidebar,.content{display:contents}\n  .sidebar-brand{grid-column:1;grid-row:1;display:flex;align-items:center;padding:10px 14px;background:var(--sidebar)}.brand-mark{width:28px;height:28px;border-radius:8px;font-size:14px}.brand h1{font-size:16px}\n  .theme-picker{grid-column:2;grid-row:1;align-items:center;gap:0;margin:0;padding:0 14px 0 0;border:0;border-radius:0;background:var(--sidebar)}\n  .theme-picker button{flex:none;width:34px;min-height:30px;padding:0;border:1px solid var(--border);border-radius:0;background:var(--field);font-size:0}\n  .theme-picker button:first-child{border-radius:8px 0 0 8px}.theme-picker button:last-child{border-left:0;border-radius:0 8px 8px 0}.theme-picker button span{font-size:14px}.theme-picker button[aria-pressed=\"true\"]{background:var(--button)}\n  /* One scrollable tab strip; group labels stay visible and the right edge fades until the end. */\n  .nav{grid-column:1/-1;grid-row:2;position:sticky;top:0;z-index:50;flex-direction:row;align-items:center;gap:0;padding:6px 12px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--sidebar);border-bottom:1px solid var(--border);-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 36px),#0000);mask-image:linear-gradient(90deg,#000 calc(100% - 36px),#0000)}\n  .nav::-webkit-scrollbar{display:none}.nav[data-end=\"true\"]{-webkit-mask-image:none;mask-image:none}\n  .nav-group{display:flex;flex-shrink:0;align-items:center;gap:2px}.nav-group+.nav-group{margin-left:8px;padding-left:10px;border-left:1px solid var(--border)}\n  .nav-label{display:none}\n  .nav button{flex-shrink:0;width:auto;min-height:34px;padding:0 11px;white-space:nowrap}\n  .nav button.selected::before{top:auto;bottom:3px;left:11px;right:11px;width:auto;height:2px;border-radius:2px}\n  .top{grid-column:1/-1;grid-row:3;top:var(--mobile-nav-height,47px);z-index:45;flex-wrap:nowrap;gap:10px;margin:0;padding:10px 14px}\n  .chat-context{margin:0 0 4px;font-size:18px}.context-status{gap:4px;font-size:11px}.context-status span{min-height:20px;padding:0 7px}.top-actions{gap:5px}\n  .page-body{grid-column:1/-1;grid-row:4;min-width:0;padding:16px 12px 60px}\n  .cards{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}\n  body.editing .item-editor-actions{left:0;padding-left:12px;padding-right:12px}.editor-workspace{scroll-margin-top:155px}\n}\n@media(max-width:600px){\n  :root{--h-md:40px}\n  .chat-context{font-size:17px}\n  .grid,.fields,.cards,.play-relations,.play-equipment,.play-stakes{grid-template-columns:minmax(0,1fr)}.wide{grid-column:auto}\n  .panel{padding:16px;border-radius:12px}.card,.play-stat,.play-relation,.play-skill,.play-item{padding:15px}\n  .play-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.play-facts{grid-template-columns:repeat(auto-fit,minmax(100px,1fr))}.play-traits-three{gap:8px}.play-traits-three dd{font-size:16px}\n  .play-card-head{flex-wrap:wrap}.play-card-head>.row{margin-left:auto}.play-list-row{flex-wrap:wrap}.play-turns li{flex:1}\n  .toolbar button{flex:1 1 120px}.source summary{gap:8px}.source pre{margin-left:12px}.source-hint{font-size:11px}\n  th,td{padding:10px 8px}.scroll table{min-width:440px}#feedback{right:12px;bottom:12px;max-width:calc(100vw - 24px);padding:12px 15px}\n  .editor-workspace{margin:12px 0;padding:14px}.editor-tabs button{padding:0 10px;font-size:12px}.editor-workspace .item-editor-actions{gap:6px}\n  .fx-detail{padding:12px}.fx-detail .item-effect-fields,.editor-workspace .fields,.fx-library-grid{grid-template-columns:1fr}.fx-targets>summary span{flex-basis:100%;padding-left:22px}.fx-summary{padding:11px}\n}\n@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}\n\n/* In-plugin assistant, using the same palette and editor workflow. */\n.nyunyu-chat{max-width:960px}.nyunyu-messages{display:flex;flex-direction:column;gap:12px;margin:20px 0}.nyunyu-message{max-width:94%;padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:var(--inset)}.nyunyu-message.user{align-self:flex-end;background:var(--accent-bg);border-color:var(--accent-border)}.nyunyu-message.assistant{align-self:flex-start}.nyunyu-text{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:6px}.nyunyu-message button{white-space:normal;text-align:left}\n/* Card theme previews share the chat renderer; no iframe or simulated play. */\n.card-theme-preview { margin: 18px 0 8px; max-width: 760px; container-type: inline-size; }\n.chat-presentation > label { max-width: 360px; }\n.chat-presentation details > label { margin-top: 14px; }\n\n/* Logical action gauge; shared full and mini board. */\n\n.urpgdice-gauge{box-sizing:border-box;padding:18px 20px;border:1px solid currentColor;border-radius:14px;margin:12px 0;color:inherit;background:transparent;text-align:left;max-width:100%;overflow:hidden}\n.urpgdice-gauge>p{font-size:.85em;line-height:1.5;opacity:.8;margin:8px 0 14px}\n.urpgdice-gauge-row{display:grid;grid-template-columns:minmax(0,1fr);gap:6px;padding:10px 0;border-top:1px solid color-mix(in srgb,currentColor 18%,transparent)}\n.urpgdice-gauge-row strong{overflow-wrap:anywhere;font-size:.96em}.urpgdice-gauge-row[aria-current=step]{border-left:3px solid currentColor;padding-left:10px}\n.urpgdice-gauge-row progress{display:block;width:100%;height:9px;accent-color:var(--accent,currentColor)}\n.urpgdice-gauge-row small{font-size:.8em;line-height:1.5;opacity:.8}\n");try{await app.install(ui);}catch(error){await app.dispose();document.body.textContent="NyoruRPG 초기화 실패: "+(error.code?error.message:"호스트 기능·권한을 확인하세요.");try{await Risuai.showContainer("fullscreen");}catch{}}
 })();
