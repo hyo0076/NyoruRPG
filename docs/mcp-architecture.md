@@ -1,4 +1,109 @@
-# NyoruRPG MCP 구조 · 0.25.2
+# NyoruRPG MCP 구조 · 0.28.3
+
+## 0.28.3 준비 자료와 생성 경계
+
+tactical-authoring은 초기 구축과 신규 인물 등록의 장비 수량을 개별 물품으로 나누고 생성 자료 내부 ID 참조를 새 인물의 ID에 맞춘다. tactical-assistant는 임시 세계에 실제 설치한 인물·소지품·기술을 capture하여 계획에 보관한다. 적용 시 원문을 다시 설치하며 다른 ID를 만들어 연결을 잃는 경로를 줄인다. 빈 선행 조건과 잘못 생성된 손 태그를 구분하며 실제 기술 ID는 유지한다. 지르코트 실물 탄창의 한쪽 연결을 맞추고 기존 인물은 손대지 않는다. 새 공격의 대상 누락은 rulebook-runtime에서 prepare 전에 반환한다. tactical-tool-errors가 호출·준비 인물·필드·다음 수정 방향을 설명하고 시간 기록과 공격 결과를 구분한다.
+
+lifecycle.selectHistory는 현재 Risu 메시지 ID·원문 해시에 맞는 저장본을 선택한다. 생성마다 Repository.begin의 새 transaction/generation ID를 사용하므로 새 분기에서 버린 답변의 주사위·상태·이벤트 영수증을 재사용하지 않는다. 같은 생성의 actionId 재시도는 기존 영수증을 사용한다. generation-rollback은 수동 편집 저장의 변경 전 값을 비교하여 충돌 없는 편집만 복원 기준에 적용한다. 충돌은 /last-rollback에 보관하며 기존 불변 revision은 삭제하지 않는다. 새 manual origin과 기존 manual 사용자 메시지 ID를 모두 읽는다.
+
+호스트에는 별도 리롤/취소 이벤트가 없다. afterRequest만으로 중단/리롤을 확정하지 않으며, 미완료 답변은 rollback-ui의 명시적 되돌리기로 /reroll-request를 만들 수 있다. 이 표식은 화면 새로고침이 아직 남아 있는 원래 답변의 상태를 다시 선택하지 않도록 하고 새 요청이 소비한다. 채팅 원문은 수정하지 않는다. 도구 수신 시 transaction ID를 함께 묶고 명시적으로 폐기한 생성의 IPC 대기 작업을 취소한다. host.verifyTransaction이 폐기된 생성의 결과를 막으며 output 도착 당시 소유한 transaction도 확인한다. 카드 본문·순서·원문 대체 방식은 그대로다.
+
+review-issues는 실제 현재 대화의 메시지 ID와 서술 해시로 다른 답변의 알림을 숨긴다. 기록·입력 초안은 남아 있고 그 답변을 다시 선택하면 확인할 수 있다. 전역 API 설정이나 연결 식별자는 롤백하지 않는다. [배포 범위·사용법·실사용 미확인 사항](nyoru-release-0.28.3.md).
+
+## 0.28.2 공통 UI와 선택 관리
+
+play-navigation이 공통 메뉴 순서·이름과 이전 화면 ID의 표시 별칭을 관리한다. 저장 ID는 바꾸지 않는다. registry-ui는 룰북별 편집기를 재사용하고 새 인물은 기존 Rulebooks.prepare/apply와 관리자 트랜잭션으로 준비·저장한다. 현재 장면 표시 목록은 등록 이전 목록과 사용자 선택으로 유지하며 로어 자동 검색·헌터 내장 활성화 경로를 재사용한다. 준비 도중 채팅·대화·전원이 바뀌면 적용을 중단한다.
+
+play-settings-ui는 공통 전투·이동·탐험과 룰북 옵션을 같은 화면에서 편집하며 스냅샷 충돌 확인 후 기존 전투 옵션에 저장한다. tactical/zirkott는 전용 시간 계산을 유지하고 지원하지 않는 HP 감소·부활 설정을 추가하지 않는다. inventory-ui는 장비 여부 판별·안쪽 탭·인물 선택창을 공유한다. 각 룰북의 기존 물품 편집·장착·효과 저장은 그대로 사용한다.
+
+zirkott-options는 karmaEnabled/commerceEnabled의 선택 여부와 실행 입구 차단을 맡는다. 누락은 OFF로 읽고 이전 자료는 덮어쓰지 않는다. zirkott-tools.forWorld는 현재 설정에 따라 등록·기록·거래 스키마와 설명을 구성한다. module-bridge와 검사도 현재 세계에 맞는 protocol(world)을 사용한다. 상인 관리 OFF의 거래는 물품만 준비하여 기존 Zp·수량·수납을 정산하며, ON은 기존 재고·상인·세력 경로를 사용한다. 항복 살해의 자동 카르마와 동료 거부 확인도 같은 토글을 따른다.
+
+지역·은신처·중복 생존 메뉴를 없애되 저장 자료는 남긴다. 창고 접근은 교전 밖 수납 이동으로 단순화하고 은신처 방문 호출은 도구 목록에서 제외한다. 공개 도구 이름·IPC·세이브 네임스페이스·카드 배치·전투 계산은 유지한다. 실제 호스트와 모바일 검증은 수행하지 않았다. [변경과 범위](nyoru-release-0.28.2.md).
+
+## 0.28.1 지르코트 생존 선택
+
+zirkott-survival은 생존 모드·네 생활 수치의 읽기·시간 변화·소모품 회복을 맡는다. 신규 세계에는 명시적 survival:false를 저장하고, 이전 저장의 누락 값은 ON으로 읽는다. food/water 저장은 유지하고 view에서 hunger/thirst로 환산한다. hygiene와 새 변화량 설정은 이전 백업에서 선택 필드이며 읽기 기본값을 제공한다. OFF일 때 저장 수치를 건드리지 않고 방사선·출혈 계산은 zirkott-rules.advance에서 별도로 유지한다.
+
+실제 시간은 tactical-combat.advance 한 경로로 전달된다. wash/rest는 지르코트 record의 eventId로 중복을 막고, 소모품은 기존 inventory 트랜잭션으로 소비한다. 조회와 API 대기, 토글 변경은 시간을 늘리지 않는다. 생존 고갈 피해는 임계점을 넘은 시간에만 적용한다. 위생은 경고와 회복을 제공하며 감염·사망의 별도 규칙을 추가하지 않는다.
+
+zirkott-ui의 초기 설정과 현재 게임/구축 초안 토글은 기존 compiler와 관리자 저장을 사용한다. survival_settings는 모드와 기본값을 포함한 같은 편집 스냅샷을 뉴뉴에도 제공한다. tactical-ui·render·도구 sheet/summary는 동일 생존 view를 사용한다. 직접 편집은 기존 food/water 의미를 명시하고 아이템 효과와 인물 값의 라벨을 구분한다. 프로토콜은 검사에도 재사용한다. 다른 룰북·모듈·MCP/IPC·카드 식별자는 그대로다. [설정과 미확인 범위](nyoru-release-0.28.1.md).
+
+## 0.28.0 지르코트
+
+지르코트는 rulebook id zirkott, profile zirkott.v1인 독립 세이브다. runtime family tactical로 기존 전투·컴파일 저장 절차를 재사용한다. compiler의 tactical-v1 pipeline에 실제 rulebookId와 zirkottSetup을 보관하고, 같은 룰북의 이전 상태는 tactical-rules.merge로 보존한다. 다른 룰북을 자동 변환하지 않는다.
+
+zirkott-data는 사용자 제공 카드의 지역·연결과 선택한 보스 설명을 참조 데이터로 가진다. 실행 스크립트·이미지·서술 지침은 포함하지 않는다. zirkott-rules는 부위 HP·시간에 따른 생존/피폭·물리 탄창·차폐·수납을 계산한다. tactical-combat의 해당 룰북 분기에서만 HP 피해·치료·재장전·시간 계산을 연결한다. 일반 택티컬의 HP 없는 부상 모델은 유지한다.
+
+zirkott-engine은 지역 이동, 유한 수색과 시신 회수, 탄창 조작, 상인 거래, 세력 기록, 은신처와 관리 편집을 맡는다. 실제 수색 결과와 남은 수량을 저장하며 조회는 재굴림하지 않는다. 탄창과 부착물의 소유·연결을 물품 이동에 함께 반영한다. 창고는 휴대 상태와 별개이고 바닥 물품은 내려놓은 지역·지점에 묶는다. 등록된 NPC는 지정된 동행자가 아니면 지역 이동에 자동 합류하지 않는다.
+
+zirkott-assistant와 tactical-assistant는 처음 등장한 인물/상인/장소만 보조 AI로 준비한다. 저장된 보스·지역·상품 정의를 재사용한다. 원본 보스의 거주지는 참조 정보이며 현재 등장 위치를 강제하지 않는다. 새 인물 로어 검색은 기존 actor-lore-search 경로를 사용한다. 지침은 별도 zirkott-prompts로 제공하고 HP·탄창·수색을 명시하되 이야기 진행·귀환·길이를 정하지 않는다.
+
+zirkott-ui와 tactical-ui가 초기 지역·장비 선택, 전용 탭, 초안/실제 편집, 뉴뉴의 같은 필드 목록을 공유한다. mini-ui·render는 저장된 부위 HP·Zp·피폭을 읽는다. turn-review는 새 판정과 이미 계산한 행동·시간을 구분하고 review-confirmation은 부위 HP·생존값 감소 확인을 이어받는다. tactical-validation 뒤 zirkott-validation으로 저장 연결을 검사하며 backup의 외부 룰북 검증에 그대로 연결한다. MCP/IPC 이름, 저장 namespace, 모듈 v1과 카드 배치 방식은 바꾸지 않는다.
+
+실제 호스트·모델·가상 전투 실행은 하지 않았다. [구현 범위와 로컬 배포 안내](nyoru-release-0.28.0.md)를 따른다.
+
+
+## 0.27.1 신규 인물 자료 검색
+
+actor-lore-search는 RisuHost.sources의 현재 채팅 범위를 재사용해 로어북 제목·키워드·본문의 이름을 검색한다. 초기 선택 자료는 그대로 보존하고 미선택 관련 로어만 제한된 수·크기로 추가한다. 전역 인물 인덱스나 임베딩 API를 만들지 않으며, 한 준비 요청의 session 안에서 자료 목록을 공유한다. 검색 단계에서 원문 조건·매크로·도구를 실행하지 않는다.
+
+native-assistant(D100/헌터), social-assistant(로판/미연시), erencha-assistant, murim-assistant, tactical-assistant의 처음 인물 생성에 연결한다. 이미 있는 인물·몬스터 원형과 내장 자료의 우선 경로는 유지한다. native의 명시적 원문 갱신도 같은 검색 자료를 사용해 신규 등록의 sourceHash와 일관되게 비교한다. 초기 compiler.snapshot과 meta.sourceIds의 사용자 선택은 수정하지 않는다. 구형 비-native EncounterBuilder의 엄격한 원문 검증 경로는 이번 변경 대상이 아니다.
+
+검색 결과는 생성 입력 loreSearch로 전달한다. 이름이 다른 사람의 설명에 언급된 것과 실제 주제 인물을 구분하도록 지시하고 sourceAmbiguous 응답을 ACTOR_LORE_AMBIGUOUS로 반환한다. 준비 캐시에는 검색 원문을 보관하되 호스트 진단 actorLoreSearch에는 제목·ID·발췌 여부·수량만 남긴다. 기존 MCP 인수·주사위·상태 적용·콜백·카드 식별자를 바꾸지 않는다. [0.27.1 안내](nyoru-release-0.27.1.md)에 사용 범위와 미검증 사항을 기록한다.
+
+## 0.27.0 택티컬
+
+tactical-rules와 tactical-validation은 전용 인물·부상·무기·파츠·숙련·관계·미터 전장의 저장 계약을 제공한다. resources는 빈 객체이며 HP 엔진을 호출하지 않는다. rulebook-runtime과 backup은 meta.rulebook.id가 tactical일 때만 이 검증·실행을 사용한다. 기존 여섯 룰북의 형식과 연결 식별자는 유지한다.
+
+tactical-assistant는 처음 필요한 인물·기술·물품·지역을 준비하고 저장 정의를 우선 재사용한다. compiler의 tactical-v1 작업은 중간 응답과 최종 후보를 보관하고 기존 복구 화면에서 수정할 수 있다. 같은 룰북 재구축은 기존 인물과 전투·성장을 보존하며 초안 편집은 현재 게임을 바꾸지 않는다. 취소와 채팅 전원 OFF는 보조 준비 요청을 중단한다.
+
+tactical-combat은 미터 위치·사선 엄폐·부위 판정·탄약·준비·장전·논리 시간을 처리한다. gauge는 소수점 준비 시각, round는 d100 선공, free는 명시한 행동만 사용한다. 실제 API 대기 시간으로 충전하지 않는다. 개별 선언의 실행 여부와 성공·실패를 결과에 보존하며 먼저 처리한 NPC 행동이 있으면 이후 미실행 이유를 함께 반환한다. 결과를 성공으로 뭉쳐 검사 후속 보상이 진행되지 않도록 구분한다.
+
+tactical-engine은 소지·장착·호환 파츠·경제·윤리 사건·탐험과 관리자 편집을 연결한다. 사건 ID로 카르마 중복 적용을 방지하고 지정된 목격자의 관계만 변경한다. tactical-tools는 기존 다섯 MCP 이름을 사용하며 공개 스키마와 실제 실행 검증이 같은 catalog를 공유한다. Provider Manager 연결·콜백 대기·재호출 방식은 추가하지 않는다.
+
+tactical-ui는 전체 화면·초안·뉴뉴 제안의 편집 필드를 공유한다. 기존 render와 mini-ui가 부상·무기·논리 시간의 전용 표시를 선택한다. review-actions·turn-review는 HP·네 거리 대신 전용 상태와 도구 형식을 전달한다. 줄어드는 값의 확인과 저장 결과 재사용은 기존 검사 흐름을 사용한다. 소스 수정·로컬 배포 생성 범위이며 테스트·실제 호스트와 모델 확인은 아직 수행하지 않았다. 사용 범위와 제한은 [0.27.0 안내](nyoru-release-0.27.0.md)에 기록한다.
+
+## 0.26.0 구축·연결·선택 모드
+
+murim-stats는 기계적인 참조만 무림 키로 정리한다. native-assistant.ability의 선택적 statModel로 무림 기술을 생성하며 backup.validateWorld와 rulebook-runtime의 준비/적용/관리자 입구에서 기존 참조를 이어받는다. 백업 가져오기는 원본 체크섬을 먼저 확인한 다음 복제본을 변환한다. movement는 actor 정의와 runtime actorState에서 같은 선택 스키마를 사용한다.
+
+play-options는 combatOptions의 선택적 필드를 공유한다. compiler job.initialOptions를 구축 단계와 최종 적용까지 보관하며 탐험 OFF는 runtime 준비 이전·적용과 도구 목록/상태 안내에 반영한다. 지도 데이터는 삭제하지 않는다. equipment-slots는 의미상 확실한 장비 부위를 우선하고 명시된 자유 장착은 보존한다.
+
+provider-tool-ipc-ui는 전역 연결 ON/OFF·timeout을 즉시 저장한다. provider-tool-ipc.start의 주기적 등록 확인과 30초 실패 유예는 기존 시작/채팅/전원/룰북 갱신에 더해 PM 준비 지연을 복구한다. 활성 게임 호출 동안은 주기 등록을 미루며 dispose에서 타이머를 해제한다. 새 재호출 프로토콜이나 게임 자동 재실행은 없다.
+
+recovery-ui는 마지막 UI 오류와 compiler job의 실패 정보를 표시하고 보관 초안/중간 JSON을 수정한다. compiler.repairSavedDraft는 현재 채팅·미적용 초안만 허용한다. 최종 candidate는 기존 검증을 거쳐 ready 상태로 만들고 불완전한 단계는 실패 상태와 자료를 보존한다. 뉴뉴 setup_repair 제안도 먼저 편집 화면으로 연결된다.
+
+review-confirmation은 Repository 후보 세계와 이전 세계를 비교해 감소가 있으면 채팅별 review-confirm에 변경과 결과를 보관한다. 원래 게임 트랜잭션에는 REVIEW_CONFIRMATION으로 미적용 결과를 남긴다. review-issues의 사용자 적용은 보관한 patch의 전제값이 그대로일 때만 실행하며 난수·AI 준비를 반복하지 않는다. 관련 상태 충돌은 수동 편집으로 남긴다. 결과 삭제는 목록의 tombstone으로 중복 수집을 막으며 거래 기록은 지우지 않는다.
+
+hunter-reality는 정산 감액과 신규 전리품 확률을 적용한다. adventure의 강행은 원시 스탯 VS 고정 저항을 비교하고 정상 도구 사용은 보유·적합성을 확인한다. reality 지도는 끊어진 구역에 자동 우회 연결을 추가하지 않는다. 기존 맵·전리품 영수증은 유지한다.
+
+erencha-reality는 meta.erencha.reality에 이야기 시간·원화·생활 수치·비용 설정을 보관한다. clock 기록과 real_life는 동일 시간 누적 함수를 사용한다. 일반 상태에는 원화·경고만 제공하고 숨겨진 값 편집은 Nyunyu real_life 제안과 real_life_edit 관리자 명령으로 연결한다. 현실 사망은 사용자 행동 전에 검사하며 건강·피로는 명중 보정에 연결한다. erencha-proficiency.needed는 hard 옵션일 때 요구량만 3배로 계산한다. 새 adventure 작성은 hard 옵션에 따라 적대 이용자 구역을 요청한다.
+
+연결 모듈·저장 namespace·MCP 이름·기존 카드 배치·beforeRequest 대기는 유지한다. 로컬 배포 생성만 수행하며 실제 Risu/API·별도 최종 검수는 하지 않는다.
+
+## 0.25.5 행동 시간과 준비 순서
+
+action-gauge.consume는 일반 행동을 마무리할 때 행동 시작 속도로 산출한 10/rate 논리 시간을 진행하며, 행동자 외의 살아 있는 참가자를 충전한다. 시간 효과 시각에서는 기존 effect-system.combatTime을 실행하고 각 엔진의 전투 종료/사망 처리를 연결한다. select는 실제 readyAt이 이른 인물을 고르고 정확한 동률에만 참가 순서를 사용한다. 아무도 준비되지 않았으면 기존처럼 다음 충전 완료나 시간 효과 시각으로 이동한다. 실시간 타이머·별도 충전 호출·라운드별 일괄 충전은 없다.
+
+combat.gauge.readyAt/currentAction은 선택 필드이며 공통 backup 스키마와 Gauge.validate에 연결한다. 구형 전투의 저장 값은 유지하고 읽기 snapshot은 새 필드를 저장하지 않는다. 현재 행동의 속도는 select에서 잡고 다음 일반 행동 종료에 사용하므로 자기 행동 중 버프로 해당 행동의 소요를 소급 변경하지 않는다. 연계/반격/기존 추가 행동은 별도 일반 행동 소비를 추가하지 않는다.
+
+에렌샤 actionSpeed는 기존 기본값 10을 보존하는 인물 속도다. 생성, 같은 몬스터 자료 재사용, actorEditValue를 공유하는 인물 UI/뉴뉴/관리자 저장과 game-editor의 actor_state, 상태 응답에 연결한다. action-gauge.inputs의 BASE는 이 값에 기존 이동 숙련도 보정을 적용하며 SPEED 변수로 기본값도 노출한다. 몬스터에게 사용자 숙련도나 DND 스탯을 만들지 않는다. 이전 사용자 편집과 재구축 성장 보존은 유지한다. 전체/미니/카드는 기존 Gauge.html에서 전투 시간과 속도 수치로 표시한다. 실제 Risu와 전투 테스트는 수행하지 않았다.
+
+## 0.25.4 선택 대기와 서술 분량
+
+공통 narrative-flow는 봇의 분량·문체와 저장된 판정의 역할을 구분한다. effect-presets의 계산 묶음·전투 종료를 서술 중단으로 묶던 지침을 제거하고 미확정 기계적 결과 금지로 범위를 좁혔다. module-guidance/erencha-prompts의 소설 모드 중단 표현도 다음 미선택 행동의 대기로 정리했다. gameplay/erencha-engine의 대기 문구는 같은 Narrative.WAIT를 사용하되 awaitUser의 계산 조건은 바꾸지 않는다. 탐험도 한 구역·한 호출을 한 답변 한도로 취급하지 않는다. 요청 끝 안내·뉴뉴·설정 도움말을 연결했으며 저장·MCP 완료·IPC·카드 배치·토글 값은 유지한다. 실제 모델의 분량 준수는 미확인이다.
+
+
+## 0.25.3 호출·전투 연결
+
+actor-reference.instance는 정확한 저장 ID를 우선하고 진행 중인 동일 이름의 적을 새 키로 만들려면 실제 새 등장인 newInstance를 요구한다. gameplay의 중복 이름 참가자는 기존 전투 ID에 연결하며 후속 행동 ID로 새 개체 키를 만들지 않는다. native-assistant와 erencha-assistant가 같은 원칙을 따른다. 정상 증원과 서로 다른 몬스터는 보존한다.
+
+gameplay와 erencha-engine은 일반 호출에서 미선택 사용자 행동을 자동 선택하지 않으며 NPC 자동 턴은 유지한다. combat-options.batch만 위임된 사용자 행동을 묶는다. tool-result-view는 저장 후 전달본에서 같은 지침 문자열과 과거 목록만 줄이며 저장 원본·카드 표식·실제 수치를 바꾸지 않는다. tool-runtime은 roster 변경과 responseChars를 진단에 추가한다. PM IPC 연결·타임아웃·저장 트랜잭션 식별자는 바꾸지 않는다.
+
+skill-casting은 meta.skillCasting에 고정 기술·대상·남은 자기 차례를 저장한다. 시작/대기 행동은 비용·명중을 실행하지 않고 발동 시 각 엔진의 기존 비용·명중·효과·연계 경로를 사용한다. 즉시 반응/연계에서 시전 대기를 우회하지 않는다. combat-tactics는 준비된 강공격과 현재 HP·거리·방어 기술을 보고 방어/후퇴를 선택하며 같은 방어·후퇴만 반복하지 않는다. native의 준비 방어는 meta.preparedDefense에 저장해 다음 자기 턴까지 적용하고 반응 방어와 중복 합산하지 않는다.
+
+combat-options.scaleEnemies는 등록 시점부터 적의 현재/최대 HP에 한 번만 감소 효과를 적용하고 원래 최대 HP는 보존한다. combat 종료 경로는 참가자 쿨다운·시전·준비 방어를 초기화한다. 사용 횟수와 자원은 그대로다. effect-model의 castTurns는 공통 편집·구축·뉴뉴·상태/미니보드에 전달된다. 실제 호스트 실행과 별도 최종 검사는 수행하지 않았다. 이번 버전은 로컬 배포만 허용되었다.
+
 
 ## 0.25.2 Provider Manager IPC와 알림
 
@@ -240,7 +345,7 @@ repository.js의 불변 revision 메모리 캐시와 lifecycle의 정상 이어�
 
 action-gauge.js는 d100/헌터/무림의 engine과 별도 Erencha engine이 공유하는 진행 계산이다. combatOptions.mode의 round/gauge/free와 현재 전투의 combat.turnMode를 구분한다. Erencha의 기존 combat.mode=pve|duel|pvp는 사망/보상 규칙이므로 그대로 둔다. 구형 turnTable 불리언은 mode가 없을 때 round/free로 읽으며 진행 중인 과거 전투에 게이지를 새로 주입하지 않는다.
 
-게이지 값·논리 시간·완료 행동 수·검증된 속도 수식 AST를 현재 전투와 함께 저장한다. 일반 행동 종료에만100을 소비하고 준비된 다음 행동자까지 필요한 최소 시간만 이동한다. 동률은 현재 저장 참가 순서를 따르며 새 합류자는0에서 시작한다. 같은 행동자가 연속 선정돼도 완료 행동 번호로 턴 완료 여부를 구분한다. 새 배틀에서 효과의 내부 시간 예약만 초기화하며 남은 지속량은 보존한다.
+게이지 값·논리 시간·완료 행동 수·검증된 속도 수식 AST를 현재 전투와 함께 저장한다. 0.23.0은 일반 행동 종료에만100을 소비하고 준비된 다음 행동자까지 필요한 최소 시간만 이동했다. 0.25.5부터는 위의 행동 중 충전과 readyAt 순서를 함께 사용한다. 새 합류자는0에서 시작한다. 같은 행동자가 연속 선정돼도 완료 행동 번호로 턴 완료 여부를 구분한다. 새 배틀에서 효과의 내부 시간 예약만 초기화하며 남은 지속량은 보존한다.
 
 effect-system은 gaugeSpeed/gaugeChange와 durationBasis를 처리한다. 기본은 대상의 자기 차례이고 combat_time은 기본 속도로 한 차례에 해당하는10 논리 시간마다 만료·지속 피해/회복을 처리한다. 대기/서술/화면 조회는 시간을 진행시키지 않는다. 저장된 연계·반격은 일반 게이지를 추가 소비하지 않는다. 전투가 길어는 게이지에서 최대60회 일반 행동을 묶되 실제 사용자 선택 경계를 지킨다.
 
