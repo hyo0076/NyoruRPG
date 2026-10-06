@@ -1,4 +1,14 @@
-# NyoruRPG MCP 구조 · 0.28.7
+# NyoruRPG MCP 구조 · 0.28.9
+
+## 0.28.8 전투 저장 정의와 효과 작성 경계
+
+combat-range.init은 actor.rangeRepositioned와 combat.range(version/positions/startDistance)를 생성한다. backup의 공통 상태 스키마에서 이 둘이 빠져 실행 후보 상태를 거부했다. 이동·공격이 기록하는 불리언과 0~3의 실제 전장 좌표를 선택 필드로 추가한다. 같은 전투 흐름의 meta.skillCasting, preparedDefense, tacticalChoice도 실제 작성 구조에 맞춰 연결한다. 모든 새 필드는 이전 저장에 없어도 유효하다. 에렌샤는 erencha-rules.validateWorld를 별도로 사용하므로 이번 오류와 같은 추가 필드 거부를 하지 않는다.
+
+effect-presets의 작성 변환은 type:status의 명시된 status/preset 또는 알려진 target/name/effect를 기존 프리셋으로 연결한다. 저장 효과 종류를 늘리지 않는다. 지속시간·확률·전달 조건은 유지하고 프리셋의 정규 status ID를 사용한다. 이름이 없거나 해석할 수 없거나 서로 다른 프리셋을 가리키면 EFFECT_STATUS와 효과 위치·원본 행·예시를 반환한다. 원래 구체적인 효과 type과 stat→raw 경로는 유지한다.
+
+공통 저장 검사에서 난 INVALID_SCHEMA에는 runtime_state_schema 표시를 붙인다. util.errorResult가 같은 저장 형식 오류와 효과 작성 오류를 구분하여 상세·복구 안내를 보존한다. Repository의 실패 영수증 재사용은 유지하며 조회·인수 변경·scene_reset을 코드/자료 오류의 복구 수단으로 안내하지 않는다. 정상 호출과 후속 행동의 횟수·자동 진행·카드 위치·호스트 대기시간은 변경하지 않는다.
+
+확인 범위는 첨부 텍스트와 관련 소스 읽기·수정, 로컬 배포 생성이다. 첨부에는 실제 효과 행·호스트 진단 시간 정보가 없어 해당 status 행의 정확한 내용과 전체 지연은 미확인이다. 별도 최종 검사·실제 RisuAI·모델 실행·GitHub 게시는 수행하지 않는다.
 
 0.28.7 추가 수정: murim-realms.generate와 fromSource가 새로 만드는 경지표의 outer/inner만 정수 반올림한다. 작은 배율·많은 단계로 반올림 값이 겹치면 다음 문턱을 올려 단계 증가 조건을 유지한다. 성장 배율·실패율·이미 저장한 경지표의 validate/config와 수행 방향별 보정 계산은 바꾸지 않는다. 사용자가 같은 0.28.7로 묶어 GitHub 게시를 승인했다. 수정 소스와 배포 생성 범위이며 별도 검사·실사용 실행은 생략한다.
 
@@ -289,6 +299,14 @@ RP가 장면과 행동을 정합니다. 처음 필요한 인물·기술·활동�
 | 모듈 지침 | `module-guidance.js`, 각 룰북 프롬프트, `module-settings.js` | 사용자가 모듈에서 고른 지침을 사용. `protocol.md`는 빌드 산출물 |
 
 공통 d100과 헌터는 공통 계산 구조를 공유하면서 헌터 고유 능력치·성장·상태창을 유지합니다. 로판·미연시는 사회 규칙 구조를 공유하며, 에렌샤는 별도 숙련도 엔진을 사용합니다. 예전 저장 세계도 기존 처리 경로를 유지합니다.
+
+## 0.28.9 · 무림 새 인물과 탐험 연결
+
+`murim-assistant.setupContext`는 초기 개인 요청의 대상과 새 인물 등록 대상을 분리한다. `assertIdentity`는 별도 개체를 기존 인물로 합친 응답과 다른 비적대 등록 인물의 이름·별칭을 빌린 새 인물 응답을 적용 전에 거부한다. 이름 없는 무공 유사성만으로 신원을 추정하지 않으며 기존 저장을 자동 수정하지 않는다. 신규 준비 캐시는 loreVersion 2를 사용하고 이전 응답·영수증을 삭제하지 않는다.
+
+`adventure.prepareNative`는 같은 적 행(count)의 새 무림 준비 응답만 `reuseEncounter`로 이어받는다. 다른 개체·기술·물품 ID 참조가 있으면 재사용하지 않는다. 매 설치에서 독립된 인물·기술·장비 상태를 생성하며 기존 인물을 템플릿처럼 초기화하지 않는다. `visible.nextActions.combat`은 발견한 적의 ID와 실제 교전용 act 연결을 알려주는 조회 자료이며 자동 전투 명령이 아니다. `turn-review`는 탐험 영수증과 전투 영수증을 구분하고, 이미 끝난 서술과 저장된 적 상태의 실제 모순을 구체적인 미해결 사항으로 알리도록 한다.
+
+`tool-runtime`의 `toolVerification` 이벤트는 기존 확인 작업을 감싼 시간 기록이다. chatPower/history/historyBeforeApply별 시작·완료·실패를 남기며 확인 생략·새 타이머·재호출은 추가하지 않는다. 기존 verify 전체 시간만으로 보조 API 지연이라고 판정하지 않는다.
 
 ## 호출과 사건의 차이
 
