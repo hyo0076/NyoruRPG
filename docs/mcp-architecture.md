@@ -1,4 +1,27 @@
-# NyoruRPG MCP 구조 · 0.28.9
+# NyoruRPG MCP 구조 · 0.28.10
+
+## 0.28.10 제보 후 공통 복구 경로
+
+scene-reconciliation은 내부 검사와 사용자 편집용 완료 장면 보완이다. 공개 MCP 목록에는 새 진행 도구를 추가하지 않는다. turn-review가 최종 서술 원문을 대조한 뒤 내부 reconcile을 호출하고 tool-runtime의 기존 트랜잭션으로 원자적으로 저장한다. 이 경로만 기존 숫자 감소 확인에서 제외하며 등록된 적만 대상으로 한다. native/Hunter의 기존 처치 경험치 표시, 에렌샤의 defeat 사건, native-obtain 및 탐험 claimed를 재사용하여 중복 지급을 막는다. 정의되지 않은 전리품은 생성하지 않으며 unpreparedLoot로 남긴다. 룰북에 없는 보상이나 지난 타격별 숙련을 추측하지 않는다.
+
+뉴뉴의 scene_resolution 제안은 같은 보완 함수를 game-editor의 현재 스냅샷 확인 뒤 실행한다. 검사 입력 편집도 내부 보완 스키마를 사용한다. game-editor-ui와 review-issues-ui는 닫힌 편집기의 입력값과 중복 저장을 방어한다. 신규 인물의 정확한 기존 이름/ID는 새 개체 키보다 우선하고, 이전 이중 식별자 중복은 기록을 보존하며 전투 참가 목록에서 제외한다. mergedInto는 공통 백업의 선택 필드다.
+
+gameplay의 전투 중 탐험 조우 조회는 null로 구분한다. false 값 뒤 enemies.map에 접근하던 실제 예외를 제거한다. combat-range.profile은 장착 무기와 사용 기술의 최대 사거리 중 높은 값을 사용한다. range.absolute는 공통 장비/기술 편집·스키마·저장·계산에 연결하며 사용 기술 고정값 → 무기 고정값 → 두 최대값 비교 순이다. 고정 상태에서는 rangeBonus로 바꾸지 않고 거리별 명중 보정은 별도로 유지한다. 택티컬의 미터 거리 계산은 별개다. UI는 표시 이름에서 저장된 instanceKey 접미사만 줄이며 실제 ID를 바꾸지 않는다.
+
+setup-retry는 명시적인 재시도 시 새 작업의 깨진 응답 캐시만 비우고 원래 작업을 보관한다. 잘못된 장비 효과는 해당 효과만 보완 요청할 수 있고 보완 전 자료를 남긴다. 유효 후보 초안은 다시 생성하지 않고 확인한다. 무림 준비는 현재 경지표에 맞는 경지와 여덟 필수 스탯이 누락되면 해당 정보만 한 차례 보완 요청한다.
+
+generation-rollback은 같은 채팅의 생성만 폐기하고 저장된 open-tx 연결을 정리한다. rollback-ui가 호스트의 실제 사용자/답변 원문과 이력 서명을 보여주고 선택값을 적용 시 다시 확인한다. 이전 시점 복원 마커는 화면 새로 고침으로 최신 상태에 덮이지 않으며, 다른 답변을 잘못 이어가는 경우 선택한 Risu 답변의 재생성을 안내한다.
+
+## 0.28.10 구축 초안과 복구 편집
+
+tactical-ui는 편집창 위·아래의 저장과 저장 없이 돌아가기를 같은 처리에 연결한다. ui.jobPanel과 onboarding은 편집 중 재시도·최종 적용·이전 단계 이동을 숨긴다. compiler.editTacticalDraft는 실패한 후보도 허용하며 관리자 편집의 내부 draftEdit 문맥에서 전체 세계 검증을 지연한다. 수정 후보를 기존 backup.validateWorld로 확인하여 오류가 남으면 failed와 수정 자료를 같이 보관한다. 실제 게임의 관리자 편집과 최종 적용 검증은 그대로다.
+
+완성 후보가 있는 택티컬·지르코트의 단순 재시도는 revalidateSavedDraft로 같은 후보만 확인한다. 후보가 없으면 기존 prepareRepair/run을 사용하며 새 작업 ID를 onboarding의 setup.jobId에도 저장한다. 자료를 다시 생성하는 명시적 수정 요청은 별도이다.
+
+recovery-ui는 후보·인물 facts·원문 응답·중간 전체 자료 순으로 대상을 제공한다. 질문 버튼이 실제 수정 대상을 열어 오류와 함께 전달하며, nyunyu는 요청 시점의 scope/job/path/원값/입력 스냅샷을 제안에 묶는다. 오류 후보의 일반 게임 요약이 실패해도 원본 자료는 수정 문맥으로 전달한다. 제안 열기와 저장에서 오래된 대상의 덮어쓰기를 막는다.
+
+compiler.repairSavedDraft가 택티컬 중간 자료를 수정하면 기존 후보는 작업의 recoveryPreviousCandidates에 보관하고 수정한 중간 자료로 이어 만든다. 이미 소비한 원문 응답 수정은 tactical-assistant.repairResponse가 바뀐 필드만 facts에 연결한다. 이후 자료나 직접 편집과 겹치는 변경은 EDIT_CONFLICT로 남겨 인물 facts를 직접 수정하도록 안내한다. 현재 게임·주사위·도구 재시도·IPC에는 새 실행을 추가하지 않는다. [사용 순서와 확인 범위](nyoru-release-0.28.10.md).
+
 
 ## 0.28.8 전투 저장 정의와 효과 작성 경계
 
