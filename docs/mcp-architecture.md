@@ -1,4 +1,12 @@
-# NyoruRPG MCP 구조 · 0.28.10
+# NyoruRPG MCP 구조 · 0.28.11
+
+## 0.28.11 기술 재사용 대기
+
+skill-cooldown이 공통 엔진의 기술 재사용 설정·남은 대기·사용·자기 차례 종료를 연결한다. D100 계열은 새 정의/사용자 편집의 cooldownEnabled:true에만 기존 cooldown 정수를 적용하여 과거 무시하던 값을 자동으로 활성화하지 않는다. native-assistant의 신규 인물/기술과 murim의 공용 ability 작성이 원문 또는 요청된 cooldown을 보존한다. 원래 레거시 비-native 쿨다운 방식은 유지한다.
+
+일반 행동을 사용하는 자기 차례에 발동하면 skillState.cooldownSkipEnd가 그 차례 끝의 감소 한 번만 건너뛴다. 외부 차례에 사용한 방어·반응·연계는 다음 자기 차례부터 감소한다. 효과·기절 상태를 만들어 기술 전체를 막지 않으며 해당 기술 ID의 gates만 확인한다. 자동 조건 발동도 같은 카운터를 확인하고 지불 후 시작한다. 최대 재사용 대기 1000을 넘기지 않아 기존 cooldown 저장 범위를 유지한다. 선택 필드 cooldownEnabled와 cooldownSkipEnd는 이전 자료에 없어도 유효하다. 전투 종료는 기존 skill-casting.reset에서 카운터/표식을 함께 초기화한다.
+
+공통 skill-editor.patchSchema에 cooldown을 추가해 구축 초안·일반 편집·뉴뉴 제안이 동일 revise를 사용한다. 기술 편집 비용·사용 조건에는 효과 유무와 무관하게 재사용 대기와 공격 시전 대기를 표시한다. effect-editor의 별도 시전 입력은 이 화면에서 숨겨 같은 설정이 두 곳에서 충돌하지 않는다. skillNumbers·sheet·전체 기술 목록·미니보드가 적용 중인 대기를 읽는다. 에렌샤는 기존 저장/계산을 보존하며 시전 입력 위치만 함께 옮긴다.
 
 ## 0.28.10 제보 후 공통 복구 경로
 
