@@ -1,4 +1,156 @@
-# NyoruRPG MCP 구조 · 0.28.11
+# NyoruRPG MCP 구조 · 0.30.0
+
+## 0.30.0 후속 · 과거 대화 PDF와 유미 전송 경계
+
+main-context-pdf는 beforeRequest의 기존 상태 주입이 끝난 뒤 적용한다. safeMessage로 일반 대화만 분리하고 최근 블록을 제외한 긴 연속 구간의 앞뒤에 독립적인 pm-pdf 경계 메시지를 삽입한다. 원래 메시지·역할·서명은 수정하지 않는다. 자신의 경계만 재준비 시 제거하며 다른 프리셋의 구간 지정이 있으면 추가하지 않는다. power/module/type의 기존 게이트를 유지한다.
+
+settings.mainContextPdf(enabled/keepRecent)는 기본 OFF/4이며 main-context-pdf-ui가 AI 연결에서 즉시 저장한다. PDF 생성은 Yumi Provider Manager의 기존 텍스트 변환 기능이 맡는다. 제공된 1.16.3의 normalized-message 변환은 Risu 원본에 임의로 추가한 documents를 읽지 않으므로 그 방식은 사용하지 않는다. 유미의 모델별 Gemini PDF·전역 수동 지정 설정은 별도로 필요하다. 지원되지 않거나 PDF 변환이 꺼진 모델의 유미 경로는 표식을 제거하고 원문으로 계속한다.
+
+mainContextPdfPrepared는 전체/선택/유지 문자 수·블록 수·범위·사유·transactionId를 기록한다. conversionConfirmed:false와 usage:null을 유지한다. 이 기록은 실제 서버 요청이나 유미 내부 도구 반복 횟수가 아니다. API 사용량·청구 검증은 유미/프로바이더 로그에서 별도로 수행한다. 기존 플러그인 API·Jev 입력·게임 처리·중복 실행·롤백은 변경하지 않는다.
+
+변환할 구간이 없는 ON 요청에는 명시적인 빈 수동 범위를 넣는다. 유미 1.16.3은 빈 범위에서 원문을 유지하며, 범위가 아예 없으면 전체 자동 변환으로 돌아가므로 둘을 구분한다. Nyoru 토글 OFF는 범위 지정만 끄며 PDF 전송 전체 OFF는 유미 모델 설정에서 한다.
+
+요청 메타데이터 참고: [Risu OpenAIChat 정의](https://github.com/kwaroran/Risuai/blob/main/src/ts/process/index.svelte.ts), [beforeRequest 실행과 모델 전달 경계](https://github.com/kwaroran/Risuai/blob/main/src/ts/process/request/request.ts). removable은 호스트의 프롬프트 절삭 표시로 허용하되 attr/thoughts/multimodals/cachePoint에 실제 값이 있는 메시지는 그대로 남긴다.
+
+## 0.30.0 후속 · 준비한 자료와 남은 생성 분리
+
+jev-authoring은 생성 종류, 명시된 대상, 수치의 원문 구간/단위, 물품 준비 필드와 remaining을 만든다. 생성 지침 꼬리를 Jev 요청에 복사하지 않는다. 준비 자료에서 fixed(명시한 이름), selected(분류·수치 해석), evidence(원문 구간), remaining(부족한 필드)을 구분한다. 생성 응답의 수정값을 selected 위에 합친 다음 기존 normalizer/Repository가 검증·저장한다. 완성 여부 판단을 일반 장비·인물·기술에 확대하지 않는다.
+
+jev-preparation은 원문 선별 질문과 구성 요소 질문의 state를 분리한다. 읽지 않은 조각은 보존한다. 기존 인물 후보 추천은 명시적 identityLookup에만 사용하고 평소 새 인물 작성에서는 중복 질의를 하지 않는다. Erencha 단일 물품은 erencha-prompts.ITEM과 짧은 수령인 정보로 준비한다. 확장 기능이 꺼졌고 명시된 금액과 완전한 일반 재료 설명이 있는 경우 plainMaterial 선택과 단위 검증을 거쳐 complete 응답을 조립한다. provider는 이 경로에서 생성 API를 보내지 않으며 그 밖에는 부분 응답을 assemble한다. 게임 실행·사건 지급은 이후 기존 엔진 경로에 그대로 남는다.
+
+actor-lore-search/jev-assist는 관련/미해결/제외 후보를 분리한다. complete 원문에 대한 확신된 무관 판단만 제외하며 발췌와 미검토 후보는 기본 검색에 남긴다. 확정한 자료와 소수 미해결 후보를 모두 읽을 수 있으면 추가 선택 API를 생략한다. 기본 검색이 필요하면 남은 후보만 전달하고 확정 ID를 보존한다. bounded index 밖의 자료는 omitted로 표시한다.
+
+quick-question의 optional field는 정확한 대상과 유일한 저장 항목을 연결할 때 AI를 생략한다. Jev의 확신된 none은 전체 저장 후보가 포함됐을 때만 정보 없음으로 마친다. 후보가 잘렸거나 대상이 모호하면 기본 API가 해석한다. 응답 전 scope/전원/저장 snapshot 비교를 유지한다.
+
+jev-provider의 route/generation과 provider.report는 생성 생략, 후속 전송, 입력 바이트 증감, API가 보고한 usage를 기존 진단에 연결한다. 준비 설명으로 입력이 늘어난 양도 별도 합산하며 UI에는 순증감을 표시한다. 이 계측은 전체 서술 비용이나 청구 절감액을 뜻하지 않는다. 이번 후속 변경은 별도 최종 검사 없이 소스 수정과 배포 생성 범위다.
+
+## 0.30.0 점검 후 로컬 전환
+
+Jev는 기존 선택 기능과 계약을 유지한다. erencha-assistant는 신규 인물의 instanceKey와 저장 인물의 kind/entity를 준비 자료에 전달하며 jev-preparation은 명시적인 새 개체에 정체성 후보를 붙이지 않는다. 원본 생성 AI의 고유 내용 작성, 실제 엔진 검증·저장, 모호할 때 기존 처리로 이어지는 경로는 유지한다.
+
+quick-question의 공통 물품 ID는 instanceId를 우선하고 id를 사용하는 룰북은 기존 값을 쓴다. 저장 ID·소유자·장착 판정과 결과 fact를 일치시킨다. backup의 quote/itemState는 기존 enhancement(0~30)를 선택 필드로 인정한다. game-editor는 무림 스탯 변환을 미리보기의 복제본과 저장값에 일관되게 적용해 runtime migration 후 예상 상태 비교가 잘못 실패하지 않도록 한다.
+
+사용자가 이번에 요청한 최종 점검에서 첨부 기록과 로컬 자동 검사 101건을 확인했다. 실제 설치 호스트 재실행과 새 모델/API 실행은 포함하지 않는다. [전환 안내](nyoru-release-0.30.0.md) · [진단 기록](../artifacts/jev-review-0.30.0/점검-기록.md).
+
+## 0.29.10 Jev 준비 분리
+
+에렌샤 현실 수면 제보 후속: erencha-reality.advance는 접속 중 생활 경과에만 config.timeScale을 적용하고 realm:real 또는 명시적 수면은 1배로 진행한다. 사용자도 away/sleeping을 저장하며 완료 수면과 수면 시작을 구분한다. pendingRealMinutes는 생활 행동에서 처리했지만 현실 시계 표시에는 아직 반영되지 않은 분량이다. 후속 clock의 경과에서 같은 분량을 차감하고 접속 구분이 바뀌면 정리한다. 편집 자료에서는 제외하며 뉴뉴가 다른 값을 편집해도 보존한다. clock sleep:true는 같은 시간 처리 안에서 회복을 적용한다. 과거 영수증 재실행·수치 소급 초기화는 하지 않는다.
+
+summary의 player와 people에 dead/away/sleeping/canAct·경고를 제공하고 erencha-status.packet이 공개 생활 상태를 모든 상태 응답과 주입 자료로 전달한다. rulebook-runtime.prepare/apply 양쪽에서 게임 행동 가능 여부를 확인하며 저장 조회와 실제 생활 행동·관리자 편집 경로는 유지한다. advance의 시간 경과로 행동 불가가 된 인물은 준비한 방어·시전을 정리한다. 새 경고는 결과 changes, 현재 경고는 erencha-ui에 표시한다. 뉴뉴에는 현재 editable.realLife와 ledger의 최근 최대 12개 생활/clock 영수증을 구분해 전달하며 과거 원인을 추정해 단정하지 않도록 지침을 보완한다. beforeRequest 검사는 실제 생활 처리와 경과 영수증을 비교하되 과거 구간을 무작정 재실행하지 않는다.
+
+quick-question은 기존 rpg_state에 읽기 전용 ask(question, actorId?, subject?)만 추가한다. MCP 도구 이름과 모듈 연결 ID는 그대로다. rulebook-runtime의 공통 catalog로 각 룰북·탐색·IPC 스키마를 연결하고 tool-runtime.read의 별도 분기에서 inspect한 현재 채팅의 저장/스테이징 값을 읽는다. 일반 조회의 상태 동기화·전체 상태 패킷·생성 준비·게임 행동 실행을 거치지 않는다.
+
+질문 후보는 저장된 값·통화·개수·소유자·단위와 원래 ID를 가진 제한된 목록이다. 전체 후보·영어 질문·기준을 포함한 입력 한도를 맞추며 Jev의 choice를 실제 후보로 역조회한다. 같은 단어가 있어도 인물·물품이 다르면 모호한 것으로 취급한다. Jev가 확정하지 못하면 기본 연결로 한 번 해석하며 값·실행 계획·일반 지식 답변을 생성하지 않는다. 조회와 무관한 요청은 not_applicable, 정보 없음은 not_recorded, 대상 불명은 needs_clarification으로 구분한다. not_applicable에는 고정 반려 대사를 넣지 않는다. 결과 대기 중 채팅·저장 상태가 바뀌면 이전 답을 폐기한다. 현실 욕구는 erencha-reality.summary의 허용된 경고만 사용하며 숨겨진 수치를 공개하지 않는다.
+
+jev-provider는 System One의 choice 요청·응답 검증, 기기 인증(jevConnection), 입력 한도, 최대 대기·실패 후 60초 보류, 채팅별 입력 캐시와 사용 요약을 담당한다. settings.jev에는 비밀이 아닌 선택값만 저장한다. api-settings-ui → jev-ui가 직접 주소/기본 API 공유/연결 확인/사용 기록을 제공한다. 기본 OFF이며 해당 영역이 꺼지거나 인증이 없으면 기존 경로다.
+
+settings.jev.useDefault가 켜지면 selectedConnection이 기본 API의 알려진 생성 경로를 /v1/systemone으로 교체하고 모델 jev·기본 전송/로컬/키 없는 프록시 설정을 선택한다. selectedSecrets는 기본 인증을 사용하며 별도 Jev 설정과 키를 덮어쓰지 않는다. 실제 요청 주소·헤더로 캐시를 구분하고 공유한 기본 설정이 요청 중 바뀌면 응답을 폐기한다. 진단에는 실제 선택한 주소를 남기고 인증 헤더는 가린다. 직접 설정은 기존 TypeSafe 주소에 제한하지 않는다.
+
+validateQuestions는 영어 질문 지시·선택 기준만 전송하도록 확인한다. jev-assist/preparation은 동적 인물명·기술명·수치·효과명과 룰북 기준을 state에 보관하고 질문에서는 후보 키/목록 위치를 영어로 참조한다. 원문 번역이나 별도 번역 API 호출은 없다.
+
+provider.request의 명시적 preparation 옵션이 jev-preparation을 호출한다. request 경계에서 내부 preparation을 분리하고 buildRequest에는 outputSchema/schemaName만 전달한다. 준비 전후의 생성 요청 검증과 스키마 호환 재요청 모두 내부 옵션을 전송하지 않는다. 기존 생성 요청 형식·인증의 사전 검증 뒤에만 선택적 준비를 실행한다. compiler와 native/erencha/murim/social/tactical assistant, encounter-builder, adventure/native-exploration의 새 자료 작성에 현재 scope와 룰북을 전달한다. 정확한 조회·저장 계획은 기존대로 먼저 반환한다. Jev가 생성 API 자체를 재호출하거나 새 MCP 실행을 만들지 않는다.
+
+jev-preparation은 특정 대상의 긴 sources에서 제한된 원문 조각만 분류한다. 확신된 무관 조각만 생성 입력에서 제외하고 나머지와 원본 job snapshot은 보존한다. 정체성 후보·수치 원문·효과 어휘·환경 분류는 생성 AI가 원문과 대조하는 힌트다. 새 단일 물품의 type/category만 준비 필드로 합치며 생성 AI의 명시적 정정이 우선한다. 어시스턴트는 합친 응답과 원래 응답을 보관하고 기존 룰북 normalizer를 사용한다. 기존 정의 편집에는 자동 기본값을 덮어쓰지 않는다.
+
+인물 생성의 person 또는 인물 kind는 단일 기술 작성과 구분한다. 에렌샤 ensure는 kind가 null이어도 내부 preparation.entity:actor를 전달한다. 생성 지침에 포함된 공통 기술 설명만으로 단일 효과 선택을 요청하지 않는다. 준비 요청은 jev-provider의 inputMetrics/fitsInput을 공유해 state+최대 질문 30,000 UTF-8 바이트·전체 60,000 바이트·60질문 한도를 맞춘다. splitQuestions는 독립 질문을 묶음으로 나누되 한 질문의 선택지는 분리하지 않는다. 질문 하나도 state와 함께 들어가지 않을 때만 선택적 근거 질문을 줄이고 기존 생성 원문은 유지한다. 실제로 선택지를 묻는 효과 어휘만 state에 넣는다.
+
+사용자의 입력 초과 시 추가 호출 요청에 따라 evaluate/evaluateBatches가 유한한 묶음을 순차 실행한다. 로어는 기존 bounded 후보 창의 모든 후보를 해당 질문과 함께 나눠 보내므로 각 묶음에 전체 후보를 반복하지 않는다. 완료된 모든 질문을 원래 키로 합치며 중복 질문 ID를 거부한다. 한 묶음이 실패하면 부분 결과를 확정 답으로 사용하지 않고 기존 처리로 이어간다. 각 요청에 batch.id/index/total을 기록하며 토큰·시간·캐시·실패 로그는 실제 요청 단위다. 취소·채팅 변경·설정 변경은 묶음 사이에도 확인하며 자동 재시도로 요청을 끝없이 늘리지 않는다. 추가 호출은 Jev 판단에만 한정하며 생성 AI 요청이나 게임 행동을 복제하지 않는다.
+
+jev-assist가 로어 후보 선택, 현재 인물의 동일 기술 선택, 허용된 일반 판정 기준, 뉴뉴 지식 주제, 검사 의심 범주를 처리한다. actor-lore-search는 제한된 후보 중 실제 ID만 역조회하고 실패/모호함에 기존 의미 검색을 사용한다. 기술 재사용은 기존 소유 정의를 참조하며 몬스터 인스턴스나 인물을 합치지 않는다. check도 주사위를 선택하지 않으며 무림의 제한된 전용 능력치를 사용한다.
+
+뉴뉴는 최신 질문과 최근 사용자 질문 두 개만 로어 검색 맥락으로 전달한다. 직접 이름 검색은 최신 질문만 사용하고, 의미 검색은 이전 질문으로 후속 요청의 대상을 해석한다. 이전 이름은 후보 순위 자료일 뿐 일치 확정이 아니며 최신 대상이 우선한다. 현재 편집 인물을 기본 검색 대상으로 대체하지 않는다. 캐시 fingerprint에도 사용자 질문 맥락을 포함한다. 이름 경계의 한국어 조사와 제목의 괄호 속 이름을 인식하며 원문·ID·꺼짐 상태는 변경하지 않는다. Jev의 none/unrelated 응답은 확정 불가와 로그 문구를 구분하되 기존 생성·검색으로 이어가는 동작은 유지한다.
+
+nyunyu는 필요한 설명 묶음을 선택하되 현재 룰북의 핵심 지식·단위와 실제 편집 범위를 유지한다. 주제 선택에는 최신 질문과 앞선 사용자 질문 두 개만 전달하고 AI의 이전 답변은 제외한다. 주제가 바뀌면 최신 요청이 우선이며 확신된 no 설명만 제외하고 모호한 묶음은 유지한다. 일반 뉴뉴 대화 API의 원래 대화 이력은 보존한다. turn-review는 Jev 분류를 추가 근거로만 받아 항상 전체 검사와 원래 저장 보완을 수행한다. beforeRequest 대기·영수증·재시도 식별자·사용자 확인·주사위 처리 순서는 바꾸지 않는다. 결과/캐시는 해당 채팅·분기·모델·설정·입력에 묶이며 취소/채팅 변경/종료를 따라간다.
+
+jev-diagnostics는 사용자 요청에 따라 실제 전송 본문·응답 원문·해석 결과·후속 선택을 별도 urpg/jev-diagnostics/v1/에 보관한다. 인증정보는 저장 전에 가리고 전역 200건·16MB 한도를 적용한다. 배경 저장 큐는 게임 거래와 분리하며 실패는 진단 안내로 남긴다. 요청/응답에 같은 ID를 사용하고 캐시·취소·시간 초과·미완료를 구분한다. 내보내기는 현재 채팅 또는 전체를 선택하며 storage-manager의 채팅/진단 삭제와 연결한다. 호스트 진단은 기존 요약 이벤트만 받는다.
+
+입력 한도 검사 전에 계획한 요청을 journal에 기록한다. 전송하지 않은 제한 초과는 networkRequest:false·stage:preflight와 input/limits/error.details로 남기고 후속 fallback도 같은 요청 ID에 연결한다. 한도에 맞춰 보낸 준비 질문 수와 원문 유지 여부는 bounded 결정 기록에 연결한다. 유효 요청·캐시의 집계와 저장 상한은 유지한다.
+
+[연결과 적용 범위](nyoru-release-0.29.10.md). 0.30 전환은 실사용 후 결정하며 이번은 로컬 배포 생성 범위다.
+
+## 0.29.9 결산·처치 공유·인물별 현실 생활
+
+combat-resolution은 기존 gameplay/erencha-engine/tactical-combat의 실행을 묶어 한 호출의 시작/종료 상태와 실제 영수증으로 combatSummary를 만든다. resultsOnly와 위임 권한이 있을 때만 계산 범위를 늘린다. 결과 정체·계산량·시간 경계에서는 현재 상태를 남기고 미완료를 알린다. 임시 집계는 WeakMap으로 보관하며 rulebook-runtime.apply 마지막에서 부가 처리 이후 다시 집계한다. 세부 steps는 원본 ledger에 남긴다.
+
+result-record의 display 선택만 summary를 한 장으로 취급하고 render/combat-summary-ui가 결산 카드를 만든다. tool-result-view는 메인 AI 응답에서 그 전투의 상세 steps와 중복 상태 자료를 결산으로 대체한다. 내부 계산과 재시도 식별자·저장 결과는 유지한다. combat-options/play-options/play-settings-ui/초기 구축/뉴뉴가 같은 토글을 사용한다.
+
+party-xp는 같은 전투/진영의 사용자·동료를 선택해 기본 처치 경험치의 split/full 몫을 만든다. native-rpg/hunter-rpg/erencha-engine의 기존 처치 완료 경로가 각 룰북의 XP 함수로 지급한다. OFF는 이전 경로다. 새 공유량에도 기존 defeated/defeat 사건 중복 방지를 사용한다.
+
+erencha-reality는 기존 사용자 root 현실 상태와 config를 보존하고 people[actorId]에 다른 온라인 이용자의 욕구·건강·away/sleeping을 추가한다. actor-presence의 현재 표시/전투 참가 avatar만 elapsed 분을 같이 적용한다. 게임 NPC와 몬스터는 제외한다. 당시 timeScale(기본5)은 모든 새 경과 분에 적용했으나 0.29.10의 수면 제보 후속에서 위와 같이 접속 중 배율과 실제 현실 생활·수면을 분리했다. 게임 달력 변화만으로 현실 경과를 추정하지 않으며 optional-feature-actions의 게임 안 대기도 현실 경과로 중복 적용하지 않는다.
+
+real_life는 기존 도구 분기에서 실제 생활 행동/개인 자리 비움/복귀를 기록한다. NPC 회복은 대상만 변경하며 경제는 원래 사용자에게만 남긴다. 다른 아바타의 수면 시작 후 공유 시간이 지나면 해당 인물만 수면 회복을 받는다. erencha-engine의 자동 행동·연계와 guard가 현실 행동 불가를 확인한다. summary/context에는 이름별 경고와 자리 비움만 제공하고 상세 욕구는 nyunyu.editable(actorId)와 충돌 확인 편집으로 관리한다. 실제 대사는 강제하지 않는다. [사용 안내](nyoru-release-0.29.9.md).
+
+
+## 0.29.8 등록 인물 표시 그룹
+
+registry-ui는 기존 표시 대상 중 kind:enemy인 인물을 명시적 sceneActorIds·playerActorIds·combat.order와 비교해 나머지를 적·몬스터 기록으로 접는다. Presence.ids의 구형 active 전체 표시 기본값은 분류 근거로 사용하지 않고 현재 상태·미니보드의 표시 동작은 유지한다. 인물 검색은 두 그룹을 함께 검색하고 적 결과도 자동으로 펼친다. 같은 카드·편집 버튼·장면 선택 저장 경로를 재사용하며 별도 데이터 보관/삭제 작업은 만들지 않는다.
+
+registryEnemyRecordsOpen은 UI의 일시적 펼침 상태이며 채팅 scope가 바뀌면 초기화한다. native details의 펼침은 화면 전체를 다시 그리지 않으므로 작성 중 편집값을 지우지 않는다. 검색 때문에 자동으로 펼친 상태는 일반 펼침 설정에 저장하지 않는다. [사용 안내](nyoru-release-0.29.8.md).
+
+## 0.29.7 로어북 검색과 선택 기능 표시 연결
+
+host.sources는 현재 대화 자료에서 꺼진 로어 항목도 읽는다. source-selection-ui는 참조 가능 표시를 붙이고 초기 자동 선택에는 꺼진 항목을 추가하지 않는다. actor-lore-search는 최초 선택 밖의 이름·키워드·정체성 원문을 검색하며, 실패 시 기존 provider로 제한된 목록에서 의미 후보 ID를 받아 실제 항목으로 역조회한다. 없는 ID를 원문처럼 사용하지 않는다. 검색에는 조건·매크로를 실행하지 않는다. 원문 읽기와 의미 검색 메타데이터를 actorLoreSearch/nyunyuLoreSearch 진단에 남기고 뉴뉴 화면에서 참조 목록을 표시한다.
+
+에렌샤 내장 catalog도 새 등록 때 현재 로어를 검색한다. setup-request가 초기 추가 요청의 대상 인물을 구분하고 새 인물 준비에는 개인 요청을 넘기지 않는다. 초기 선택 페르소나가 다른 인물 자료로 섞이지 않도록 actor-lore-search에서 신원을 대조한다. 현재 저장 인물·사용자 편집은 그대로며 새 몬스터의 명시적 템플릿 복제는 다시 AI 검색하지 않는다.
+
+UI.tabs는 꺼진 구축 단계의 featureDraft 편집·뉴뉴 화면을 허용한다. optional-feature-ui → game-editor → compiler의 기존 초안 저장을 유지한다. runtime-details-ui는 metre profile.ranges와 네 거리 accuracy를 따로 표시한다. optional-feature-tools와 조회 summary가 활성 단위를 안내하고 실효 사거리를 보여 준다. 다른 룰북의 전투 계산을 합치지 않는다.
+
+actor-reference.combatName은 조우·전투의 전체 인물 목록에서 같은 이름을 구분하며 게이지·턴테이블·판정 카드가 함께 사용한다. card-information은 저장 결과 HTML 조각에만 간결 표시를 적용하고 상세를 남긴다. module-bridge의 cardCompact는 채팅별로 저장하며 backup에서 간결/호환 설정을 복구한다. 테마별 outline과 inline fallback을 함께 조정한다. [사용 안내](nyoru-release-0.29.7.md).
+
+
+## 0.29.6 무림·택티컬 표시 테마
+
+module-settings의 기존 테마 뒤에 무림 4·택티컬 5를 추가한다. 테마 선택 UI와 module-bridge, 백업의 기존 목록 검증을 그대로 사용한다. build-legacy의 테마 목록이 두 CSS를 theme-data와 배포에 포함한다. 기존 숫자 선택과 모듈 식별자는 변경하지 않는다.
+
+themes/murim.css와 tactical.css가 일반 판정·간결형 전투·여덟 결과 종류를 같은 테마로 표시한다. card-ornaments는 summary에 해당 테마의 장식을 추가하고, 같은 테마의 호환 표시에서 이미 적용한 장식은 유지하며 테마를 바꾸면 자기 장식만 교체한다. event 카드도 새 테마 장식을 사용하고 보급·의료·정비의 형태는 저장된 data-kind로 고른다. 실제 결과의 success/failure와 critical을 사용하고 시안의 숫자나 부상·보상을 새로 저장하지 않는다.
+
+card-inline-style과 event-card-view의 대체 표시에도 두 팔레트를 추가한다. CSS 파서가 없으면 장식을 숨기고 읽을 수 있는 배치와 결과 색상을 유지한다. 기존 스타일 후면 삽입·사용자 CSS 순서는 유지한다. 소스 수정·로컬 배포 생성 범위이며 실제 RisuAI 표시 및 별도 최종 검사는 실행하지 않는다. [적용 안내](nyoru-release-0.29.6.md).
+
+## 0.29.5 표시 모듈과 카드 스타일 순서
+
+card-themes.decorate는 기존 자기 스타일을 제거하고 테마 클래스를 붙인 뒤 스타일 블록을 표시 내용 맨 뒤에 추가한다. 소악마 기본 모듈의 Thoughts 제거처럼 # Response 이전의 HTML 태그를 지우는 표시 정규식이 NyoruRPG의 스타일까지 제거하지 않도록 한다. 일반 style 태그 형식, 카드별 CSS 범위, 기본→테마→사용자 CSS 순서는 유지한다. 카드 본문의 원래 삽입 위치나 세이브·MCP·AI 지침은 변경하지 않는다.
+
+제공된 모듈의 정규식과 공식 Risu processScriptFull의 플러그인→표시 정규식 처리 순서를 읽어 확인한 충돌이다. 실제 설치 환경에서 함께 실행한 결과는 별도 확인되지 않았다. [적용 안내](nyoru-release-0.29.5.md).
+
+## 0.29.4 테마별 결과 카드
+
+event-card-model은 기존 룰북별 presentation과 영수증을 읽어 획득·회복·거래·성장·퀘스트·탐험·효과·강화 표시 자료를 만든다. render의 presentation은 기존 계산 경로를 유지한 채 이 표시 자료를 연결하며, cardHTML/receiptHTML이 event-card-view에 원래 상세 내역을 넘긴다. 저장된 before/after/max가 있는 회복만 막대를 그린다. 인물 이름 외에 현재 게임 상태를 읽어 과거 자원·잔액·보상을 만들지 않는다.
+
+event-card-style은 공통 배치, themes의 각 파일은 승인된 테마를 담당한다. 새 카드에는 전용 꽃·마법진·회로 장식이 있어 card-ornaments의 기존 전투 장식을 중복 추가하지 않는다. card-inline-style은 같은 CSS를 직접 적용하고 파서 미지원 시 event-card-view의 기본 배치와 팔레트를 사용한다. CSS 범위는 결과 카드 안으로 제한한다. 게임 스키마·MCP·AI 지침·주사위·저장 식별자는 변경하지 않는다. [카드 안내](nyoru-release-0.29.4.md).
+
+## 0.29.3 카툰과 밤빛 마도서 표시
+
+themes/cartoon.css를 공통 chat-style에서 분리해 기본 카툰의 도형·서체를 적용하며 로맨스·사이버에는 영향을 주지 않는다. themes/fantasy.css는 남색 마도서와 실제 판정의 success/failure·critical 클래스에 따른 네 장식을 담당한다. 기존 favorable/unfavorable 판정 자료는 그대로다. combat-card-style의 간결형 배치는 보존하고 판타지 팔레트만 연결한다.
+
+card-ornaments는 판타지 결과 카드의 summary 안에 화면용 장식만 추가한다. card-inline-style과 card-themes가 같은 함수를 사용하며 이미 들어간 장식은 중복 생성하지 않는다. 다른 테마에서는 해당 장식 블록만 제거한다. 룬은 CSS의 data-rune 표시로 만들어 스타일이 사라져도 장식 문자가 본문에 이어 붙지 않게 한다. 호환 표시의 CSS 파서가 지원되지 않으면 장식을 숨기고 해당 테마의 기본 색상과 글자 배치를 사용한다.
+
+render의 피해·회복 숫자에 표시용 span을 추가한다. 저장 판정, 피해량과 비용, AI 지침, 주사위와 게임 상태는 수정하지 않는다. build는 네 테마 CSS를 묶으며 기존 모듈 v1의 연결 구조를 유지한다. [테마 안내](nyoru-release-0.29.3.md).
+
+## 0.29.2 저장 결과 카드의 공통 표시
+
+combat-card-view는 게이지·턴테이블의 저장된 행을 간결형 HTML로 만든다. action-gauge.html과 render의 turnsHTML이 이를 사용하며 tactical-ui의 presentation은 저장된 좌표·준비 시간·선공값을 같은 표시 자료로 연결한다. 실제 전투 스케줄러는 변경하지 않는다. 게이지의 새 표시 스냅샷에는 선택한 미터/칸 단위를 함께 보관하며 예전 결과에서 없는 값은 추정하지 않는다. 에렌샤 턴테이블은 같은 영수증의 range를 표시 행에 연결한다.
+
+combat-card-style은 채팅과 플러그인 내부 게이지가 사용하는 공통 배치다. chat-style은 일반 판정·변경 내역·영수증의 글자 크기와 줄바꿈을 담당하고 네 테마가 색상과 장식을 덧붙인다. 카드 호환 표시의 직접 스타일과 대체 배치에도 새 구조를 연결한다. card-themes는 combat 등 카드 자체의 루트 선택자를 그 카드에 범위 한정한다. 사용자 CSS는 기존처럼 후순위에 보관한다.
+
+거래·성장·효과 내역은 변경 항목과 값을 나누고, 저장된 판정 상세·피해·비용은 보존한다. 마커 해석과 출력 위치, 저장된 게임 결과·AI 지침·도구 목록은 바꾸지 않는다. [표시 범위](nyoru-release-0.29.2.md).
+
+## 0.29.1 카드 표시 범위와 호환 선택
+
+card-themes는 기본 배치와 @container/SVG 장식 규칙을 별도 style 블록으로 출력하며 원래 소스 순서와 사용자 CSS의 후순위 적용을 유지한다. gauge 루트도 카드 자체의 테마 클래스와 결합한다. chat-presentation-ui의 cardCompatibility는 module-bridge의 기존 채팅 설정에 저장하고 누락/false는 원래 표시로 읽는다.
+
+app.display가 선택값을 읽어 renderStoredText에 formatCard를 전달한다. renderStoredText는 캐시한 게임 결과를 바꾸지 않고 출력할 결과 조각에만 formatter를 사용한다. 주변 서술 전체를 DOM으로 읽지 않는다. card-inline-style은 샌드박스의 CSS 파서로 기본 제공 테마를 읽고 일치하는 요소에 직접 적용하며 지원하지 않는 환경에서는 기본 배치와 테마 색상을 사용한다. 사용자 CSS를 실행하거나 호스트 DOM에 접근하지 않는다. 기존 모듈 CSS는 전환 전까지 보존하며 호환 표시를 명시적으로 켠 경우에만 인라인 처리를 추가한다. [사용법과 미확인 범위](nyoru-release-0.29.1.md).
+
+## 0.29.0 룰북별 선택 기능
+
+optional-features는 룰북별 허용 목록과 채팅 meta.optionalFeatures의 토글을 관리한다. 누락은 OFF이며 원래 룰북 데이터와 별도로 저장한다. optional-feature-schema/model은 직접 편집·초안·뉴뉴가 공유하는 전체 자료 계약, 켜진 필드만 보여 주는 편집 스키마, 참조와 수치 검증을 제공한다. 끌 때 자료를 지우지 않으며 기존 룰북의 기본 기능도 끄지 않는다.
+
+optional-feature-combat은 호출 문맥의 무기·조준 부위, 파츠, 탄약, 무게, 미터 거리, 부위 피해를 공통 Engine/FX/Range와 에렌샤에 연결한다. 후보 세계 복제에도 해당 호출 문맥을 전달하고 종료 시 폐기한다. 택티컬/지르코트의 기존 파츠·시간·신체·탄창은 재사용하며 선택 연계와 개량만 별도로 연결한다. 미터 위치는 선택 기능 전투 자료에 저장하므로 기존 네 거리 좌표를 재해석하지 않는다.
+
+optional-feature-actions는 상인 거래·퀘스트 보상·수련·생활·소환·개량을 처리한다. 기존 인물 권한, 행동 차례, 난수, 끝난 전투 정산과 트랜잭션을 사용한다. eventId와 실제 작업 대상, 퀘스트 보상 영수증으로 같은 처리를 반복하지 않는다. 알려진 보상/재고 물품 정의는 보관해 원본 물품을 소비하거나 판매한 뒤에도 지급한다. 새 서사나 상품을 임의 생성하지 않는다. API 대기와 조회는 시간을 진행하지 않으며 실제 경과 시간만 생활 수치와 비용에 반영한다. 출혈은 교전 중 자기 차례 종료, 교전 밖 시간으로 구분한다.
+
+optional-feature-tools가 현재 켠 기능에 한해 기존 rpg_play의 feature와 rpg_state의 features 분기를 제공한다. 켜진 기능과 관련된 자료만 메인 AI에 안내한다. 별도 MCP 이름·연결·재호출 프로토콜·보조 API를 추가하지 않는다. 선택 기능 호출은 기존 rulebook-runtime의 관리자/메인 실행과 검증을 공유한다.
+
+optional-feature-ui/operations-ui는 플레이 설정·초기 토글·초안 편집·기존 메뉴의 세부 설정과 실제 행동 버튼을 연결한다. 새 범주도 등록 인물 앞에 배치한다. compiler는 초안의 선택값과 편집 자료를 보관하고 적용 시 실제 인물·장비·기술 참조로 이어 준다. 같은 이름의 별도 적은 합치지 않는다. 뉴뉴의 초기 초안 질문과 실제 게임 질문을 구분하고 제안 당시 자료가 바뀌었으면 덮어쓰지 않는다. [사용 방법과 구현 범위](nyoru-release-0.29.0.md).
 
 ## 0.28.11 기술 재사용 대기
 
