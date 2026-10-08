@@ -1,4 +1,18 @@
-# NyoruRPG MCP 구조 · 0.30.0
+# NyoruRPG MCP 구조 · 0.30.1
+
+## 0.30.1 독립 PDF 전송
+
+main-context-pdf의 config는 기존 enabled/keepRecent에 mode(yumi/standalone), format(gemini/openai)를 추가한다. 누락 mode는 yumi로 읽는다. selection은 기존 일반 대화 선택 규칙을 공유한다. beforeRequest는 원문과 기존 RPG 상태 주입을 유지하며 standalone일 때 main-context-pdf-native에 범위·현재 상태 앵커·보호할 최근 블록만 준비한다.
+
+main-context-pdf-native는 Risu API 3의 registerBodyIntercepter를 기존 replacer 권한으로 등록한다. 등록 불가 시 플러그인 전체 로딩은 유지하고 설정 화면에서 안내한다. gemini_base/gemini_base_stream/gemini_tool 또는 사용자가 선택한 openai_basic/openai_streaming/openai_tool만 편집한다. OpenAI 형식은 Gemini 모델 ID만 대상이다. 메타 응답 훅·다른 프로바이더 플러그인·보조 API는 편집하지 않는다.
+
+실제 요청의 RPG 상태 앵커·현재 채팅·전원·설정을 확인하고 원문 메시지와 정확히 일치하는 구간을 찾는다. Risu의 같은 역할 병합은 줄바꿈 1개/2개 또는 개별 메시지와 정확히 비교한다. 중복 일치·최근 블록 경계 불명·다른 필드·도구 파트가 있는 메시지는 추정하지 않는다. PDF 생성이 모두 끝난 뒤 복제한 contents/messages만 교체하며 원래 body는 수정하지 않는다. 나머지 요청 옵션·도구 정의·도구 응답·서명과 스트리밍 처리는 호스트에 남긴다. 훅 오류나 지원하지 않는 요청에서는 원문을 그대로 반환한다.
+
+text-pdf는 사용자 소유 NyoruMemory의 네이티브 Unicode 텍스트 PDF 방식을 독립 모듈로 옮긴 것이다. 외부 폰트·이미지·AI·업로드 API 없이 Type0/CID 및 ToUnicode를 작성하며 가능한 환경에서는 deflate한다. 읽기용 출력물이 아닌 Gemini의 내장 텍스트 추출용 전송 문서다. 1,000쪽·전체 인라인 JSON 20MB 상한을 적용한다. SHA-256(scope+원문)의 PDF만 메모리 LRU 16개·16MiB에 보관한다. 다음 도구 요청의 같은 구간을 재사용하고 원문 변경은 다시 만든다. 설정·채팅 변경·종료는 계획/캐시를 정리한다.
+
+진단 mainContextPdfPrepared는 생성/첨부 준비 여부와 원문 분량·쪽수·바이트·재사용을 기록한다. 준비 시각은 preparedAt으로 분리하여 공통 호스트 진단의 숫자 at을 덮어쓰지 않는다. deliveryConfirmed:false와 usage:null은 서버 수신·청구를 확인한 것이 아님을 명시한다. [사용 설정](nyoru-release-0.30.1.md).
+
+참고: [Risu 공식 요청 본문 훅](https://github.com/kwaroran/Risuai/blob/main/src/ts/plugins/apiV3/v3.svelte.ts), [Gemini 요청과 도구 후속 요청](https://github.com/kwaroran/Risuai/blob/main/src/ts/process/request/google.ts), [OpenAI 호환 전송](https://github.com/kwaroran/Risuai/blob/main/src/ts/process/request/openAI/requests.ts), [LLMGateway 문서 형식](https://docs.llmgateway.io/features/documents).
 
 ## 0.30.0 후속 · 과거 대화 PDF와 유미 전송 경계
 

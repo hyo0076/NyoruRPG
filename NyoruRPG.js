@@ -1,8 +1,8 @@
 //@name universal-rpg-engine
-//@display-name NyoruRPG 0.30.0 · 자동 진행
+//@display-name NyoruRPG 0.30.1 · 자동 진행
 //@api 3.0
 //@allowed-ipc universal-rpg-engine provider-manager
-//@version 0.30.0
+//@version 0.30.1
 //@update-url https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js
 (async()=>{
 "use strict";
@@ -1144,6 +1144,7 @@ class App {
   }
   async currentScope() {
     const s = await this.host.scope();
+    if(this.scope&&scopeKey(this.scope)!==scopeKey(s))this.contextPdfNative?.clear({cache:true});
     this.scope = s;
     return s;
   }
@@ -1373,6 +1374,7 @@ class App {
       type: String(type || '')
     });
     if (type && !['main', 'model'].includes(type)) return messages;
+    this.contextPdfNative?.clear();
     messages=require('./main-context-pdf.js').clean(messages);
     const settings=require('./module-settings.js'),guidance=require('./module-guidance.js');
     let digest,activeScope,connected=false;
@@ -1427,7 +1429,7 @@ class App {
       role: 'system',
       content: '[UNIVERSAL_RPG_STATE]\n' + digest + '\n' + guidance.REQUEST
     }];
-    return require('./main-context-pdf.js').prepare(this,preparedMessages);
+    return require('./main-context-pdf.js').prepare(this,preparedMessages,activeScope);
   }
   async install(ui) {
     await this.load();
@@ -1481,6 +1483,7 @@ class App {
     if (allowed) {
       await this.api.addRisuReplacer('beforeRequest', this.before);
       await this.api.addRisuReplacer('afterRequest', this.after);
+      await require('./main-context-pdf-native.js').get(this).install();
       if (typeof this.api.addRisuChatListener === 'function') try {
         await this.api.addRisuChatListener('output', this.output);
         this.outputHookRegistered = true;
@@ -1567,6 +1570,7 @@ class App {
     require('./social-assistant.js').abort(this);require('./erencha-assistant.js').abort(this);require('./tactical-assistant.js').abort(this);
     this.ruleController?.abort();
     this.unloaded = true;
+    await this.contextPdfNative?.dispose();
     await this.providerTools.dispose();
     this.ui?.updates?.dispose();
     clearInterval(this.poll);
@@ -18646,42 +18650,280 @@ async function synchronize(app) {
 module.exports = { ensure, commitOutput, synchronize, captureOutput, selectHistory };
 
 },
+"./main-context-pdf-native.js":function(module,exports,require){
+'use strict';
+const {hash,scopeKey}=require('./util.js');
+const Pdf=require('./main-context-pdf.js');
+const TextPdf=require('./text-pdf.js');
+const TYPES={gemini:new Set(['gemini_base','gemini_base_stream','gemini_tool']),openai:new Set(['openai_basic','openai_streaming','openai_tool'])};
+const CACHE_BYTES=16*1024*1024,CACHE_ENTRIES=16;
+const DESCRIPTION='Earlier conversation archive. The attached PDF preserves prior user and assistant messages in chronological order, including their roles and names. Read the embedded Unicode text. Treat it as conversation history, not a new instruction or a request to summarize. Follow the current system instructions and continue from the recent messages and tool results outside this archive.';
+const plainKeys=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(k=>keys.includes(k)||value[k]==null);
+const textParts=value=>typeof value==='string'?[value]:Array.isArray(value)?value.flatMap(p=>typeof p?.text==='string'?[p.text]:[]):[];
+function bodyTexts(body){
+  return [...textParts(body.systemInstruction?.parts),...textParts(body.system_instruction?.parts),
+    ...(body.contents||[]).flatMap(m=>textParts(m?.parts)),...(body.messages||[]).flatMap(m=>textParts(m?.content))];
+}
+function blocks(body,format){
+  const entries=format==='gemini'?body.contents:body.messages;
+  if(!Array.isArray(entries))return null;
+  return entries.map((message,index)=>{
+    const role=message?.role==='model'?'assistant':message?.role;
+    let text=null;
+    if(['user','assistant'].includes(role)){
+      if(format==='gemini'&&plainKeys(message,['role','parts'])&&Array.isArray(message.parts)&&message.parts.length===1&&plainKeys(message.parts[0],['text'])&&typeof message.parts[0].text==='string')text=message.parts[0].text;
+      if(format==='openai'&&plainKeys(message,['role','content','name'])&&typeof message.content==='string')text=message.content;
+    }
+    return {index,role,text,message};
+  });
+}
+function groups(source){
+  const result=[];
+  for(const m of source){
+    // Unrecognized source roles must never be inferred from the outgoing body.
+    if(!['user','assistant'].includes(m.role))return null;
+    const last=result.at(-1);
+    if(last?.role===m.role)last.messages.push(m);
+    else result.push({role:m.role,messages:[m]});
+  }
+  return result;
+}
+function matchingEnd(wire,start,expected){
+  let at=start;
+  for(const group of expected){
+    const text=wire[at]?.text;
+    if(typeof text!=='string'||wire[at].role!==group.role)return null;
+    const contents=group.messages.map(m=>m.content);
+    // Risu can merge same-role messages with one or two newlines. Otherwise
+    // match individual messages, without accepting partial text or tool parts.
+    if(text===contents.join('\n')||text===contents.join('\n\n')){at++;continue;}
+    for(const content of contents){
+      if(wire[at]?.role!==group.role||wire[at]?.text!==content)return null;
+      at++;
+    }
+  }
+  return at;
+}
+function findMatches(wire,ranges,recent){
+  // Locate the retained tail in the actual request. A host rewrite which makes
+  // it unrecognizable keeps the request as text instead of guessing boundaries.
+  const retained=[];
+  for(const m of recent){
+    if(!Pdf.safeMessage(m))continue;
+    for(let i=wire.length-1;i>=0;i--){
+      const texts=textParts(wire[i].message?.parts||wire[i].message?.content);
+      if(wire[i].role===m.role&&texts.some(t=>t===m.content||t.startsWith(m.content+'\n')||t.endsWith('\n'+m.content)||t.includes('\n'+m.content+'\n'))){retained.push(i);break;}
+    }
+  }
+  if(!retained.length)return [];
+  const boundary=Math.min(...retained),found=[];
+  let cursor=0;
+  for(const range of ranges){
+    const expected=groups(range.messages);
+    if(!expected)continue;
+    const candidates=[];
+    for(let start=0;start<wire.length;start++){
+      const end=matchingEnd(wire,start,expected);
+      if(end!==null)candidates.push({start,end});
+      if(candidates.length>1)break;
+    }
+    if(candidates.length!==1)continue;
+    const match=candidates[0];
+    if(match.start<cursor||match.end>boundary)continue;
+    found.push({...range,...match});cursor=match.end;
+  }
+  return found;
+}
+function archiveText(messages){
+  // JSON keeps source text, names and role boundaries unambiguous, including
+  // quotes, markup and embedded newlines. This is not a generated summary.
+  return 'NyoruRPG earlier conversation, in chronological order.\n'+messages.map(m=>JSON.stringify({role:m.role,...(m.name?{name:m.name}:{}),content:m.content})).join('\n');
+}
+class NativeContextPdf{
+  constructor(app){this.app=app;this.plan=null;this.cache=new Map();this.cacheSize=0;this.scope=null;this.hookId=null;this.registering=null;this.notice='';}
+  async install(){
+    if(this.hookId)return true;
+    if(this.registering)return this.registering;
+    this.registering=(async()=>{
+      try{
+        const hook=await this.app.api.registerBodyIntercepter((body,type)=>this.intercept(body,type));
+        if(!hook?.id)throw new Error('PDF_HOOK_UNAVAILABLE');
+        if(this.app.unloaded){await this.app.api.unregisterBodyIntercepter(hook.id);return false;}
+        this.hookId=hook.id;this.notice='';return true;
+      }catch{
+        this.notice='이 Risu에서는 독립 PDF 요청 연결을 등록하지 못했습니다. 플러그인 요청 편집 권한과 Risu 버전을 확인하세요. 원문은 텍스트로 유지합니다.';
+        this.app.host.record('mainContextPdfHookUnavailable',{code:'PDF_HOOK_UNAVAILABLE'});return false;
+      }
+    })();
+    try{return await this.registering;}finally{this.registering=null;}
+  }
+  clear({cache=false}={}){
+    this.plan?.controller.abort();this.plan=null;
+    if(cache){this.cache.clear();this.cacheSize=0;this.scope=null;}
+  }
+  status(plan,reason,extra={}){
+    if(plan&&this.plan!==plan)return;
+    const status={...plan?.stats,at:new Date().toISOString(),mode:'standalone',stage:'request-body',reason,
+      conversionConfirmed:false,deliveryConfirmed:false,usage:null,...extra};
+    this.app.contextPdfStatus=status;
+    const {at,...details}=status;
+    this.app.host.record('mainContextPdfPrepared',{...details,preparedAt:at,transactionId:this.app.tx?.id||null});
+  }
+  prepare(messages,prefs,scope){
+    this.clear();
+    const originalCharacters=messages.reduce((n,m)=>n+(typeof m?.content==='string'?m.content.length:0),0);
+    const selected=Pdf.selection(messages,prefs.keepRecent);
+    const selectedCharacters=selected.ranges.reduce((n,r)=>n+r.characters,0);
+    const stats={originalCharacters,selectedCharacters,selectedMessages:selected.ranges.reduce((n,r)=>n+r.end-r.start,0),
+      ranges:selected.ranges.length,retainedCharacters:originalCharacters-selectedCharacters,keepRecent:prefs.keepRecent,format:prefs.format};
+    if(!scope||!this.hookId){this.status(null,'hook-unavailable',stats);return messages;}
+    if(messages.some(m=>/<\/?pm-pdf>/.test(m?.content||''))){this.status(null,'pdf-selection-conflict',stats);return messages;}
+    if(!selected.ranges.length){this.status(null,selected.reason,stats);return messages;}
+    const anchor=messages.findLast(m=>m?.role==='system'&&m.content?.startsWith('[UNIVERSAL_RPG_STATE]'))?.content;
+    if(!anchor){this.status(null,'missing-request-anchor',stats);return messages;}
+    const key=scopeKey(scope);
+    if(this.scope!==key){this.clear({cache:true});this.scope=key;}
+    this.plan={scope,anchor,prefs,controller:new AbortController(),stats,recent:selected.recent,
+      ranges:selected.ranges.map(r=>({...r,messages:messages.slice(r.start,r.end).map(m=>({role:m.role,content:m.content,...(m.name?{name:m.name}:{})}))}))};
+    this.status(this.plan,'awaiting-request');
+    // Leave the entire request intact until the actual supported transport is
+    // known. Unsupported providers never receive markers or lose source text.
+    return messages;
+  }
+  current(plan){return this.plan===plan&&!plan.controller.signal.aborted&&!this.app.unloaded&&JSON.stringify(Pdf.config(this.app))===JSON.stringify(plan.prefs);}
+  async document(plan,messages){
+    const source=archiveText(messages),key=await hash(this.scope+'\n'+source);
+    if(!this.current(plan))throw new Error('PDF_CANCELLED');
+    const existing=this.cache.get(key);
+    if(existing){this.cache.delete(key);this.cache.set(key,existing);return {...existing,reused:true};}
+    const pdf=await TextPdf.createTextPdf(source,{signal:plan.controller.signal});
+    if(!this.current(plan))throw new Error('PDF_CANCELLED');
+    const entry={data:TextPdf.base64(pdf.bytes),pages:pdf.pages,bytes:pdf.bytes.length,reused:false};
+    const size=entry.data.length*2;
+    if(size<=CACHE_BYTES){
+      while(this.cache.size&&(this.cache.size>=CACHE_ENTRIES||this.cacheSize+size>CACHE_BYTES)){
+        const first=this.cache.keys().next().value;this.cacheSize-=this.cache.get(first).data.length*2;this.cache.delete(first);
+      }
+      this.cache.set(key,entry);this.cacheSize+=size;
+    }
+    return entry;
+  }
+  async intercept(input,type){
+    const plan=this.plan;
+    if(!plan||!this.current(plan)||String(type).startsWith('meta_'))return input;
+    // Only Risu's built-in Gemini and explicitly selected Gemini-compatible
+    // Chat Completions paths. Provider Manager and plugin/Jev API calls remain
+    // outside this hook's allowlist.
+    const supported=TYPES[plan.prefs.format].has(type);
+    let body;
+    try{body=typeof input==='string'?JSON.parse(input):input;}catch{return input;}
+    if(!body||!Array.isArray(body.contents)&&!Array.isArray(body.messages))return input;
+    let texts;try{texts=bodyTexts(body);}catch{return input;}
+    if(!texts.some(t=>t.includes(plan.anchor)))return input;
+    if(!supported){this.status(plan,'unsupported-route');return input;}
+    if(plan.prefs.format==='openai'&&(typeof body.model!=='string'||!/gemini/i.test(body.model))){this.status(plan,'unsupported-model');return input;}
+    if(body.cachedContent||body.cached_content){this.status(plan,'provider-cache-present');return input;}
+    try{
+      if(!await this.app.host.isCurrent(plan.scope)||!(await require('./chat-power.js').read(this.app,plan.scope)).enabled||!this.current(plan))return input;
+      const wire=blocks(body,plan.prefs.format);
+      if(!wire){this.status(plan,'request-shape-changed');return input;}
+      const matches=findMatches(wire,plan.ranges,plan.recent);
+      if(!matches.length){this.status(plan,'request-shape-changed');return input;}
+      const replacements=[];let pages=0,bytes=0,reused=0,characters=0,messageCount=0;
+      for(const match of matches){
+        const pdf=await this.document(plan,match.messages);
+        pages+=pdf.pages;bytes+=pdf.bytes;reused+=Number(pdf.reused);characters+=match.characters;messageCount+=match.messages.length;
+        if(pages>TextPdf.PDF_MAX_PAGES||bytes*4/3>TextPdf.PDF_MAX_REQUEST_BYTES)throw new Error('PDF_LIMIT');
+        const message=plan.prefs.format==='gemini'
+          ?{role:'user',parts:[{text:DESCRIPTION},{inlineData:{mimeType:'application/pdf',data:pdf.data}}]}
+          :{role:'user',content:[{type:'text',text:DESCRIPTION},{type:'file',file:{filename:'nyoru-history-'+(replacements.length+1)+'.pdf',file_data:'data:application/pdf;base64,'+pdf.data}}]};
+        replacements.push({...match,message});
+      }
+      const field=plan.prefs.format==='gemini'?'contents':'messages',out=[];
+      let cursor=0;
+      for(const match of replacements){out.push(...body[field].slice(cursor,match.start),match.message);cursor=match.end;}
+      out.push(...body[field].slice(cursor));
+      const next={...body,[field]:out},serialized=JSON.stringify(next);
+      if(new TextEncoder().encode(serialized).length>TextPdf.PDF_MAX_REQUEST_BYTES)throw new Error('PDF_LIMIT');
+      if(!this.current(plan)||!await this.app.host.isCurrent(plan.scope)||!(await require('./chat-power.js').read(this.app,plan.scope)).enabled)return input;
+      this.status(plan,'pdf-attached',{conversionConfirmed:true,selectedCharacters:characters,selectedMessages:messageCount,
+        retainedCharacters:plan.stats.originalCharacters-characters,ranges:replacements.length,pages,bytes,reused,
+        preparedDocuments:replacements.length,transport:type});
+      return typeof input==='string'?serialized:next;
+    }catch(error){
+      if(this.current(plan))this.status(plan,error.message==='PDF_LIMIT'?'pdf-limit':'pdf-failed',{code:error.code||'PDF_PREPARE_FAILED'});
+      return input;
+    }
+  }
+  async dispose(){
+    this.clear({cache:true});const id=this.hookId;this.hookId=null;
+    if(id)try{await this.app.api.unregisterBodyIntercepter(id);}catch{}
+  }
+}
+const get=app=>app.contextPdfNative||(app.contextPdfNative=new NativeContextPdf(app));
+module.exports={NativeContextPdf,get};
+
+},
 "./main-context-pdf-ui.js":function(module,exports,require){
 'use strict';
 const {escapeHTML:e,assert}=require('./util.js');
 const Pdf=require('./main-context-pdf.js');
+const Native=require('./main-context-pdf-native.js');
 const count=n=>Number(n||0).toLocaleString('ko-KR');
 function render(ui){
-  const p=Pdf.config(ui.app),s=ui.app.contextPdfStatus;
-  const reasons={'selection-added':'유미에 PDF 변환 범위를 전달했습니다.','existing-selection':'이미 있는 PDF 범위를 유지했습니다.','recent-only':'최근 대화만 있어 PDF 범위를 추가하지 않았습니다.','no-safe-range':'변환할 긴 과거 대화가 없거나 도구·서명·첨부 자료로 구분된 구간입니다.'};
+  const p=Pdf.config(ui.app),s=ui.app.contextPdfStatus,native=p.mode==='standalone';
+  const reasons={
+    'selection-added':'유미에 PDF 변환 범위를 전달했습니다.','existing-selection':'이미 있는 유미 PDF 범위를 유지했습니다.',
+    'recent-only':'최근 대화만 있어 텍스트로 유지했습니다.','no-safe-range':'변환할 긴 과거 대화가 없어 텍스트로 유지했습니다.',
+    'awaiting-request':'과거 대화를 선택했습니다. 지원하는 메인 AI 요청이 전송될 때 PDF로 첨부합니다.',
+    'pdf-attached':'PDF 생성·첨부 본문 준비를 완료했습니다. 실제 API 수신·청구 결과는 프로바이더 로그에서 확인하세요.',
+    'hook-unavailable':'Risu 요청 편집 연결을 등록하지 못해 텍스트로 유지합니다.',
+    'pdf-selection-conflict':'기존 유미 PDF 표식이 있어 독립 변환을 추가하지 않았습니다.',
+    'missing-request-anchor':'현재 RPG 요청을 식별하지 못해 텍스트로 유지했습니다.',
+    'unsupported-route':'선택한 PDF 전송 형식과 다른 요청입니다. 원문 텍스트를 유지했습니다.',
+    'unsupported-model':'OpenAI 호환 독립 PDF는 Gemini 모델에 적용합니다. 이 모델에는 원문을 유지했습니다.',
+    'provider-cache-present':'이미 지정된 서버 컨텍스트 캐시를 유지했습니다.',
+    'request-shape-changed':'전송 본문에서 선택한 원문 구간을 정확히 찾지 못해 텍스트로 유지했습니다.',
+    'pdf-limit':'PDF 쪽수 또는 요청 용량 한도를 넘어 텍스트로 유지했습니다.',
+    'pdf-failed':'PDF를 준비하지 못해 원문 텍스트로 계속합니다. 호스트 진단에서 오류 코드를 확인하세요.'
+  };
   return '<section class="panel"><h2>메인 AI · 과거 대화 PDF</h2>'+
-    '<label class="choice"><input id="main-context-pdf" type="checkbox" '+(p.enabled?'checked':'')+'>과거 대화만 PDF로 지정 · 유미 연동</label>'+
-    '<p class="muted">유미의 PDF 기능으로 과거 대화를 전달하여 반복 입력 비용을 줄이기 위한 설정입니다. 저장된 채팅은 수정하지 않습니다. 설정은 즉시 저장되며 NyoruRPG가 켜진 채팅에 적용됩니다.</p>'+
+    '<label class="choice"><input id="main-context-pdf" type="checkbox" '+(p.enabled?'checked':'')+'>과거 대화 PDF 사용</label>'+
+    '<p class="muted">설정은 즉시 저장되며 NyoruRPG가 켜진 채팅에 적용됩니다. 저장된 채팅과 게임 데이터는 변경하지 않습니다.</p>'+
+    '<label>PDF 처리 방식<select id="main-context-pdf-mode"><option value="yumi" '+(!native?'selected':'')+'>유미 연동 · 기존 방식</option><option value="standalone" '+(native?'selected':'')+'>독립 PDF · 유미 없이 사용</option></select></label>'+
+    (native?'<label>Risu 메인 AI의 전송 형식<select id="main-context-pdf-format"><option value="gemini" '+(p.format==='gemini'?'selected':'')+'>Gemini 원본 API · Google / Vertex</option><option value="openai" '+(p.format==='openai'?'selected':'')+'>OpenAI 호환 Chat · PDF를 지원하는 Gemini</option></select></label>':'')+
     '<label>PDF 밖에 유지할 최근 대화 블록 수<input id="main-context-pdf-recent" type="number" min="2" max="50" step="1" value="'+p.keepRecent+'"></label>'+
-    '<p class="muted">사용자 메시지와 AI 답변을 각각 1개로 셉니다. 시스템 지침·RPG 현재 상태·도구 호출·서명·첨부 파일은 유지하며, 연속된 과거 대화가 2,048자 이상인 구간을 지정합니다.</p>'+
-    '<p class="notice">유미에서 사용할 Gemini 모델의 <b>텍스트 변환 → Gemini PDF</b>와 PDF 설정의 <b>수동 지정 기능 사용</b>을 켜야 합니다. 이 토글만으로 유미의 모델 설정이 바뀌지는 않습니다.</p>'+
-    '<p class="muted">끄면 범위 지정만 중단합니다. PDF 전송 자체를 끄려면 유미 모델의 PDF 변환도 꺼주세요. 변환할 과거 대화가 없는 요청은 수동 지정 모드에서 텍스트로 유지합니다.</p>'+
-    '<details class="spaced"><summary>적용과 비용 확인</summary><ol>'+
-    '<li>유미 모델 편집에서 PDF 변환을 켜고, 텍스트 변환 설정에서 수동 지정을 켭니다. 시스템/사용자/AI의 역할을 표시하는 PDF 템플릿은 유지하세요.</li>'+
-    '<li>이 토글을 켠 뒤 채팅을 전송합니다. 이미 프리셋에서 PDF 범위를 지정했다면 그 범위를 그대로 사용합니다.</li>'+
-    '<li>유미 요청 로그에 PDF 첨부가 생성되었는지 확인하세요. 도구 호출 후 이어지는 요청에서도 PDF와 도구 결과가 함께 전달되어야 합니다.</li>'+
-    '<li>실제 청구는 프로바이더의 입력·캐시·문서 사용량으로 비교하세요. Gemini PDF를 지원하는 모델과 전송 경로가 필요합니다.</li></ol>'+
-    '<p class="muted">아래 분량은 Risu 요청 준비 시점의 문자 수입니다. 실제 전송 토큰·캐시 적중·청구액이나 유미 내부 재요청 횟수는 NyoruRPG에서 확인할 수 없습니다. 최대 컨텍스트 설정값과 실제 사용량은 다릅니다. 속도·절감률을 보장하지 않습니다.</p></details>'+
-    (s?'<div class="spaced"><p>'+e(reasons[s.reason]||s.reason)+'</p><p class="muted">이 실행의 최근 준비 · '+e(s.at)+'<br>전체 '+count(s.originalCharacters)+'자 · PDF 지정 '+count(s.selectedCharacters)+'자 / '+count(s.selectedMessages)+'개 블록 · 텍스트 유지 '+count(s.retainedCharacters)+'자<br>실제 PDF 전송 확인: 유미 요청 로그에서 확인</p></div>':'<p class="muted">아직 이 실행에서 준비한 요청이 없습니다.</p>')+'</section>';
+    '<p class="muted">사용자 메시지와 AI 답변을 각각 1개로 셉니다. 시스템 지침·RPG 현재 상태·도구 호출·서명·첨부 파일은 유지하며, 연속된 과거 대화가 2,048자 이상인 구간을 선택합니다.</p>'+
+    (native?
+      '<p class="notice">Risu에 설정한 메인 AI 주소·인증·모델로 전송합니다. 별도 API 키나 유미 설치는 필요하지 않습니다. Gemini PDF 문서 입력을 지원하는 모델과 연결을 사용하세요. OpenAI 호환 형식은 <b>Chat Completions의 file 첨부</b>를 지원해야 하며 Responses·다른 프로바이더 플러그인에는 적용하지 않습니다.</p>'+
+      '<p class="muted">PDF는 기기 안에서 생성하며 AI로 요약하지 않습니다. Risu의 스트리밍·도구 호출은 그대로 사용합니다. 같은 채팅에서 원문이 같은 PDF는 메모리 한도 안에서 재사용하고, 수정된 구간은 다시 만듭니다. 재시작·채팅 변경 시 캐시는 비웁니다. 이 재사용은 서버의 유료 입력·캐시 할인과 별개입니다.</p>'+
+      '<p class="muted">유미를 메인 AI로 쓴다면 위에서 유미 연동을 선택하세요. PDF 변환 기능을 여러 곳에서 동시에 켜지 마세요. 지원하지 않는 연결·본문 변경·변환 실패 시에는 원문을 텍스트로 유지합니다. API가 PDF 첨부를 거부하면 이 기능을 끄거나 지원하는 연결로 바꾸세요.</p>'+
+      (ui.app.contextPdfNative?.notice?'<p class="notice error">'+e(ui.app.contextPdfNative.notice)+'</p><button type="button" id="main-context-pdf-reconnect">독립 PDF 요청 연결 다시 등록</button>':''):
+      '<p class="notice">유미에서 사용할 Gemini 모델의 <b>텍스트 변환 → Gemini PDF</b>와 PDF 설정의 <b>수동 지정 기능 사용</b>을 켜야 합니다. 이 토글만으로 유미 설정이 바뀌지는 않습니다.</p>'+
+      '<p class="muted">끄면 범위 지정만 중단합니다. PDF 전송 자체를 끄려면 유미 모델의 PDF 변환도 꺼주세요. 변환할 과거 대화가 없는 요청은 수동 지정 모드에서 텍스트로 유지합니다. 유미 내부의 PDF 생성과 도구 후속 전송을 그대로 사용합니다.</p>')+
+    '<details class="spaced"><summary>적용과 비용 확인</summary><p>독립 방식은 아래에서 PDF 생성·첨부 준비량과 재사용 수를 확인할 수 있습니다. 유미 방식은 유미의 요청 로그에서 실제 PDF 첨부를 확인하세요. 실제 입력·문서·캐시 요금은 프로바이더의 사용량으로 비교하세요. 생성·첨부 준비는 서버 수신 성공이나 비용 절감을 뜻하지 않습니다.</p></details>'+
+    (s?'<div class="spaced"><p>'+e(reasons[s.reason]||s.reason)+'</p><p class="muted">이 실행의 최근 준비 · '+e(s.at)+'<br>전체 '+count(s.originalCharacters)+'자 · PDF 선택 '+count(s.selectedCharacters)+'자 / '+count(s.selectedMessages)+'개 블록 · 텍스트 유지 '+count(s.retainedCharacters)+'자'+
+      (s.mode==='standalone'&&s.conversionConfirmed?'<br>PDF '+count(s.preparedDocuments)+'개 · '+count(s.pages)+'쪽 · '+count(s.bytes)+'바이트 · 재사용 '+count(s.reused)+'개':'')+'</p></div>':'<p class="muted">아직 이 실행에서 준비한 요청이 없습니다.</p>')+'</section>';
 }
 function bind(ui){
-  const enabled=document.getElementById('main-context-pdf'),recent=document.getElementById('main-context-pdf-recent');
   const save=()=>ui.act(async()=>{
-    if(!enabled||!recent)return;
-    const next={enabled:enabled.checked,keepRecent:Number(recent.value)};
+    const enabled=document.getElementById('main-context-pdf'),recent=document.getElementById('main-context-pdf-recent'),mode=document.getElementById('main-context-pdf-mode'),format=document.getElementById('main-context-pdf-format');
+    if(!enabled||!recent||!mode)return;
+    const next={enabled:enabled.checked,keepRecent:Number(recent.value),mode:mode.value,format:format?.value||Pdf.config(ui.app).format};
     assert(Number.isInteger(next.keepRecent)&&next.keepRecent>=2&&next.keepRecent<=50,'PDF_SETTINGS','최근 대화는 2~50개 블록으로 입력하세요.');
     const previous=ui.app.settings.mainContextPdf;
     ui.app.settings.mainContextPdf=next;
     try{await ui.app.saveSettings();}catch(error){ui.app.settings.mainContextPdf=previous;throw error;}
-    ui.notify(next.enabled?'과거 대화 PDF 범위 지정을 켰습니다. 유미의 PDF·수동 지정 설정도 켜주세요.':'범위 지정을 껐습니다. PDF 전송 자체는 유미 모델 설정을 따릅니다.');
+    ui.app.contextPdfNative?.clear({cache:true});ui.app.contextPdfStatus=null;
+    if(next.enabled&&next.mode==='standalone')await Native.get(ui.app).install();
+    ui.capture();ui.render();
+    ui.notify(next.enabled?(next.mode==='yumi'?'유미 연동을 켰습니다. 유미의 PDF·수동 지정 설정도 켜주세요.':'독립 PDF 설정을 저장했습니다. 다음 메인 AI 요청부터 적용합니다.'):(next.mode==='yumi'?'범위 지정을 껐습니다. PDF 전송 자체는 유미 설정을 따릅니다.':'독립 PDF를 껐습니다. 다음 요청은 원문 텍스트로 전달합니다.'));
   });
-  if(enabled)enabled.onchange=save;
-  if(recent)recent.onchange=save;
+  for(const id of ['main-context-pdf','main-context-pdf-recent','main-context-pdf-mode','main-context-pdf-format']){
+    const el=document.getElementById(id);if(el)el.onchange=save;
+  }
+  const retry=document.getElementById('main-context-pdf-reconnect');
+  if(retry)retry.onclick=()=>ui.act(async()=>{await Native.get(ui.app).install();ui.capture();ui.render();});
 }
 module.exports={render,bind};
 
@@ -18690,10 +18932,10 @@ module.exports={render,bind};
 'use strict';
 
 // Provider Manager v1.16.3 owns model selection, PDF encoding and the tool loop.
-// Its documented manual-selection delimiters are consumed before every request.
+// Its documented manual-selection delimiters are consumed when preparing a reply.
 // Add separate boundary messages so an inactive converter can remove them while
 // leaving every original role, content and opaque provider field untouched.
-const DEFAULTS={enabled:false,keepRecent:4};
+const DEFAULTS={enabled:false,keepRecent:4,mode:'yumi',format:'gemini'};
 const OPEN='<pm-pdf>',CLOSE='</pm-pdf>',MEMO='nyorurpg:context-pdf:v1';
 const MIN_CHARACTERS=2048,MAX_RANGES=32;
 const conversation=m=>['user','assistant','char'].includes(m?.role)&&typeof m.content==='string'&&m.content.length>0;
@@ -18711,30 +18953,13 @@ function safeMessage(m){
 }
 function config(app){
   const saved=app.settings.mainContextPdf||{};
-  return {enabled:saved.enabled===true,keepRecent:Number.isInteger(saved.keepRecent)&&saved.keepRecent>=2&&saved.keepRecent<=50?saved.keepRecent:DEFAULTS.keepRecent};
+  return {enabled:saved.enabled===true,keepRecent:Number.isInteger(saved.keepRecent)&&saved.keepRecent>=2&&saved.keepRecent<=50?saved.keepRecent:DEFAULTS.keepRecent,
+    mode:saved.mode==='standalone'?'standalone':'yumi',format:saved.format==='openai'?'openai':'gemini'};
 }
-function prepare(app,input){
-  const messages=clean(input),prefs=config(app);
-  if(!prefs.enabled||!Array.isArray(messages))return messages;
-  const originalCharacters=messages.reduce((n,m)=>n+(typeof m?.content==='string'?m.content.length:0),0);
-  const finish=(result,reason,ranges=[])=>{
-    const selectedMessages=ranges.reduce((n,r)=>n+r.end-r.start,0),selectedCharacters=ranges.reduce((n,r)=>n+r.characters,0);
-    const status={at:new Date().toISOString(),reason,originalCharacters,selectedCharacters,selectedMessages,ranges:ranges.length,
-      retainedCharacters:originalCharacters-selectedCharacters,keepRecent:prefs.keepRecent,
-      stage:'provider-manager-range-selection',conversionConfirmed:false,usage:null};
-    app.contextPdfStatus=status;
-    app.host.record('mainContextPdfPrepared',{...status,transactionId:app.tx?.id||null});
-    return result;
-  };
-  // Respect ranges already supplied by the user's preset or another plugin.
-  if(messages.some(m=>typeof m?.content==='string'&&(m.content.includes(OPEN)||m.content.includes(CLOSE))))return finish(messages,'existing-selection');
-  // PM's manual mode falls back to whole-prompt conversion when no delimiters
-  // exist. An explicitly empty range instead leaves the request as plain text.
-  // This prevents a short/new chat from accidentally converting current rules.
-  const keepText=reason=>finish([{role:'user',content:OPEN,memo:MEMO},{role:'user',content:CLOSE,memo:MEMO},...messages],reason);
+function selection(messages,keepRecent){
   const dialogue=messages.flatMap((m,index)=>conversation(m)?[index]:[]);
-  if(dialogue.length<=prefs.keepRecent)return keepText('recent-only');
-  const boundary=dialogue[dialogue.length-prefs.keepRecent],ranges=[];
+  if(dialogue.length<=keepRecent)return {ranges:[],recent:messages,reason:'recent-only'};
+  const boundary=dialogue[dialogue.length-keepRecent],ranges=[];
   let start=null,characters=0;
   const flush=end=>{
     if(start!==null&&characters>=MIN_CHARACTERS&&ranges.length<MAX_RANGES)ranges.push({start,end,characters});
@@ -18745,7 +18970,31 @@ function prepare(app,input){
     else flush(i);
   }
   flush(boundary);
-  if(!ranges.length)return keepText('no-safe-range');
+  return {ranges,recent:messages.slice(boundary),reason:ranges.length?'selection-added':'no-safe-range'};
+}
+function prepare(app,input,scope){
+  const messages=clean(input),prefs=config(app);
+  if(!prefs.enabled||!Array.isArray(messages))return messages;
+  if(prefs.mode==='standalone')return require('./main-context-pdf-native.js').get(app).prepare(messages,prefs,scope);
+  const originalCharacters=messages.reduce((n,m)=>n+(typeof m?.content==='string'?m.content.length:0),0);
+  const finish=(result,reason,ranges=[])=>{
+    const selectedMessages=ranges.reduce((n,r)=>n+r.end-r.start,0),selectedCharacters=ranges.reduce((n,r)=>n+r.characters,0);
+    const status={at:new Date().toISOString(),reason,originalCharacters,selectedCharacters,selectedMessages,ranges:ranges.length,
+      retainedCharacters:originalCharacters-selectedCharacters,keepRecent:prefs.keepRecent,
+      stage:'provider-manager-range-selection',conversionConfirmed:false,usage:null};
+    app.contextPdfStatus=status;
+    const {at,...details}=status;
+    app.host.record('mainContextPdfPrepared',{...details,preparedAt:at,transactionId:app.tx?.id||null});
+    return result;
+  };
+  // Respect ranges already supplied by the user's preset or another plugin.
+  if(messages.some(m=>typeof m?.content==='string'&&(m.content.includes(OPEN)||m.content.includes(CLOSE))))return finish(messages,'existing-selection');
+  // PM's manual mode falls back to whole-prompt conversion when no delimiters
+  // exist. An explicitly empty range instead leaves the request as plain text.
+  // This prevents a short/new chat from accidentally converting current rules.
+  const keepText=reason=>finish([{role:'user',content:OPEN,memo:MEMO},{role:'user',content:CLOSE,memo:MEMO},...messages],reason);
+  const {ranges,reason}=selection(messages,prefs.keepRecent);
+  if(!ranges.length)return keepText(reason);
   const starts=new Set(ranges.map(r=>r.start)),ends=new Set(ranges.map(r=>r.end)),result=[];
   for(let i=0;i<messages.length;i++){
     if(ends.has(i))result.push({role:'user',content:CLOSE,memo:MEMO});
@@ -18754,7 +19003,7 @@ function prepare(app,input){
   }
   return finish(result,'selection-added',ranges);
 }
-module.exports={DEFAULTS,MIN_CHARACTERS,config,prepare,clean};
+module.exports={DEFAULTS,MIN_CHARACTERS,config,prepare,clean,selection,safeMessage};
 
 },
 "./manual-changes.js":function(module,exports,require){
@@ -30207,6 +30456,129 @@ function trigger(w,o,context){if(!o.terrain||o.terrain.triggered||o.resources.hp
 module.exports={schema,attach,trigger};
 
 },
+"./text-pdf.js":function(module,exports,require){
+'use strict';
+// Adapted from the user-owned NyoruMemory native text PDF encoder.
+const {assert:checkValue}=require('./util.js');
+const assert=(condition,message)=>checkValue(condition,'PDF_ENCODE',message);
+
+// Transport PDFs only: native Unicode text, no canvas, font downloads or saved files.
+// Compact CID codes map to full Unicode strings through ToUnicode. This is a
+// machine-input document, not a visual reading copy; native-text support is required.
+const encoder = new TextEncoder();
+const PAGE_WIDTH = 595, PAGE_HEIGHT = 842, MARGIN = 8, FONT_SIZE = 1;
+const COLUMNS = Math.floor((PAGE_WIDTH - MARGIN * 2) / FONT_SIZE);
+const ROWS = Math.floor((PAGE_HEIGHT - MARGIN * 2) / (FONT_SIZE * 1.2));
+const PDF_MIN_CHARACTERS = 2048;
+const PDF_MAX_PAGES = 1000;
+const PDF_MAX_REQUEST_BYTES = 20_000_000; // Conservative inline JSON envelope, including base64.
+const NEXT_TASK = () => new Promise(resolve => setTimeout(resolve, 0));
+
+function check(signal) { assert(!signal?.aborted, 'PDF 변환 요청이 취소되었습니다.'); }
+function hex(text) {
+  let result = '';
+  for (let i = 0; i < text.length; i++) result += text.charCodeAt(i).toString(16).padStart(4, '0');
+  return result;
+}
+function concatenate(parts) {
+  const bytes = new Uint8Array(parts.reduce((size, part) => size + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
+  return bytes;
+}
+async function streamObject(text, signal) {
+  check(signal);
+  let bytes = encoder.encode(text), filter = '';
+  if (typeof CompressionStream === 'function') {
+    const compressed = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate'), signal ? { signal } : {});
+    bytes = new Uint8Array(await new Response(compressed).arrayBuffer());
+    filter = ' /Filter /FlateDecode';
+  }
+  check(signal);
+  return concatenate([encoder.encode(`<< /Length ${bytes.length}${filter} >>\nstream\n`), bytes, encoder.encode('\nendstream')]);
+}
+function unicodeMap(characters) {
+  const entries = [...characters].map(([character, cid]) => `<${cid.toString(16).padStart(4, '0')}> <${hex(character)}>`);
+  const blocks = [];
+  for (let offset = 0; offset < entries.length; offset += 100) {
+    const block = entries.slice(offset, offset + 100);
+    blocks.push(`${block.length} beginbfchar\n${block.join('\n')}\nendbfchar`);
+  }
+  return `/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /NyoruRPGUnicode def\n/CMapType 2 def
+1 begincodespacerange\n<0000> <ffff>\nendcodespacerange
+${blocks.join('\n')}\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend`;
+}
+
+async function createTextPdf(text, { signal, maxPages = PDF_MAX_PAGES } = {}) {
+  assert(Number.isInteger(maxPages) && maxPages > 0 && maxPages <= PDF_MAX_PAGES, 'PDF 쪽수 한도를 확인하세요.');
+  assert(typeof text === 'string' && text.length > 0, 'PDF로 보낼 내용이 없습니다.');
+  check(signal);
+  // Reserve the catalog, pages, font, descendant font, descriptor and Unicode map.
+  const objects = new Array(6), pageIds = [], characters = new Map();
+  let lines = [], line = '', columns = 0, visited = 0, charactersSeen = 0, streamBytes = 0;
+  const flushPage = async () => {
+    if (!lines.length) return;
+    assert(pageIds.length < maxPages, 'PDF가 1,000쪽을 넘습니다. 한 번에 정리할 메시지 수를 줄여주세요.');
+    const page = objects.length + 1;
+    pageIds.push(page);
+    objects.push(encoder.encode(`<< /Type /Page /Parent 2 0 R /Contents ${page + 1} 0 R >>`));
+    const commands = ['BT', `/F1 ${FONT_SIZE} Tf`, `${FONT_SIZE * 1.2} TL`, `1 0 0 1 ${MARGIN} ${PAGE_HEIGHT - MARGIN - FONT_SIZE} Tm`];
+    for (let i = 0; i < lines.length; i++) { if (i) commands.push('T*'); commands.push(`<${lines[i]}> Tj`); }
+    commands.push('ET');
+    const stream = await streamObject(commands.join('\n'), signal);
+    streamBytes += stream.length;
+    assert(streamBytes * 4 / 3 < PDF_MAX_REQUEST_BYTES, 'PDF 첨부 용량이 큽니다. 한 번에 정리할 메시지 수를 줄여주세요.');
+    objects.push(stream);
+    lines = [];
+  };
+  const flushLine = async () => { lines.push(line); line = ''; columns = 0; if (lines.length === ROWS) await flushPage(); };
+  // Iterate by Unicode code point: never split a surrogate pair between lines/pages.
+  // Only normalize CRLF/CR as a visual line break. The stored source is untouched.
+  for (let index = 0; index < text.length;) {
+    const character = String.fromCodePoint(text.codePointAt(index)); index += character.length;
+    if (character === '\r' || character === '\n') {
+      if (character === '\r' && text[index] === '\n') index++;
+      await flushLine();
+    } else {
+      if (columns === COLUMNS) await flushLine();
+      if (!characters.has(character)) {
+        assert(characters.size < 65535, 'PDF에 담을 문자 종류가 너무 많습니다. ‘PDF로 보내기’를 끄거나 정리 단위를 나눠주세요.');
+        characters.set(character, characters.size + 1);
+      }
+      line += characters.get(character).toString(16).padStart(4, '0'); columns++; charactersSeen++;
+    }
+    if (index - visited >= 65536) { visited = index; await NEXT_TASK(); check(signal); }
+  }
+  if (line || !lines.length && !pageIds.length) await flushLine();
+  await flushPage();
+  objects[0] = encoder.encode('<< /Type /Catalog /Pages 2 0 R >>');
+  objects[1] = encoder.encode(`<< /Type /Pages /Count ${pageIds.length} /Kids [${pageIds.map(id => `${id} 0 R`).join(' ')}] /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] /Resources << /Font << /F1 3 0 R >> >> >>`);
+  objects[2] = encoder.encode('<< /Type /Font /Subtype /Type0 /BaseFont /NyoruRPGUnicode /Encoding /Identity-H /DescendantFonts [4 0 R] /ToUnicode 6 0 R >>');
+  objects[3] = encoder.encode('<< /Type /Font /Subtype /CIDFontType2 /BaseFont /NyoruRPGUnicode /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 5 0 R /DW 1000 /CIDToGIDMap /Identity >>');
+  objects[4] = encoder.encode('<< /Type /FontDescriptor /FontName /NyoruRPGUnicode /Flags 4 /FontBBox [0 -250 1000 900] /Ascent 900 /Descent -250 /CapHeight 750 /ItalicAngle 0 /StemV 80 >>');
+  objects[5] = await streamObject(unicodeMap(characters), signal);
+  const pieces = [encoder.encode('%PDF-1.7\n%NyoruRPG native text\n')], offsets = [0];
+  let length = pieces[0].length;
+  for (let i = 0; i < objects.length; i++) {
+    const prefix = encoder.encode(`${i + 1} 0 obj\n`), suffix = encoder.encode('\nendobj\n');
+    offsets.push(length); pieces.push(prefix, objects[i], suffix); length += prefix.length + objects[i].length + suffix.length;
+  }
+  pieces.push(encoder.encode(`xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${length}\n%%EOF\n`));
+  check(signal);
+  return { bytes: concatenate(pieces), pages: pageIds.length, characters: charactersSeen };
+}
+
+function base64(bytes) {
+  const chunks = [];
+  for (let offset = 0; offset < bytes.length; offset += 32768) chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 32768)));
+  return btoa(chunks.join(''));
+}
+
+module.exports={createTextPdf,base64,PDF_MIN_CHARACTERS,PDF_MAX_PAGES,PDF_MAX_REQUEST_BYTES};
+
+},
 "./theme-data.js":function(module,exports,require){
 'use strict';
 // Generated from src/themes by the build.
@@ -31472,8 +31844,14 @@ module.exports = {
 // Public release notes. The build also publishes this as updates.json.
 const UPDATE_NOTE='플러그인만 업데이트. 모듈 v1은 그대로';
 module.exports={
-  latest:'0.30.0',
+  latest:'0.30.1',
   entries:[
+    {version:'0.30.1',date:'2026-10-09',title:'독립 PDF · 유미 연동 선택',changes:[
+      '유미 연동을 유지하고 유미 없이 사용하는 독립 PDF를 추가했습니다. AI 연결에서 처리 방식과 Risu 메인 AI의 전송 형식을 선택하며 기존 설정은 유미 방식으로 유지합니다.',
+      '독립 방식은 기기에서 과거 대화 PDF를 생성해 Risu 기본 Gemini 요청 또는 PDF를 지원하는 OpenAI 호환 Gemini Chat 요청에 첨부합니다. 메인 AI의 주소·키·스트리밍·도구 호출은 Risu 설정을 그대로 사용합니다.',
+      '최근 대화·시스템 지침·현재 상태·도구·서명·첨부는 텍스트와 원래 구조로 유지합니다. 지원하지 않는 경로나 변환 실패에서는 원문을 보존하며 게임·채팅 저장값을 바꾸지 않습니다.',
+      '같은 채팅의 같은 원문 PDF를 제한된 메모리에서 재사용합니다. PDF 생성·첨부 준비량과 재사용 수를 호스트 진단에서 확인할 수 있으며 실제 API 수신·사용량·요금과는 구분합니다.'
+    ],note:UPDATE_NOTE},
     {version:'0.30.0',date:'2026-10-08',title:'Jev 빠른 판단 · 과거 대화 PDF',changes:[
       'AI 연결에 메인 AI 과거 대화 PDF 범위 지정을 추가했습니다. 유미 모델의 Gemini PDF·수동 지정 기능과 함께 사용하며 최근 대화·시스템 지침·도구 기록·서명·첨부를 유지합니다. 설정은 즉시 저장됩니다.',
       'PDF로 지정한 문자 수와 유지한 분량을 호스트 진단에 기록합니다. 실제 변환·전송·과금은 유미와 프로바이더 로그에서 확인하며, 저장된 채팅·게임 데이터는 변경하지 않습니다.',
@@ -32148,7 +32526,7 @@ module.exports = {
 },
 "./version.js":function(module,exports,require){
 'use strict';
-module.exports={VERSION:'0.30.0'};
+module.exports={VERSION:'0.30.1'};
 
 },
 "./vertex-auth.js":function(module,exports,require){
