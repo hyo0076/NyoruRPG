@@ -1,4 +1,38 @@
-# NyoruRPG MCP 구조 · 0.30.1
+# NyoruRPG MCP 구조 · 0.30.4
+
+## 0.30.4 반복 되돌리기와 원문 갱신
+
+host.history는 이미 읽은 chat 스냅샷을 선택적으로 받아 원문 표시와 메시지 서명을 같은 자료에서 만든다. generation-rollback.points는 해당 스냅샷과 저장 버전 목록을 사용한다. reset은 화면에서 선택한 사용자 입력 ID와 그 입력까지의 전체 문맥을 확인하고 이후 답변의 변경은 허용한다. 직렬 실행에 진입한 뒤에는 클릭 당시의 전체 채팅과 생성 상태를 다시 확인하여 실행 중 변경을 막는다. 기존 저장 버전 선택·수동 편집 재적용·미완료 호출 취소는 유지한다.
+
+명시적 복원 대기 표식은 대상 입력까지의 문맥과 바로 뒤 답변에 연결한다. 관계없는 뒤쪽 대화의 수정만으로 표식을 취소하지 않는다. 새 답변 생성은 기존 lifecycle.ensure에서 표식을 소비하고 새 트랜잭션으로 계산한다. 다른 입력으로 진행하려 하면 기존 ROLLBACK_TARGET_PENDING 안내를 유지한다.
+
+rollback-ui.reload는 저장·복구 재진입과 UI.refresh에서 최신 원문을 읽고 유효한 선택 ID를 유지한다. 선택이 삭제되면 다른 행을 자동 선택하지 않으며 실패한 목록은 비운다. HISTORY_CHANGED 이후에는 원문만 갱신하고 복원을 자동 재실행하지 않는다. 조회·복원 중 중복 입력을 잠그고 복원 대기 대상과 Risu 재생성 안내를 표시한다. 호스트 진단은 충돌 사유·대상 ID·문맥 길이를 기록하며 채팅 원문은 추가하지 않는다.
+
+## 0.30.3 소환수 공통 수명·성장
+
+summon-system은 meta.summons의 configs/active와 등록 인물의 ownerId·active를 연결한다. 인물·기술·장비는 기존 자료를 사용하고 해제는 존재 상태만 바꾼다. 구형 actor.summon은 저장 호환용 lifecycle/remaining을 유지한다. 새 수명은 owner actions, combat, permanent, minutes, 구형 own turns를 구분한다. 완료 행동 계수는 저장된 actionSerial로 비교하여 공통 엔진의 복제·자동 진행 후 외부 처리에서 이중 차감하지 않는다.
+
+summon-tools는 기존 rpg_registry에 register_summon/summon/dismiss_summon, rpg_state에 summons를 연결한다. 새로운 소환수는 해당 룰북의 ensure_actor 준비·설치 경로를 사용한다. 저장 ID가 있으면 생성 준비를 건너뛴다. 실제 소환은 기존 행동 권한·비용·현재 차례를 사용하며 이미 활동 중인 같은 ID는 비용·유지 시간을 다시 적용하지 않는다. 기술 자체의 재사용은 원래 기술 비용을 따른다.
+
+combat-features와 optional-feature-actions의 기술 소환이 같은 activate/dismiss를 사용한다. 기술 비용과 직접 소환 비용은 중복 차감하지 않는다. common/erencha turn completion과 tactical spend에서 수명을 감소시키고, 비전투의 처리된 행동·이야기 시계는 rulebook-runtime의 후속 처리에서 연결한다. tactical advance는 초를 분으로 환산한다. 전투 종료와 해제는 대기 시전·반응·연계·전투 순서·거리 참조를 정리한다.
+
+effect-system은 소환자 보정을 계산 행으로 읽는다. 기준 값은 소환자의 기본 능력/배분·레벨·저장 최대 자원·숙련이며 다른 소환수의 계산 결과를 재귀로 참조하지 않는다. 택티컬/지르코트는 기존 명중·위력·행동 시간 계산에 연결한다. native/hunter/erencha/murim/tactical 성장 경로는 fixed를 제외한다. party-xp는 명시한 성장형 소환수만 파티 지급에 포함하고 독립 처치 지급과 중복하지 않는다.
+
+registry-ui/summon-ui는 등록·호출·해제·상태를 표시한다. summon_settings는 game-editor의 제한된 편집 엔티티이며 뉴뉴도 동일한 스키마와 저장 검증을 사용한다. 대기 중에도 능력·기술을 편집할 수 있지만 실제 행동은 소환 후에 한다. meta.summons는 기존 Repository와 백업·롤백에 포함되며 별도 저장소를 만들지 않는다. [사용법](nyoru-release-0.30.3.md).
+
+## 0.30.2 숙련도 연결·기본 대상·무림 구축
+
+erencha-training은 저장 숙련도의 선택적 training.activities/skills를 읽는다. 구형 자료는 탐색·보법 등 알려진 분야에만 기본 활동을 연결하며, 같은 계열 후보가 여럿이면 임의 병합하지 않는다. erencha-engine의 실제 기술·거리 이동·태세·탈출·거래, erencha-life의 완료된 활동, adventure의 실제 조사에서 기존 gainProficiency를 호출한다. 같은 행동의 primary/활동/기술 연결은 한 번으로 모으고 광역 추가 타격에는 반복 지급하지 않는다. 기존 기본 성장량·하드 모드·등급·레벨은 그대로다. practice 보완과 행동 게이지·효과 수식의 숙련 조회도 같은 별칭 해석을 사용한다.
+
+erencha-ui는 숙련도를 펼침 행으로 표시하고 일반 목록 XP 숫자를 숨긴다. 편집기는 활동 체크와 기술 이름/ID 연결을 저장하며 유일한 소유 기술은 ID로 연결한다. nyunyu-capabilities/knowledge와 erencha-prompts에 동일한 필드와 실제 행동 기준을 전달한다. 새 모델 호출이나 과거 성장 복구 호출은 추가하지 않는다.
+
+effect-model의 기본 kinds와 생성·편집 기본 targeting을 모든 관계·인물/소환수/물체로 연다. 기존 저장 targeting은 보존한다. effect-system은 count:0에서도 명시한 대상을 실제 대상으로 사용하며 생략된 자동 광역 공격은 적, 지원은 자신/아군을 기본으로 선택한다. erencha-engine의 광역 부대상에서 명시한 아군·물체를 다시 적 필터로 제거하지 않는다. 사거리·비용·보유 기술·활성 상태 검증은 유지한다.
+
+murim-realm-ui의 새 구축 기본값은 custom/source:lore이고 저장된 명시 선택은 우선한다. murim-assistant는 경지 로어 추출에서 마지막 전체 순서표를 사용하고 사용자 요청을 우선한다. completePerson에 관련 전체 원문과 해당 인물의 요청을 전달하며 누락 또는 잘못된 경지를 기존 보완 단계에서 처리한다. murim-rules.install은 최종 누락 경지를 1로 대체하지 않는다. setup-retry는 관련 오류의 인물 보완 캐시를 재사용하지 않되 사용자 편집한 유효한 표는 보존한다.
+
+murim-realms.snapshot은 인물·기술·가르침 refs를 ID와 chapter로 정렬한다. Repository의 canonical 저장에서 객체 키가 정렬되더라도 실제 내용이 같으면 편집 충돌을 만들지 않는다. 편집 입력은 세션과 행 ID로 좁혀 캡처하고 이름 오류에는 행/필드를 포함한다. compiler.editMurimDraft는 보관 후보를 수정한 뒤 남은 오류를 다시 기록하며 수정값을 저장한다. UI/onboarding은 편집 중 재생성·단계 이동을 감추고 저장 버튼을 유지한다.
+
+0.30.2 당시에는 신규 시스템을 [별도 설계 문서](소환-연동-관전자-전략-설계.md)에만 정리했다. 소환수는 위의 0.30.3 후속에서 구현하며 인물 간 자원 공유·관전자·GM·전략은 계속 설계 범위다.
 
 ## 0.30.1 독립 PDF 전송
 
