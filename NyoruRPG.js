@@ -1,8 +1,8 @@
 //@name universal-rpg-engine
-//@display-name NyoruRPG 0.30.4 · 자동 진행
+//@display-name NyoruRPG 0.30.5 · 자동 진행
 //@api 3.0
 //@allowed-ipc universal-rpg-engine provider-manager
-//@version 0.30.4
+//@version 0.30.5
 //@update-url https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js
 (async()=>{
 "use strict";
@@ -292,6 +292,178 @@ async function discover({job:j, request, save, secrets, existing = null}) {
 }
 
 module.exports = {discover,discoverySchema};
+
+},
+"./actor-links-tools.js":function(module,exports,require){
+'use strict';
+const {clone,assert}=require('./util.js'),L=require('./actor-links.js');
+function catalog(base){
+  const operations=Object.fromEntries(Object.entries(base.operations).map(([name,ops])=>[name,clone(ops)])),descriptions=Object.fromEntries(base.tools().map(t=>[t.name,t.description])),readOnly=new Set();
+  for(const[name,ops]of Object.entries(operations))for(const op of Object.keys(ops))if(base.isReadOnly(name,op))readOnly.add(name+'.'+op);
+  operations.rpg_state.actor_links={type:'object',properties:{actorId:{type:'string',minLength:1,maxLength:300}},required:[],additionalProperties:false};readOnly.add('rpg_state.actor_links');
+  descriptions.rpg_state+=' actor_links(actorId 선택): 저장된 인물 간 능력치 보정·자원 공유·비용 대납 조회. 계산에 자동 적용되므로 매 행동마다 조회하거나 값을 따로 더하지 않습니다. 설정 변경은 사용자 인물 연결 편집/뉴뉴에서 합니다.';
+  return require('./tool-catalog.js').createCatalog({operations,descriptions,readOnly});
+}
+function read(w,args){if(args.actorId)assert(w.actors[args.actorId],'UNKNOWN_ACTOR','등록된 인물 ID로 연결을 조회하세요.');L.bind(w);return {actorLinks:L.summary(w,args.actorId),instruction:'저장된 연결은 계산에 자동 포함됩니다. 자원 공유는 동일 잔량이고 비용 대납은 실제 지불 인물에게서 한 번 차감합니다. 보정을 원본 능력치에 다시 저장하지 마세요.'};}
+function packet(w){if(!w?.meta?.actorLinks)return {};const rows=L.summary(w).filter(c=>w.actors[c.actorId]?.active!==false&&(c.bonuses.some(r=>r.enabled)||c.resources.some(r=>r.enabled)));if(!rows.length)return {};return {actorLinks:rows.map(c=>({actorId:c.actorId,name:c.name,bonuses:c.bonuses.filter(r=>r.enabled).map(r=>({name:r.name,target:r.target,key:r.targetKey,value:r.value,sourceActorId:r.sourceActorId})),resources:c.resources.filter(r=>r.enabled).map(r=>({resource:r.resource,mode:r.mode,sourceActorId:r.sourceActorId,sourceResource:r.sourceResource,current:r.current,max:r.max}))})),actorLinkRule:'연결 보정과 공유·대납은 코드가 이미 처리합니다. 다시 더하거나 차감하지 마세요.'};}
+module.exports={catalog,read,packet};
+
+},
+"./actor-links-ui.js":function(module,exports,require){
+'use strict';
+const {escapeHTML:e}=require('./util.js'),L=require('./actor-links.js');
+function panel(w,a){const cfg=L.config(w,a.id),count=cfg.bonuses.length+cfg.resources.length;return '<div class="spaced"><button type="button" data-actor-links="'+e(a.id)+'">능력치·자원 연결'+(count?' · '+count:'')+'</button>'+(count?'<details class="spaced"><summary>현재 연결</summary>'+preview(w,a,cfg)+'</details>':'')+'</div>';}
+function preview(w,a,cfg){return cfg.bonuses.map(r=>{let n=null;try{n=L.amount(w,r);}catch{}return '<p><strong>'+e(r.name||'수치 보정')+'</strong> · '+e(w.actors[r.sourceActorId]?.name||'원본 인물 없음')+' → '+e(a.name)+'<br><small>'+e((L.SOURCES[r.source]||r.source)+(r.key?' · '+r.key:'')+' ÷ '+r.per+' ('+(L.ROUNDING[r.rounding]||r.rounding)+') × '+r.coefficient+' + '+r.flat+' → '+r.target+(r.targetKey?' '+r.targetKey:'')+' '+(n===null?'계산할 수 없음':(n>=0?'+':'')+Math.round(n*1000)/1000))+(r.enabled?'':' · 사용 OFF')+'</small></p>';}).join('')+cfg.resources.map(r=>'<p><strong>'+e(r.name||(r.mode==='share'?'자원 공유':'비용 대납'))+'</strong> · '+e(a.name+' '+r.resource+' ← '+(w.actors[r.sourceActorId]?.name||'원본 인물 없음')+' '+r.sourceResource)+(r.enabled?'':' · 사용 OFF')+'</p>').join('');}
+function help(ui,x){if(x.proposal.entity!=='actor_links')return '';const a=ui.info.state.actors[x.proposal.actorId];return '<div class="notice"><p>이 인물이 받는 연결을 설정합니다. 수치 보정에서 원본 인물과 읽을 값, 더할 항목을 고르세요. 여러 보정은 합산합니다.</p><p>예: 힘의 절반은 기준 1 · 그대로 · 계수 0.5. 레벨 5마다 +2는 기준 5 · 내림 · 계수 2. 최대 MP의 10%는 최대 자원/mp · 기준 1 · 계수 0.1입니다.</p><p>원본은 다른 인물 연결이 더해지기 전의 값입니다. 등록되어 있으면 유지 / 활동 가능 / 같은 장면 중 조건을 선택합니다. 없는 능력치·레벨·자원은 새로 만들지 않습니다.</p><p>공유는 원본의 최대치와 실제 잔량을 함께 씁니다. 비용 대납은 기술·소환·지원 수련 비용만 지불하고 피격·회복은 공유하지 않습니다. 자원 연결을 바꾸면 무료 회복을 막기 위해 낮은 잔량 비율을 적용하며, 해제 시 공유 전 잔량을 넘겨 복구하지 않습니다.</p><p>최대치가 증가해도 현재 자원을 자동 충전하지 않습니다. 소환수 유지 설정의 소환자 보정과 함께 켜면 둘 다 더해집니다.</p></div><button type="button" id="actor-links-preview">입력한 보정 계산해 보기</button><div class="spaced">'+preview(ui.info.state,a,x.value)+'</div>';}
+function bind(ui){for(const b of document.querySelectorAll('[data-actor-links]'))b.onclick=()=>ui.act(()=>{const a=ui.info.state.actors[b.dataset.actorLinks];ui.nyunyuActor=a.id;require('./game-editor-ui.js').open(ui,{entity:'actor_links',mode:'edit',actorId:a.id,id:a.id,title:a.name+' · 능력치·자원 연결',returnTab:'registry'});});}
+module.exports={panel,preview,help,bind};
+
+},
+"./actor-links.js":function(module,exports,require){
+'use strict';
+// Cross-actor links are saved rules, not generated values. Never write derived
+// bonuses back into raw stats. Resource aliases serialize as ordinary numbers.
+const {assert,clone,canonical}=require('./util.js');
+const suppressed=new WeakSet(),bound=new WeakMap();
+const SOURCES={stat:'능력치 · 본인 장비/상태 포함',level:'레벨',realm:'무림 경지 단계',resourceMax:'최대 자원',resourceCurrent:'현재 자원',resourcePercent:'남은 자원 비율(0~100)',proficiency:'숙련도'};
+const CONDITIONS={available:'원본 인물이 활동 가능할 때',present:'원본이 현재 장면에 있고 활동 가능할 때',registered:'등록되어 있으면 유지'};
+const ROUNDING={none:'그대로 · 연속 비례',floor:'내림 · N마다 증가',round:'반올림',ceil:'올림'};
+const empty=()=>({bonuses:[],resources:[]});
+const data=w=>w?.meta?.actorLinks||{version:1,actors:{},originals:{}};
+const state=w=>w.meta.actorLinks||={version:1,actors:{},originals:{}};
+const config=(w,id)=>data(w).actors[id]||empty();
+const token=(id,key)=>JSON.stringify([id,key]);
+const suspended=w=>suppressed.has(w);
+function without(w,fn){const already=suspended(w);suppressed.add(w);try{return fn();}finally{if(!already)suppressed.delete(w);}}
+const mutable=r=>!!r&&(!r.binding||r.binding==='plugin-owned');
+function live(w,a){return !!a&&!a.mergedInto&&a.active!==false&&!a.retired&&(w.meta.tactical?require('./tactical-rules.js').capable(a):!w.meta.murim?.actors?.[a.id]?.dead&&!Object.values(a.resources||{}).some(r=>r.role==='vital'&&r.current<=0));}
+function available(w,id,condition='available'){const a=w.actors[id];if(!a||a.mergedInto)return false;if(condition==='registered')return true;if(!live(w,a))return false;return condition!=='present'||require('./actor-presence.js').ids(w).includes(id);}
+function shared(w,id,key){return config(w,id).resources.find(r=>r.enabled&&r.mode==='share'&&r.resource===key)||null;}
+function root(w,id,key,seen=new Set()){
+  const mark=token(id,key);assert(!seen.has(mark),'ACTOR_LINK_CYCLE','공유 자원이 자기 자신으로 돌아옵니다. 원본 자원을 하나로 지정하세요.');seen.add(mark);
+  const row=shared(w,id,key);if(row)return root(w,row.sourceActorId,row.sourceResource,seen);
+  return {actorId:id,key,actor:w.actors[id],resource:w.actors[id]?.resources?.[key]};
+}
+function bind(w){
+  if(!w?.meta?.actorLinks)return w;
+  for(const[id,c]of Object.entries(data(w).actors))for(const row of c.resources.filter(r=>r.enabled&&r.mode==='share')){
+    const r=w.actors[id]?.resources?.[row.resource];if(!r||bound.get(r)?.world===w)continue;
+    const saved=data(w).originals[token(id,row.resource)];assert(saved,'ACTOR_LINK_STATE','공유 전 자원 기록이 없습니다. 연결 설정을 확인하세요.');
+    const b={world:w,id,key:row.resource};bound.set(r,b);
+    Object.defineProperties(r,{
+      current:{enumerable:true,configurable:true,get(){return root(w,id,row.resource).resource?.current??0;},set(value){const source=root(w,id,row.resource).resource;assert(source&&Number.isFinite(value),'ACTOR_LINK_BROKEN','공유 원본 자원이 없거나 변경값이 잘못되었습니다.');source.current=Math.max(0,Math.min(source.max,value));}},
+      max:{enumerable:true,configurable:true,get(){return root(w,id,row.resource).resource?.max??Math.max(1,saved.max);},set(value){assert(Number.isFinite(value)&&value>=0,'ACTOR_LINK_VALUE','공유 인물의 원래 최대 자원 값이 잘못되었습니다.');saved.max=value;}}
+    });
+  }
+  return w;
+}
+function proficiency(a,key){const p=a.proficiencies?.[key];if(p!==undefined)return typeof p==='number'?p:p.rating??require('./erencha-proficiency.js').rating(p);const s=!Array.isArray(a.skills)&&a.skills?.[key];return s?s.mastery||0:null;}
+function baseline(w,a){return without(w,()=>{
+  if(w.meta.erencha){const m=require('./erencha-rules.js').modifiers(w,a);return {raw:a.raw||{},resources:Object.fromEntries(Object.entries(a.resources||{}).map(([k,r])=>[k,{...r,max:Math.max(k==='hp'?1:0,(k==='hp'?a.baseHP:a.baseMP)+m[k])}]))};}
+  if(w.meta.tactical||w.meta.social)return {raw:a.raw||{},resources:a.resources||{}};
+  return require('./rules.js').viewActor(w,a.id);
+});}
+function sourceValue(w,row){const a=w.actors[row.sourceActorId];if(!a||a.mergedInto)return null;
+  if(row.source==='level')return !w.meta.murim&&!w.meta.tactical&&!w.meta.social&&Number.isFinite(a.level)?a.level:null;
+  if(row.source==='realm')return w.meta.murim?.actors?.[a.id]?.realm??null;
+  if(row.source==='proficiency')return proficiency(a,row.key);
+  if(row.source==='stat')return Object.hasOwn(a.raw||{},row.key)?baseline(w,a).raw[row.key]:null;
+  if(!a.resources?.[row.key])return null;
+  const source=root(w,a.id,row.key);if(!source.resource)return null;
+  if(row.source==='resourceCurrent')return source.resource.current;
+  if(row.source==='resourcePercent')return source.resource.max>0?source.resource.current/source.resource.max*100:0;
+  return baseline(w,source.actor).resources[source.key]?.max??null;
+}
+function amount(w,row){const source=sourceValue(w,row);if(source===null||!Number.isFinite(source))return null;let units=source/row.per;if(row.rounding!=='none')units=Math[row.rounding](units);let value=units*row.coefficient+row.flat;if(row.minimum!==null)value=Math.max(row.minimum,value);if(row.maximum!==null)value=Math.min(row.maximum,value);return Math.max(-1e6,Math.min(1e6,value));}
+function modifiers(w,a){if(suspended(w)||!w?.meta?.actorLinks)return [];return config(w,a.id).bonuses.flatMap(row=>{if(!row.enabled||!available(w,row.sourceActorId,row.condition))return [];const value=amount(w,row);return value===null?[]:[{type:row.target,target:row.targetKey||'*',mode:'add',value,name:row.name||w.actors[row.sourceActorId].name+' 연결 보정'}];});}
+function adjust(w,a,type,initial,key='*'){return initial+modifiers(w,a).filter(r=>r.type===type&&(r.target==='*'||r.target===key)).reduce((n,r)=>n+r.value,0);}
+function stat(w,a,key){if(!w)return a.raw[key]||0;return adjust(w,a,'raw',a.raw[key]||0,key);}
+function targets(w){if(w.meta.social)return {raw:'능력치'};if(w.meta.tactical)return {raw:'능력치',power:'무기 위력',accuracy:'무기 명중',gaugeSpeed:'행동 속도(%)'};return {...(!w.meta.erencha?{raw:'능력치'}:{}),power:'기술 위력',damage:'공격 피해',accuracy:'명중',defense:'회피/적 명중 난이도',armor:'피해 경감',resourceMax:'최대 자원',gaugeSpeed:'행동 게이지 속도',movement:'행동당 이동력'};}
+function sourceOptions(w){return Object.fromEntries(Object.entries(SOURCES).filter(([key])=>key==='level'?!w.meta.murim&&!w.meta.tactical&&!w.meta.social:key==='realm'?!!w.meta.murim:key==='stat'?!w.meta.erencha:!key.startsWith('resource')||Object.values(w.actors).some(a=>Object.keys(a.resources||{}).length)));}
+const text=title=>({type:'string',title,maxLength:300,default:''});
+const num=(title,min,max,value=0)=>({type:'number',title,minimum:min,maximum:max,default:value});
+const choose=(title,labels,value)=>({type:'string',title,enum:Object.keys(labels),enumNames:Object.values(labels),...(value===undefined?{}:{default:value})});
+const object=(title,properties)=>({type:'object',title,properties,required:Object.keys(properties),additionalProperties:false});
+function schema(w,a,value=config(w,a.id),display=true){
+  const names=Object.fromEntries(Object.values(w.actors).filter(x=>!x.mergedInto).map(x=>[x.id,x.name+' · '+x.id]));
+  for(const row of [...value.bonuses,...value.resources])if(!names[row.sourceActorId])names[row.sourceActorId]='연결 끊김 · '+row.sourceActorId;
+  const keys={'':'사용하지 않음'},targetKeys={'':'전체 기술/피해 · 별도 키 없음'};
+  for(const x of Object.values(w.actors))for(const k of [...Object.keys(x.raw||{}),...Object.keys(x.resources||{}),...Object.keys(x.proficiencies||{}),...(!Array.isArray(x.skills)?Object.keys(x.skills||{}):[])])keys[k]=k;
+  for(const k of [...Object.keys(a.raw||{}),...Object.keys(a.resources||{}),...(Array.isArray(a.skills)?a.skills:Object.keys(a.skills||{}))])targetKeys[k]=k;
+  for(const row of value.bonuses){keys[row.key]=row.key||'사용하지 않음';targetKeys[row.targetKey]=row.targetKey||'전체 기술/피해 · 별도 키 없음';}
+  const ownResources=Object.fromEntries(Object.entries(a.resources||{}).filter(([,r])=>mutable(r)).map(([k,r])=>[k,(r.name||k)+' · '+k]));
+  const resourceKeys={};for(const x of Object.values(w.actors))for(const[k,r]of Object.entries(x.resources||{}))if(mutable(r))resourceKeys[k]=(r.name||k)+' · '+k;
+  for(const r of value.resources){ownResources[r.resource]||=r.resource;resourceKeys[r.sourceResource]||=r.sourceResource;}
+  const field=(title,values)=>display?choose(title,Object.keys(values).length?values:{'':'사용 가능한 값 없음'}):text(title);
+  return object('다른 인물과 능력치·자원 연결',{
+    bonuses:{type:'array',title:'수치 보정 · 원본 ÷ 기준 단위 → 반올림 → × 계수 + 고정값',maxItems:100,items:object('보정',{
+      name:text('연결 이름'),enabled:{type:'boolean',title:'사용',default:true},sourceActorId:field('원본 인물',names),
+      source:choose('읽을 값',sourceOptions(w),Object.keys(sourceOptions(w))[0]),key:field('원본 능력치·자원·숙련도 ID · 레벨/경지는 사용하지 않음',keys),
+      per:num('기준 단위 · 레벨 5마다라면 5',.001,1e6,1),rounding:choose('기준 단위 처리',ROUNDING,'none'),coefficient:num('한 단위당 보정 · 절반이면 0.5',-1e6,1e6,1),flat:num('고정 보정',-1e6,1e6),
+      minimum:{...num('보정 하한',-1e6,1e6),nullable:true,default:null},maximum:{...num('보정 상한',-1e6,1e6),nullable:true,default:null},
+      target:choose('이 인물에 더할 항목',targets(w),w.meta.social?'raw':'power'),targetKey:field('대상 능력치·자원 ID / 특정 보유 기술 ID',targetKeys),condition:choose('유지 조건',CONDITIONS,'available')
+    })},
+    resources:{type:'array',title:'자원 연결 · 실제 숫자 자원이 있는 룰북',maxItems:30,items:object('자원 연결',{
+      name:text('연결 이름'),enabled:{type:'boolean',title:'사용',default:true},resource:field('이 인물의 자원',ownResources),mode:choose('연결 방식',{share:'잔량·최대치 공유',cost:'기술·활동 비용만 대신 지불'},'share'),
+      sourceActorId:field('원본/지불 인물',names),sourceResource:field('원본 인물의 자원',resourceKeys),condition:choose('비용 대납 조건 · 공유는 해제할 때까지 유지',CONDITIONS,'available')
+    })}
+  });
+}
+function validateConfig(w,a,v,strict=true){
+  assert(v&&Array.isArray(v.bonuses)&&Array.isArray(v.resources),'ACTOR_LINK_STATE','수치 보정과 자원 연결 목록이 필요합니다.');
+  assert([...v.bonuses,...v.resources].every(r=>r&&typeof r==='object'&&!Array.isArray(r)),'ACTOR_LINK_VALUE','각 연결은 이름과 원본을 가진 설정이어야 합니다.');
+  const shape=schema(w,a,v,false);require('./game-editor.js').validate(shape,v);
+  for(const key of ['bonuses','resources'])for(const row of v[key])for(const field of shape.properties[key].items.required)assert(Object.hasOwn(row,field),'ACTOR_LINK_VALUE','연결 설정에 필요한 값이 없습니다: '+field);
+  const used=new Set();
+  for(const row of v.bonuses){assert(row.minimum===null||row.maximum===null||row.minimum<=row.maximum,'ACTOR_LINK_VALUE','보정 하한은 상한보다 클 수 없습니다.');if(!strict||!row.enabled)continue;
+    assert(w.actors[row.sourceActorId]&&!w.actors[row.sourceActorId].mergedInto,'ACTOR_LINK_SOURCE','원본 인물이 없습니다.');assert(sourceValue(w,row)!==null,'ACTOR_LINK_SOURCE','원본 인물에게 해당 능력치·자원·레벨·숙련도가 없습니다: '+row.key);
+    if(row.target==='raw')assert(Object.hasOwn(a.raw||{},row.targetKey),'ACTOR_LINK_TARGET','이 인물의 실제 능력치 ID를 지정하세요.');
+    else if(row.target==='resourceMax'){assert(mutable(a.resources?.[row.targetKey]),'ACTOR_LINK_TARGET','이 인물의 실제 자원 ID를 지정하세요.');assert(!v.resources.some(r=>r.enabled&&r.mode==='share'&&r.resource===row.targetKey),'ACTOR_LINK_TARGET','공유 자원의 최대치 보정은 원본 인물에 설정하세요. 공유받는 인물의 최대치는 원본을 그대로 사용합니다.');}
+    else assert(!row.targetKey||['power','accuracy'].includes(row.target)&&(Array.isArray(a.skills)?a.skills.includes(row.targetKey):!!a.skills?.[row.targetKey]),'ACTOR_LINK_TARGET','전체 보정은 대상 키를 비우고, 위력·명중의 기술 한정은 보유 기술 ID를 지정하세요.');
+  }
+  for(const row of v.resources){if(row.enabled){assert(!used.has(row.resource),'ACTOR_LINK_RESOURCE','한 자원에는 공유 또는 비용 대납 연결 하나만 지정하세요.');used.add(row.resource);}if(!strict||!row.enabled)continue;
+    const r=a.resources?.[row.resource],source=w.actors[row.sourceActorId]?.resources?.[row.sourceResource];assert(mutable(r)&&mutable(source),'ACTOR_LINK_RESOURCE','두 인물에게 플러그인이 관리하는 해당 자원이 있어야 합니다.');
+    assert(row.sourceActorId!==a.id||row.sourceResource!==row.resource,'ACTOR_LINK_CYCLE','자기 자신의 같은 자원으로 연결할 수 없습니다.');
+    assert(row.mode!=='share'||r.role===source.role,'ACTOR_LINK_RESOURCE','공유할 자원은 역할이 같아야 합니다. HP는 HP, 마력은 마력처럼 연결하세요.');
+  }
+}
+function detach(w,id,row){const a=w.actors[id],r=a?.resources?.[row.resource],original=data(w).originals[token(id,row.resource)];if(!r||!original)return;
+  const pool=root(w,id,row.resource).resource,ratio=pool?.max>0?Math.max(0,Math.min(1,pool.current/pool.max)):0;
+  Object.defineProperties(r,{current:{enumerable:true,configurable:true,writable:true,value:Math.min(original.current,original.max*ratio)},max:{enumerable:true,configurable:true,writable:true,value:original.max}});
+  bound.delete(r);delete data(w).originals[token(id,row.resource)];
+}
+function save(w,a,input){const v=clone(input);validateConfig(w,a,v);const old=config(w,a.id),candidate={...w,meta:{...w.meta,actorLinks:{...data(w),actors:{...data(w).actors,[a.id]:v}}}};
+  for(const[id,c]of Object.entries(data(candidate).actors))for(const r of c.resources.filter(r=>r.enabled&&r.mode==='share'))root(candidate,id,r.resource);
+  const mapping=rows=>rows.filter(r=>r.enabled).map(({resource,mode,sourceActorId,sourceResource,condition})=>({resource,mode,sourceActorId,sourceResource,...(mode==='cost'?{condition}:{})})).sort((a,b)=>a.resource.localeCompare(b.resource));
+  const changes=canonical(mapping(old.resources))!==canonical(mapping(v.resources)),shares=rows=>rows.filter(r=>r.enabled&&r.mode==='share'),same=(x,y)=>x.resource===y.resource&&x.sourceActorId===y.sourceActorId&&x.sourceResource===y.sourceResource;
+  if(changes){assert(!w.combat,'COMBAT_ACTIVE','자원 공유·대납 연결 변경은 전투 종료 후 저장하세요. 수치 보정만 수정하는 것은 가능합니다.');bind(w);for(const r of shares(old.resources).filter(r=>!shares(v.resources).some(n=>same(r,n))))detach(w,a.id,r);}
+  state(w).actors[a.id]=v;
+  if(changes)for(const row of shares(v.resources).filter(r=>!shares(old.resources).some(n=>same(r,n)))){
+    const r=a.resources[row.resource],pool=root(w,a.id,row.resource).resource;assert(pool,'ACTOR_LINK_BROKEN','공유 원본을 확인하세요.');
+    state(w).originals[token(a.id,row.resource)]={current:r.current,max:r.max};
+    // Joining a pool cannot heal either side for free.
+    pool.current=Math.min(pool.current,pool.max*(r.max>0?r.current/r.max:1));
+  }
+  bind(w);refresh(w);return v;
+}
+function spec(w,p){const a=w.actors[p.actorId];assert(a,'UNKNOWN_ACTOR','연결을 설정할 인물을 선택하세요.');const value=clone(config(w,a.id));return {value,schema:schema(w,a,value),record:value,apply:v=>save(w,a,v)};}
+function refresh(w){if(!w?.meta?.actorLinks)return;bind(w);if(w.meta.tactical||w.meta.social)return;for(const a of Object.values(w.actors)){if(a.mergedInto)continue;if(w.meta.erencha)require('./erencha-rules.js').recalculate(w,a,false);else require('./rules.js').syncMax(w,a.id);}}
+function payer(w,a,key,strict=true){bind(w);const link=config(w,a.id).resources.find(r=>r.enabled&&r.mode==='cost'&&r.resource===key);
+  if(link&&!available(w,link.sourceActorId,link.condition)){if(strict)assert(false,'ACTOR_LINK_PAYER','비용을 지불할 연결 인물이 없거나 현재 유지 조건을 충족하지 못합니다.');return null;}
+  const result=root(w,link?.sourceActorId||a.id,link?.sourceResource||key);if(!result.resource||!mutable(result.resource)){if(strict)assert(false,'ACTOR_LINK_RESOURCE','비용을 지불할 실제 자원이 없습니다.');return null;}return {...result,linked:!!link||!!shared(w,a.id,key)};
+}
+function canPay(w,a,key,n){if(!n)return true;const p=payer(w,a,key,false);return !!p&&p.resource.current>=n&&(!p.linked||p.resource.role!=='vital'||p.resource.current>n);}
+function checkCosts(w,a,costs){const totals=new Map();for(const[k,n]of Object.entries(costs)){if(!n)continue;const p=payer(w,a,k),id=token(p.actorId,p.key),row=totals.get(id)||{...p,amount:0};row.amount+=n;row.linked||=p.linked;totals.set(id,row);}
+  for(const p of totals.values())assert(p.resource.current>=p.amount&&(!p.linked||p.resource.role!=='vital'||p.resource.current>p.amount),'INSUFFICIENT_RESOURCE',(p.actor?.name||p.actorId)+' · '+(p.resource.name||p.key)+' 비용 '+p.amount+' 필요, 현재 '+p.resource.current+(p.linked&&p.resource.role==='vital'?' · 연결된 생명력은 0까지 소비할 수 없습니다.':''));return [...totals.values()];
+}
+function pay(w,a,costs,events=w.meta.effectEvents||=[]){for(const p of checkCosts(w,a,costs)){p.resource.current-=p.amount;if(p.linked)events.push({actorId:a.id,targetId:p.actorId,label:a.name+' · 연결 자원 비용',value:p.actor.name+' '+(p.resource.name||p.key)+' −'+p.amount+' ('+p.resource.current+'/'+p.resource.max+')'});}}
+function costSnapshot(w,a,key,amount){const p=payer(w,a,key);return {id:key,name:(p.actorId!==a.id?p.actor.name+' · ':'')+(p.resource.name||p.key),amount,before:p.resource.current,max:p.resource.max,payerId:p.actorId,payerResource:p.key};}
+function costAfter(w,row){return w.actors[row.payerId]?.resources?.[row.payerResource]?.current??0;}
+function summary(w,id){return Object.entries(data(w).actors).filter(([key])=>!id||key===id).map(([key,c])=>({actorId:key,name:w.actors[key]?.name||key,bonuses:c.bonuses.map(r=>({...r,sourceName:w.actors[r.sourceActorId]?.name||null,value:r.enabled&&available(w,r.sourceActorId,r.condition)?amount(w,r):null})),resources:c.resources.map(r=>{const p=root(w,r.mode==='share'?key:r.sourceActorId,r.mode==='share'?r.resource:r.sourceResource);return {...r,sourceName:w.actors[r.sourceActorId]?.name||null,current:p.resource?.current??null,max:p.resource?.max??null};})}));}
+function sources(w){return Object.values(w.actors).filter(a=>!a.mergedInto&&!a.retired).map(a=>({id:a.id,name:a.name,active:a.active!==false,level:a.level??null,realm:w.meta.murim?.actors?.[a.id]?.realm??null,stats:baseline(w,a).raw,resources:Object.fromEntries(Object.entries(a.resources||{}).map(([k,r])=>[k,{name:r.name,role:r.role,current:r.current,max:r.max}])),proficiencyKeys:Object.keys(a.proficiencies||{}),skillKeys:Array.isArray(a.skills)?a.skills:Object.keys(a.skills||{})}));}
+function validateWorld(w){if(!w.meta.actorLinks)return;const s=data(w);assert(s.version===1&&s.actors&&s.originals,'ACTOR_LINK_STATE','인물 연결 저장 구조를 확인하세요.');for(const[id,c]of Object.entries(s.actors)){const a=w.actors[id];if(a)validateConfig(w,a,c,false);for(const r of c.resources.filter(r=>r.enabled&&r.mode==='share')){root(w,id,r.resource);const b=s.originals[token(id,r.resource)];assert(b&&Number.isFinite(b.current)&&b.current>=0&&Number.isFinite(b.max)&&b.max>=0,'ACTOR_LINK_STATE','공유 전 자원 기록을 확인하세요.');}}}
+const GUIDE='actor_links는 선택 actorId가 받는 인물 간 연결입니다. bonuses는 다른 인물의 stat/level/realm/resourceMax/resourceCurrent/resourcePercent/proficiency를 읽어 (값/per의 rounding)×coefficient+flat을 target/targetKey에 더합니다. 최소/최대는 보정값 범위입니다. 다른 인물 연결 보정이 들어가기 전 본인 장비·상태 값을 읽으므로 순환 증폭하지 않습니다. resources의 share는 동일 역할 자원의 실제 잔량과 원본 최대치를 공유하며 cost는 비용만 sourceActorId/sourceResource가 지불합니다. 원래 수치를 반복 덮어쓰거나 연결 해제로 무료 회복하지 않습니다. 기존 배열을 보존하며 요청한 연결만 추가/수정하세요.';
+module.exports={SOURCES,CONDITIONS,ROUNDING,config,schema,spec,save,validateWorld,bind,refresh,suspended,without,modifiers,adjust,stat,shared,root,baseline,sourceValue,amount,payer,canPay,checkCosts,pay,costSnapshot,costAfter,summary,sources,GUIDE};
 
 },
 "./actor-lore-search.js":function(module,exports,require){
@@ -1896,7 +2068,7 @@ const legacyWorldSchema = obj({
     hunters: {},
     murim: {},
     rulebook: {},
-    optionalFeatures:{type:"object"},summons:{type:'object'},
+    optionalFeatures:{type:"object"},summons:{type:'object'},actorLinks:{type:'object'},
     adventure: {},
     combatOptions:require("./combat-options.js").schema,campaignDeath:obj({combatId:id,actorIds:arr(id,200),message:str(2000)}),medicalDebt:map(num(0)),lastRecovery:{type:"object"},lastCombatResolution:{type:"object"},
     skillCasting:map(obj({id,actorId:id,skillId:id,name:str(),targetIds:arr(id,200),remaining:int(1,20),total:int(1,20),area:{type:'boolean'}})),
@@ -2742,9 +2914,11 @@ function clearEmpty(w){for(const [id,i] of Object.entries(w.inventory||{}))if(i.
 const running=new WeakSet();
 function automatic(w,a,rng,events=w.meta.effectEvents||=[]){if(!a||running.has(a))return;running.add(a);try{for(const id of ids(a)){const s=w.definitions.skills[id],m=s?.mechanics;if(m?.activation!=='automatic')continue;const spec=m.automatic||{},hp=FX().resource(a,'hp'),sp=FX().resource(a,'sp'),mp=FX().resource(a,'mp'),met=spec.trigger==='incapacitated'?hp?.current<=0:spec.trigger==='sp_empty'?sp?.current===0:spec.trigger==='mp_empty'?mp?.current===0:!!hp&&hp.current/hp.max*100<=spec.threshold;
 const key='automatic:'+id,state=(a.effectState||={})[key]||={used:0,latched:false};if(!met){state.latched=false;continue;}if(state.latched||state.used>=(spec.limit||1))continue;state.latched=true;
-const costs=w.meta.rulebook?.id==='erencha'?[{resource:'mp',value:require('./erencha-rules.js').resourceCost(w,a,s.mpCost||0,s.name),mode:'flat'}]:s.costs||[],amounts=costs.map(c=>{const r=FX().resource(a,c.resource);return {r,n:c.mode==='percentMax'?(r?.max||0)*c.value/100:c.mode==='percentCurrent'?(r?.current||0)*c.value/100:c.value};});if(amounts.some(x=>!x.r&&x.n||x.r&&x.r.current<x.n)){FX().emit(events,a,s.name,'자동 발동 자원 부족');continue;}
+const links=require('./actor-links.js'),costs=w.meta.rulebook?.id==='erencha'?[{resource:'mp',value:require('./erencha-rules.js').resourceCost(w,a,s.mpCost||0,s.name),mode:'flat'}]:s.costs||[],amounts={};let payable=true;
+for(const c of costs){if(!c.value)continue;const p=links.payer(w,a,c.resource,false);if(!p){payable=false;break;}const r=p.resource,n=c.mode==='percentMax'?r.max*c.value/100:c.mode==='percentCurrent'?r.current*c.value/100:c.value;amounts[c.resource]=(amounts[c.resource]||0)+n;}
+try{if(payable)links.checkCosts(w,a,amounts);}catch(error){if(!['INSUFFICIENT_RESOURCE','ACTOR_LINK_PAYER','ACTOR_LINK_RESOURCE'].includes(error.code))throw error;payable=false;}if(!payable){FX().emit(events,a,s.name,'자동 발동 자원 부족 · 연결 지불자 포함');continue;}
 if(FX().requirements(w,a,s).length||(a.cooldowns?.[id]||0)>0||!Array.isArray(a.skills)&&require('./skill-cooldown.js').remaining(w,a,s)>0)continue;const st=a.skills?.[id];if(s.charges&&st?.spent>=s.charges.limit)continue;if(s.uses!=null&&(a.uses?.[id]||0)>=s.uses)continue;
-state.used++;for(const x of amounts)if(x.r)x.r.current-=x.n;if(st&&s.charges)st.spent++;if(Array.isArray(a.skills))(a.uses||={})[id]=(a.uses[id]||0)+1;
+state.used++;links.pay(w,a,amounts,events);if(st&&s.charges)st.spent++;if(Array.isArray(a.skills))(a.uses||={})[id]=(a.uses[id]||0)+1;
 if(Array.isArray(a.skills)&&s.cooldown)(a.cooldowns||={})[id]=s.cooldown+1;
 if(!Array.isArray(a.skills))require('./skill-cooldown.js').start(w,a,s,{reaction:true,linked:true});
 if(s.kind==='heal'||s.type==='heal'){a.automaticRecovery=true;try{FX().heal(w,a,w.meta.rulebook?.id==='erencha'?s.power:require('./engine.js').skillPower(w,a.id,id),'hp',events);}finally{delete a.automaticRecovery;}}
@@ -5014,6 +5188,7 @@ function scaled(w,source,target,r,s){
     b=source.raw?.[sc.key]||0;const invest=w.meta.native?.actors?.[source.id];if(invest?.applyAllocation)b+=invest.allocated?.[sc.key]||0;
     for(const ef of require('./equipment-presence.js').effects(w,source))if(ef.type==='raw'&&(ef.target==='*'||ef.target===sc.key))b=ef.mode==='multiply'?b*ef.value:b+ef.value;
     for(const c of source.conditions||[])for(const ef of [...(c.effect||[]),...(c.component?[c.component]:[])])if(ef.type==='raw'&&(ef.target==='*'||ef.target===sc.key))b=ef.mode==='multiply'?b*ef.value:b+ef.value;
+    b=require('./actor-links.js').adjust(w,source,'raw',b,sc.key);
   }else if(sc.basis==='sourceMax')b=resource(source,sc.key||'hp')?.max||0;
   else if(sc.basis==='targetMax')b=resource(target,sc.key||'hp')?.max||0;
   else if(sc.basis==='level')b=source.level||0;
@@ -5026,7 +5201,8 @@ function scaled(w,source,target,r,s){
 }
 function activeRows(w,a,includeDelivery=false){
   const out=(a.conditions||[]).filter(c=>c.component&&(c.duration>0||c.permanent)&&(includeDelivery||c.component.delivery!=='on_hit')).map(c=>({r:c.component,state:c,source:entity(w,c.sourceId)||a}));
-  for(const r of require('./summon-system.js').modifiers(w,a))out.push({r:M.row(r),state:{},source:a});
+  const links=require('./actor-links.js');
+  if(!links.suspended(w))for(const r of [...require('./summon-system.js').modifiers(w,a),...links.modifiers(w,a)])out.push({r:M.row(r),state:{},source:a});
   // Equipment/passive auras are evaluated against the present party; immutable
   // definitions never hold shield consumption or per-turn counters.
   for(const source of [a,...scene(w,a).filter(t=>t.id!==a.id&&!isObject(t))]){
@@ -5699,7 +5875,7 @@ function costList(w, a, s) {
   const m = a.skills[s.id].mastery,
     totals = {};
   for (const c of s.costs) {
-    const r = a.resources[c.resource];
+    const r = require('./actor-links.js').payer(w,a,c.resource).resource;
     assert(r, 'MISSING_RESOURCE', '비용 자원이 없습니다.');
     mutable(r);
     let n = c.mode === 'flat' ? c.value : (c.mode === 'percentMax' ? r.max : r.current) * c.value / 100;
@@ -5727,7 +5903,7 @@ function gates(w, a, s, {
   assert(!cooldown, 'COOLDOWN', s.name+' 재사용까지 자기 차례 '+cooldown+'회가 남았습니다. 다른 기술이나 행동을 선택하세요.');
   require('./optional-feature-combat.js').checkAmmo(w,a,s);
   const costs = costList(w, a, s);
-  for (const [k, n] of Object.entries(costs)) assert(a.resources[k].current >= n, 'INSUFFICIENT_RESOURCE', '필요한 자원이 부족합니다: ' + a.resources[k].name);
+  require('./actor-links.js').checkCosts(w,a,costs);
   const limit = useLimit(w, a, s);
   if (limit !== null) assert(state.spent < limit, 'NO_CHARGES', '기술의 남은 횟수가 없습니다.');
   const tags = [...new Set(Object.values(a.equipment))].filter(Boolean).flatMap(id => w.definitions.items[w.inventory[id].definitionId].tags);
@@ -5752,7 +5928,7 @@ function spend(w, a, s, {
   } = gates(w, a, s, {
     reaction, linked
   });
-  for (const [k, n] of Object.entries(costs)) a.resources[k].current -= n;
+  require('./actor-links.js').pay(w,a,costs);
   require('./combat-features.js').automatic(w,a,rng,w.meta.effectEvents||=[]);
   const st = a.skills[s.id];
   if (s.charges) st.spent++;
@@ -5920,7 +6096,7 @@ function resolveLinks(w,ctx,rng) {
       entry.status='executed';const reply=executeCore(candidate,'rpg_combat',{op:'action',actionId:id,actorId:a.id,kind:'skill',skillId:s.id,targetIds:entry.murimSequence&&s.kind!=='attack'?[a.id]:s.area?valid:valid.slice(0,1),itemId:''},ctx,rng,{linked:true});
       entry.landed=[...new Set((reply.result.targets||[]).filter(h=>h.success!==false&&!h.impact?.missed&&!h.impact?.evaded).map(h=>h.targetId))];entry.threatIds=(reply.result.targets||[]).map(h=>h.threatId).filter(Boolean);
       if(entry.murimSequence&&s.kind!=='attack'){entry.landed=valid;entry.threatIds=[];}
-      Object.assign(w,candidate);replies.push({status:'executed',actorId:a.id,skillId:s.id,result:reply});
+      Object.assign(w,candidate);require('./actor-links.js').bind(w);replies.push({status:'executed',actorId:a.id,skillId:s.id,result:reply});
     }catch(error){w.combat.pendingLinks[id].status='skipped';replies.push({status:'skipped',actorId:link.actorId,skillId:link.skillId,reason:error.code||'LINK_UNAVAILABLE',message:error.message});}
   }
   return replies;
@@ -6278,13 +6454,15 @@ function summary(w) {
 }
 function liveSummary(w, actorIds = null) {
   w=require('./combat-options.js').displayWorld(w);
+  require('./actor-links.js').bind(w);
   const external=require('./rulebook-runtime.js').externalEngine(w);
-  if(external)return external.liveSummary?external.liveSummary(w,actorIds):external.summary(w,actorIds);
+  if(external)return {...(external.liveSummary?external.liveSummary(w,actorIds):external.summary(w,actorIds)),...require('./actor-links-tools.js').packet(w)};
   const current = w.combat?.order[w.combat.index]?.actorId;
   const pending = Object.values(w.combat?.threats || {}).filter(t => t.status === 'pending');
   const selected = actorIds && new Set([...actorIds, current, ...(w.combat?.order || []).map(row=>row.actorId), ...pending.flatMap(t => [t.actorId, t.targetId])]);
   return {
     policy: w.profile.policyName,
+    ...require('./actor-links-tools.js').packet(w),
     actors: Object.values(w.actors).filter(a => a.active && (!selected || selected.has(a.id))).map(a => publicActor(w,a)),
     objects:Object.values(w.meta.effectObjects||{}).filter(o=>(w.meta.effectScene||[]).includes(o.id)).map(o=>({id:o.id,name:o.name,durability:clone(o.resources.hp),state:clone(o.state)})),
     combat: w.combat ? { turnTable:w.combat.turnTable!==false,ownTurns:clone(w.combat.ownTurns||{}),rescuePending:!!w.combat.rescuePending,...turnState(w), currentActorId: current, currentActorName:w.actors[current]?.name, pending:pending.map(t=>pendingReaction(w,t)) } : null,
@@ -6584,7 +6762,7 @@ function executeCore(w, tool, args, ctx = {}, rng = globalThis.crypto, internal 
           const usable=(kind)=>Object.keys(a.skills).map(id=>w.definitions.skills[id]).filter(x=>x.kind===kind&&(kind!=='evasion'||!t.area||x.aoeEvasion)).filter(x=>{try{gates(w,a,x,{reaction:true,linked:true});return true;}catch{return false;}});
           const dodge=s.kind==='evasion'?s:usable('evasion').sort((x,y)=>evasionChance(w,a,y)-evasionChance(w,a,x))[0];
           let consumed=false;
-          const use=(chosen)=>{const rows=Object.entries(costList(w,a,chosen)).map(([id,amount])=>({id,name:a.resources[id].name,amount,before:a.resources[id].current,max:a.resources[id].max}));const saved=spend(w,a,chosen,{reaction:true,linked:consumed},rng);consumed=true;FX.apply(w,a,[a],chosen,{hit:true,rng});costs.push(...rows.map(x=>({...x,after:a.resources[x.id].current})));progression(w,a,chosen.id,true);return saved;};
+          const use=(chosen)=>{const rows=Object.entries(costList(w,a,chosen)).map(([id,amount])=>require('./actor-links.js').costSnapshot(w,a,id,amount));const saved=spend(w,a,chosen,{reaction:true,linked:consumed},rng);consumed=true;FX.apply(w,a,[a],chosen,{hit:true,rng});costs.push(...rows.map(x=>({...x,after:require('./actor-links.js').costAfter(w,x)})));progression(w,a,chosen.id,true);return saved;};
           if(dodge){const chance=evasionChance(w,a,dodge),roll=d100(rng);ammoSaving=use(dodge);evade=roll>100-chance;evasion={skillId:dodge.id,name:dodge.name,chance,roll,target:100-chance,success:evade};}
           if(!evade&&!FX.has(w,a,'defenseBlock')){const blocks=usable('defense');blockSkill=s.kind==='defense'&&blocks.includes(s)?s:blocks.sort((x,y)=>skillPower(w,a.id,y.id)-skillPower(w,a.id,x.id))[0];if(blockSkill){use(blockSkill);defense=skillPower(w,a.id,blockSkill.id);}}
         }
@@ -6679,7 +6857,7 @@ function executeCore(w, tool, args, ctx = {}, rng = globalThis.crypto, internal 
           const handledEffects=new Set(),effectCastId=uid('effect-cast'),preparedIds=new Set(a.conditions.filter(c=>c.component?.type==='nextPower').map(c=>c.id));
           const mastery = a.skills[s.id]?.mastery || 0;
           const grownCondition = require('./skill-growth.js').condition(s,mastery);
-          const costs = args.kind==='basic_attack'?[]:Object.entries(costList(w,a,s)).map(([id,amount])=>({id,name:a.resources[id].name,amount,before:a.resources[id].current,max:a.resources[id].max}));
+          const costs = args.kind==='basic_attack'?[]:Object.entries(costList(w,a,s)).map(([id,amount])=>require('./actor-links.js').costSnapshot(w,a,id,amount));
           let ammoSaving=null;
           if (args.kind === 'basic_attack'){require('./optional-feature-combat.js').consumeAmmo(w,a,s,w.meta.effectEvents||=[]);budget(w,a,'action',true);}else ammoSaving=spend(w, a, s, {linked:internal.linked===true},rng);
           const checkStat=require('./equipment-options.js').checkAdjustment(w,a,{kind:'attack',skill:s});
@@ -6810,7 +6988,7 @@ function executeCore(w, tool, args, ctx = {}, rng = globalThis.crypto, internal 
             checkPerspective: s.resolution === 'save' ? 'target' : 'actor',
             ...(s.narrativeEffects?.length?{narrativeEffects:clone(s.narrativeEffects),effectScope:'설명에만 있는 효과는 자동 실행되지 않았습니다. 실제 자원·상태·연계 결과에 없는 추가 효과를 성공했다고 서술하지 마세요.'}:{}),
             targets: results,
-            costs:costs.map(row=>({...row,after:a.resources[row.id].current})),
+            costs:costs.map(row=>({...row,after:require('./actor-links.js').costAfter(w,row)})),
             ...(ammoSaving?{ammoSaving}:{}),
             ...(s.resolution==='attack' && checkStat.to?{checkStat}:{}),
             ...(internal.linked?{linked:true}:{})
@@ -7190,7 +7368,7 @@ function castOutsideCombat(w,args,ctx={},rng=globalThis.crypto) {
   require('./combat-features.js').summon(w,a,s,w.meta.effectEvents||=[]);
   const amount=basic?basic.damage:skillPower(w,a.id,s.id),preparedIds=new Set(a.conditions.filter(c=>c.component?.type==='nextPower').map(c=>c.id));
   const grownCondition=basic?null:require('./skill-growth.js').condition(s,a.skills[s.id].mastery);
-  const costs=Object.entries(basic?{}:costList(w,a,s)).map(([id,value])=>({id,name:a.resources[id].name,amount:value,before:a.resources[id].current,max:a.resources[id].max}));
+  const costs=Object.entries(basic?{}:costList(w,a,s)).map(([id,value])=>require('./actor-links.js').costSnapshot(w,a,id,value));
   const ammoSaving=basic?(require('./optional-feature-combat.js').consumeAmmo(w,a,s,w.meta.effectEvents||=[]),null):spend(w,a,s,{},rng);
   const handled=new Set();
   const results=targets.map(target=>{
@@ -7216,9 +7394,10 @@ function castOutsideCombat(w,args,ctx={},rng=globalThis.crypto) {
   });
   if(!basic)progression(w,a,s.id,results.some(x=>x.success!==false));FX.afterAction(w,a,{hit:results.some(x=>x.success!==false),rng,events:w.meta.effectEvents||=[],preparedIds});FX.sceneTick(w,a,rng);
   const roll=results.find(row=>Number.isFinite(row.roll))?.roll ?? null;
-  return {status:'resolved',resolution:roll===null?'automatic':'check',roll,outcome:results.some(row=>row.success!==false)?'success':'failure',result:{effectEvents:FX.takeEvents(w),actorId:a.id,skillId:s.id,targets:results,costs:costs.map(row=>({...row,after:a.resources[row.id].current})),...(s.narrativeEffects?.length?{narrativeEffects:clone(s.narrativeEffects),effectScope:'설명 보존 범위입니다. 결과에 없는 특수효과가 실제로 적용됐다고 서술하지 마세요.'}:{}),...(ammoSaving?{ammoSaving}:{}),turn:turnState(w)},narrationRule:'등록된 비용과 실제 피해·회복·효과 결과만 서술하세요. 전투와 턴은 시작하지 않았습니다.'};
+  return {status:'resolved',resolution:roll===null?'automatic':'check',roll,outcome:results.some(row=>row.success!==false)?'success':'failure',result:{effectEvents:FX.takeEvents(w),actorId:a.id,skillId:s.id,targets:results,costs:costs.map(row=>({...row,after:require('./actor-links.js').costAfter(w,row)})),...(s.narrativeEffects?.length?{narrativeEffects:clone(s.narrativeEffects),effectScope:'설명 보존 범위입니다. 결과에 없는 특수효과가 실제로 적용됐다고 서술하지 마세요.'}:{}),...(ammoSaving?{ammoSaving}:{}),turn:turnState(w)},narrationRule:'등록된 비용과 실제 피해·회복·효과 결과만 서술하세요. 전투와 턴은 시작하지 않았습니다.'};
 }
 function execute(w,tool,args,ctx={},rng=globalThis.crypto) {
+  require('./actor-links.js').bind(w);
   const external=require('./rulebook-runtime.js').externalEngine(w);
   if(external) {
     assert(typeof external.admin==='function','RULEBOOK_OPERATION','현재 룰북의 인물·행동·사건·소지품 처리 경로를 사용하세요.');
@@ -7254,7 +7433,7 @@ function execute(w,tool,args,ctx={},rng=globalThis.crypto) {
         // A rejected reaction must not spend resources or roll back its attack.
         const candidate = require('./optional-feature-combat.js').inherit(w,clone(w));
         const response = executeCore(candidate, 'rpg_combat', {op:'reaction',actionId:args.actionId,...choice,threatId:threat.id}, ctx, rng);
-        Object.assign(w,candidate);
+        Object.assign(w,candidate);require('./actor-links.js').bind(w);
         const hit = result.result.targets.find(hit => hit.threatId === threat.id);
         Object.assign(hit, {status:'resolved',damage:response.result.damage,impact:response.result.impact,reactionName:response.result.reactionName,reaction:response.result.reaction});
       } catch (error) {
@@ -7277,7 +7456,7 @@ function execute(w,tool,args,ctx={},rng=globalThis.crypto) {
           const ended=executeCore(candidate,'rpg_combat',{op:'end',actionId:args.actionId},ctx,rng);
           result.result.combatOutcome=ended.result.combatOutcome;if(ended.result.defeat)result.result.defeat=ended.result.defeat;
         }
-        Object.assign(w,candidate);
+        Object.assign(w,candidate);require('./actor-links.js').bind(w);
         if(candidate.meta.lastCombatResolution)result.result.defeat=candidate.meta.lastCombatResolution;
         if (next.result.damageEvents) result.result.damageEvents = next.result.damageEvents;
         for(const field of ['initiativeRolls','openingActorId','openingResolved','combatOutcome','defeat'])if(next.result[field]!==undefined)result.result[field]=next.result[field];
@@ -7688,7 +7867,7 @@ function basics(w,a){
     w.definitions.skills[id]=s;a.skills.push(id);
   }
 }
-function enter(w,a,s,events,rng,handled){const FX=require('./effect-system.js'),P=require('./erencha-proficiency.js'),R=require('./erencha-rules.js');assert(['defense','evasion'].includes(s.type),'DEFENSE_KIND','방어 또는 회피 기술을 지정하세요.');if(s.type==='defense')assert(!FX.has(w,a,'defenseBlock'),'DEFENSE_BLOCKED','갑옷 파괴 상태에서는 방어할 수 없습니다.');const p=a.proficiencies[R.key(s.proficiency)]||R.proficiency({name:s.proficiency});a.stance=s.type;a.stanceSkillId=s.id;a.stancePower=Math.min(s.type==='defense'?90:80,Math.max(0,s.power*P.benefits(p).power));FX.apply(w,a,[a],s,{hit:true,events,rng,handled});if(s.effects.length){a.conditions.push({name:s.name,sourceId:a.id,sourceSkillId:s.id,remaining:s.duration+1,effects:require('./util.js').clone(s.effects)});FX.sync(w,a);}events.push({actorId:a.id,label:a.name+' · '+s.name,value:s.type==='defense'?'다음 자기 차례까지 피해 '+a.stancePower+'% 경감':'다음 자기 차례까지 단일 공격 난이도 +'+a.stancePower});}
+function enter(w,a,s,events,rng,handled){const FX=require('./effect-system.js'),P=require('./erencha-proficiency.js'),R=require('./erencha-rules.js');assert(['defense','evasion'].includes(s.type),'DEFENSE_KIND','방어 또는 회피 기술을 지정하세요.');if(s.type==='defense')assert(!FX.has(w,a,'defenseBlock'),'DEFENSE_BLOCKED','갑옷 파괴 상태에서는 방어할 수 없습니다.');const p=a.proficiencies[R.key(s.proficiency)]||R.proficiency({name:s.proficiency});a.stance=s.type;a.stanceSkillId=s.id;a.stancePower=Math.min(s.type==='defense'?90:80,Math.max(0,FX.numeric(w,a,'power',s.power,s.id)*P.benefits(p).power));FX.apply(w,a,[a],s,{hit:true,events,rng,handled});if(s.effects.length){a.conditions.push({name:s.name,sourceId:a.id,sourceSkillId:s.id,remaining:s.duration+1,effects:require('./util.js').clone(s.effects)});FX.sync(w,a);}events.push({actorId:a.id,label:a.name+' · '+s.name,value:s.type==='defense'?'다음 자기 차례까지 피해 '+a.stancePower+'% 경감':'다음 자기 차례까지 단일 공격 난이도 +'+a.stancePower});}
 function clear(a){delete a.stance;delete a.stanceSkillId;delete a.stancePower;}
 module.exports={basics,enter,clear};
 
@@ -7751,7 +7930,7 @@ function hitOnce(w,a,t,s,args,rng,{linked=false,extraTarget=false,counterMultipl
   assert(extraTarget||bypass||!(a.cooldowns[s.id]>0),'SKILL_COOLDOWN',s.name+' 재사용까지 '+a.cooldowns[s.id]+'턴 남았습니다.');
   assert(extraTarget||s.uses===null||R.num(a.uses[s.id])<s.uses,'SKILL_USES','기술 사용 횟수를 모두 썼습니다.');
   const p=proficiency(a,s.proficiency),cost=extraTarget||a.entity==='monster'?0:Math.ceil(R.resourceCost(w,a,s.mpCost*Math.max(.05,1-mod.mpSaving/100)*(1-Proficiency.benefits(p).mpSaving),s.name));
-  assert((a.resources.mp?.current||0)>=cost,'INSUFFICIENT_RESOURCE','MP가 부족합니다.');
+  if(cost)require('./actor-links.js').checkCosts(w,a,{mp:cost});
   if(s.type==='attack')assert(t&&alive(t),'TARGET_REQUIRED','공격할 살아 있는 대상을 지정하세요.');
   const ranged=s.type==='attack'&&!optionalAmmo&&!extraTarget&&/궁술|사격|활|archery|bow/i.test(s.proficiency)&&a.entity!=='monster';
   const ammo=ranged?Object.values(w.inventory).find(x=>x.ownerId===a.id&&x.type==='ammo'&&x.quantity>0):null;
@@ -7759,7 +7938,7 @@ function hitOnce(w,a,t,s,args,rng,{linked=false,extraTarget=false,counterMultipl
   if(!extraTarget){const gate=FX.beforeAction(w,a,s,t?[t]:[],rng,changes);if(gate.skipped){settleEffectDeaths(w,changes,rng);return result(w,a,s.name,changes,{outcome:'failure',reason:gate.reason,skippedAction:true});}t=gate.targets[0]||t;}
   Range.requireTargets(w,a,t?[t]:[],s);a.rangeRepositioned=false;
   if(t&&t.id!==a.id){const range=Range.check(w,a,t,s);change(changes,'거리',t.name+' · '+range.label+(range.unit==='m'?'':'('+range.distance+')')+' · 명중 '+(range.accuracy>0?'+':'')+range.accuracy);}
-  if(cost){a.resources.mp.current-=cost;change(changes,'MP 소비',cost+' · 남은 MP '+a.resources.mp.current);}
+  if(cost){const links=require('./actor-links.js'),paid=links.costSnapshot(w,a,'mp',cost);links.pay(w,a,{mp:cost},changes);if(paid.payerId===a.id)change(changes,'MP 소비',cost+' · 남은 MP '+links.costAfter(w,paid));}
   require('./combat-features.js').automatic(w,a,rng,changes);
   if(!extraTarget&&!bypass&&s.cooldown)a.cooldowns[s.id]=s.cooldown+1;
   if(!extraTarget)a.uses[s.id]=R.num(a.uses[s.id])+1;
@@ -7814,7 +7993,7 @@ function hit(w,a,t,s,args,rng,options={}){
     assert(bypass||!(a.cooldowns[s.id]>0),'SKILL_COOLDOWN','기술이 재사용 대기 중입니다.');
     assert(s.uses===null||R.num(a.uses[s.id])<s.uses,'SKILL_USES','기술 사용 횟수를 모두 썼습니다.');
     const p=proficiency(a,s.proficiency),cost=a.entity==='monster'?0:Math.ceil(R.resourceCost(w,a,s.mpCost*Math.max(.05,1-mod.mpSaving/100)*(1-Proficiency.benefits(p).mpSaving),s.name));
-    assert((a.resources.mp?.current||0)>=cost,'INSUFFICIENT_RESOURCE','MP가 부족합니다.');
+    if(cost)require('./actor-links.js').checkCosts(w,a,{mp:cost});
     const missing=FX.requirements(w,a,s);assert(!missing.length,'SKILL_PREREQUISITE','기술 사용 조건 미충족: '+missing.join(', '));
     if(!require('./optional-feature-combat.js').checkAmmo(w,a,s)&&a.entity!=='monster'&&/궁술|사격|활|archery|bow/i.test(s.proficiency))assert(Object.values(w.inventory).some(it=>it.ownerId===a.id&&it.type==='ammo'&&it.quantity>0),'AMMO_MISSING','소비할 화살·탄약이 없습니다.');
     const pending=Casting.current(w,a),selected=(pending?.targetIds||args._castTargets||[t?.id]).map(id=>FX.entity(w,id)).filter(Boolean);
@@ -7933,7 +8112,7 @@ function automaticSkill(w,a,target){
     const recipient=s.type==='attack'?target:a,mod=R.modifiers(w,a,s.name),bypass=mod.cooldownBypass.some(n=>[s.name,...s.aliases].some(alias=>R.norm(n)===R.norm(alias)));
     if(!bypass&&a.cooldowns[s.id]>0||s.uses!==null&&R.num(a.uses[s.id])>=s.uses)return false;
     const p=proficiency(a,s.proficiency),cost=a.entity==='monster'?0:Math.ceil(R.resourceCost(w,a,s.mpCost*Math.max(.05,1-mod.mpSaving/100)*(1-Proficiency.benefits(p).mpSaving),s.name));
-    if(cost>(a.resources.mp?.current||0)||FX.restricted(w,a,recipient,s))return false;
+    if(!require('./actor-links.js').canPay(w,a,'mp',cost)||FX.restricted(w,a,recipient,s))return false;
     if(s.mechanics?.targeting&&!FX.eligible(w,a,recipient,s.mechanics.targeting))return false;
     if(!require('./optional-feature-combat.js').ammoWeapon(w,a,s)&&s.type==='attack'&&a.entity!=='monster'&&/궁술|사격|활|archery|bow/i.test(s.proficiency)&&!Object.values(w.inventory).some(it=>it.ownerId===a.id&&it.type==='ammo'&&it.quantity>0))return false;
     return true;
@@ -8180,7 +8359,7 @@ function admin(w,tool,args,authority) {
   return result(w,a,'사용자 선택',changes);
 }
 function summary(w,ids) {
-  w=R.upgrade(clone(w));CombatOptions.scaleEnemies(w);
+  w=R.upgrade(clone(w));require('./actor-links.js').bind(w);CombatOptions.scaleEnemies(w);
   const selected=ids?new Set(ids.map(id=>R.find(w.actors,id)?.id||id)):null;
   return {...(require('./erencha-reality.js').enabled(w)?{realWorld:require('./erencha-reality.js').summary(w)}:{}),playerActorIds:require('./actor-presence.js').playerIds(w),registeredActors:Object.values(w.actors).filter(a=>!a.mergedInto).map(a=>({id:a.id,name:a.name,realName:a.realName,nickname:a.nickname,kind:a.kind,present:require('./actor-presence.js').ids(w).includes(a.id)})),combatOptions:CombatOptions.get(w),rulebook:{id:'erencha',name:'에렌샤 온라인',instructions:w.meta.rulebook.instructions},clock:clone(w.meta.erencha.clock),objects:Object.values(w.meta.effectObjects||{}).filter(o=>(w.meta.effectScene||[]).includes(o.id)).map(o=>({id:o.id,name:o.name,durability:clone(o.resources.hp),state:clone(o.state)})),actors:Object.values(w.actors).filter(a=>a.active&&(selected?selected.has(a.id):require('./actor-presence.js').ids(w).includes(a.id))).map(a=>({...clone(a),xpNeeded:R.xpNeeded(a.level),skills:a.skills.map(id=>clone(w.definitions.skills[id])),wallet:w.economy.wallets[a.id]||null})),combat:w.combat?{...clone(w.combat),distanceState:Range.snapshot(w),...(Gauge.active(w)?{gaugeState:Gauge.snapshot(w)}:{})}:null,inventory:Object.values(w.inventory).filter(x=>!selected||selected.has(x.ownerId)).map(clone),quests:Object.fromEntries(Object.entries(w.meta.erencha.quests).filter(([,q])=>q.status!=='completed'&&(!selected||selected.has(q.actorId)))),completedQuests:Object.values(w.meta.erencha.quests).filter(q=>q.status==='completed'&&(!selected||selected.has(q.actorId))).map(q=>({id:q.id,actorId:q.actorId,name:q.name,status:q.status})),exploration:require('./adventure.js').visible(w),explorationEntry:require('./adventure.js').entryHint(w)};
 }
@@ -8362,13 +8541,13 @@ function perform(w,plan,args,rng,{combatTurn=false}={}) {
   const FX=require('./effect-system.js');
   if(!combatTurn)FX.tick(w,a,'turn_start',rng,changes,false);
   const mod=R.modifiers(w,a,d.name),cost=Math.ceil(R.resourceCost(w,a,d.mpCost*Math.max(.05,1-mod.mpSaving/100)*(1-P.benefits(p).mpSaving),d.name));
-  assert((a.resources.mp?.current||0)>=cost,'INSUFFICIENT_RESOURCE','MP가 부족합니다.');
+  if(cost)require('./actor-links.js').checkCosts(w,a,{mp:cost});
   assert(!(a.cooldowns[d.id]>0),'SKILL_COOLDOWN','이 활동의 재사용 대기가 남았습니다.');
   assert(d.uses==null||R.num(a.uses[d.id])<d.uses,'SKILL_USES','기술 사용 횟수를 모두 썼습니다.');
   const gate=FX.beforeAction(w,a,d,[a],rng,changes);if(gate.skipped){if(!combatTurn)FX.tick(w,a,'turn_end',rng,changes);return {status:'resolved',outcome:'failure',result:{rulebook:'erencha',actorId:a.id,action:{name:d.name},changes,skippedAction:true}};}
   const target=Math.max(5,Math.min(95,d.target-b.accuracy-mod.accuracy)),roll=require('./rules.js').d100(rng),{success,outcome}=require('./erencha-roll.js').classify(roll,target,FX.numeric(w,a,'critical'));
   if(success){c.yield=potential-Math.floor(potential);b.outputQuantity=quantity;}
-  if(cost){a.resources.mp.current-=cost;changes.push({label:'MP 소비',value:String(cost)});}
+  if(cost){require('./actor-links.js').pay(w,a,{mp:cost},changes);changes.push({label:'활동 비용',value:String(cost)});}
   a.uses[d.id]=R.num(a.uses[d.id])+1;
   require('./combat-features.js').automatic(w,a,rng,changes);
   for(const [id,amount] of needs) {
@@ -8767,6 +8946,7 @@ function syncAptitudes(w,a) {
   }
 }
 function upgrade(w) {
+  require('./actor-links.js').bind(w);
   require('./actor-presence.js').repairErencha(w);
   require('./erencha-proficiency.js').migrate(w);
   for(const key of ['date','time','location'])w.meta.erencha.clock[key]=sceneText(w.meta.erencha.clock[key]);
@@ -8796,7 +8976,7 @@ function modifiers(w,a,skillName='') {
   for(const x of a.aptitudes)if(x.status!=='declined'&&!a.skills.includes(x.skillId)&&!a.skills.some(id=>{const s=w.definitions.skills[id];return s?.type==='passive'&&[s.name,...s.aliases].some(n=>norm(n)===norm(x.name));}))x.effects.forEach(apply);
   for(const c of a.conditions)if(c.remaining>0)(c.effects||[]).forEach(apply);
   const fx=require('./effect-system.js'),rows=fx.modifiers(w,a),applyRows=(base,type,target='*')=>{
-    const selected=rows.filter(e=>e.type===type&&(e.target==='*'||e.target===target||skillName&&norm(e.target)===norm(skillName)));
+    const selected=rows.filter(e=>e.type===type&&(e.target==='*'||e.target===target||skillName&&(norm(e.target)===norm(skillName)||norm(w.definitions.skills[e.target]?.name)===norm(skillName))));
     return (base+selected.filter(e=>e.mode==='add').reduce((n,e)=>n+e.value,0))*selected.filter(e=>e.mode==='multiply').reduce((n,e)=>n*e.value,1);
   };
   for(const [type,key] of [['accuracy','accuracy'],['defense','evasion'],['ammoSave','ammoSaving']])out[key]=applyRows(out[key],type);
@@ -8807,7 +8987,7 @@ function modifiers(w,a,skillName='') {
 function resourceCost(w,a,base,skillName=''){const fx=require('./effect-system.js'),rows=fx.modifiers(w,a).filter(e=>e.type==='cost'&&(e.target==='*'||e.target==='mp'||norm(e.target)===norm(skillName)));return Math.max(0,(base+rows.filter(e=>e.mode==='add').reduce((n,e)=>n+e.value,0))*rows.filter(e=>e.mode==='multiply').reduce((n,e)=>n*e.value,1));}
 function recalculate(w,a,keepDamage=true) {
   const m=modifiers(w,a);
-  for(const [key,base] of [['hp',a.baseHP],['mp',a.baseMP]])if(a.resources[key]){const r=a.resources[key],missing=r.max-r.current;r.max=Math.max(key==='hp'?1:0,base+m[key]);r.current=Math.max(0,Math.min(r.max,keepDamage?r.max-missing:r.current));}
+  for(const [key,base] of [['hp',a.baseHP],['mp',a.baseMP]])if(a.resources[key]){const r=a.resources[key],missing=r.max-r.current;r.max=Math.max(key==='hp'?1:0,base+m[key]);if(!require('./actor-links.js').shared(w,a.id,key))r.current=Math.max(0,Math.min(r.max,keepDamage?r.max-missing:r.current));}
 }
 function checkClass(a) {if(!a.classQuest&&/^(미전직|수습.*|초보.*|novice|unclassed)$/i.test(a.class.name)&&Object.values(a.proficiencies).some(p=>p.level>=5||p.grade>0))a.classQuest={status:'available',name:'첫 전직',description:'Lv.5 이상 숙련도와 맞는 직업의 전직 퀘스트를 받을 수 있습니다.'};}
 function gainProficiency(w,a,name,changes,args) {
@@ -9651,7 +9831,7 @@ const {clone,escapeHTML:e,scopeKey,uid,assert}=require('./util.js');
 const E=require('./game-editor.js');
 const get=(v,path)=>path?path.split('.').reduce((a,k)=>a?.[k],v):v;
 const put=(v,path,next)=>{const keys=path.split('.'),last=keys.pop();let at=v;for(const k of keys)at=at[k]||={};at[last]=next;};
-function initial(s){if(s.nullable)return null;if(s.enum)return s.enum[0];if(s.type==='object')return Object.fromEntries(Object.entries(s.properties).map(([k,v])=>[k,initial(v)]));if(s.type==='array')return [];if(s.type==='boolean')return false;if(['number','integer'].includes(s.type))return s.minimum||0;return '';}
+function initial(s){if(s.default!==undefined)return clone(s.default);if(s.nullable)return null;if(s.enum)return s.enum[0];if(s.type==='object')return Object.fromEntries(Object.entries(s.properties).map(([k,v])=>[k,initial(v)]));if(s.type==='array')return [];if(s.type==='boolean')return false;if(['number','integer'].includes(s.type))return s.minimum||0;return '';}
 function schemaAt(s,path){for(const k of path.split('.').filter(Boolean))s=s.type==='array'?s.items:s.properties[k];return s;}
 function fields(s,value,path=''){
   const label=e(s.title||path.split('.').at(-1)||'항목'),attr='data-game-edit="'+e(path)+'" data-game-present="'+(value!==undefined)+'"';
@@ -9662,13 +9842,14 @@ function fields(s,value,path=''){
   return '<label>'+label+(s.enum?'<select '+attr+'>'+s.enum.map((x,i)=>'<option value="'+e(x)+'" '+(x===value?'selected':'')+'>'+e(s.enumNames?.[i]??x)+'</option>').join('')+'</select>':s.type==='boolean'?'<input type="checkbox" '+attr+' '+(value?'checked':'')+'>':s.type==='string'?'<textarea '+attr+' rows="2" maxlength="'+(s.maxLength||5000)+'">'+e(value??'')+'</textarea>':'<input '+attr+' type="number" step="'+(s.type==='integer'?'1':'any')+'" '+(s.minimum!==undefined?'min="'+s.minimum+'"':'')+' '+(s.maximum!==undefined?'max="'+s.maximum+'"':'')+' value="'+e(value??s.minimum??0)+'">')+'</label>';
 }
 function open(ui,p){const w=p.featureDraft?require('./optional-feature-ui.js').draftWorld(ui.job,p.featureOptions):ui.info.state,x=E.prepare(w,p);if(p.featureDraft){assert(p.featureDraft===ui.job?.id,'DRAFT_CHANGED','제안의 구축 초안을 다시 여세요.');if(p.featureExpected)assert(p.featureExpected===x.expected,'EDIT_CONFLICT','뉴뉴에게 질문한 뒤 값이 바뀌었습니다. 현재 값을 기준으로 다시 요청하세요.');}ui.nyunyuProposal={...x,extended:true,title:p.title||x.schema.title,scope:scopeKey(ui.info.scope)};ui.tab='nyunyu';ui.render();}
-function render(ui){const x=ui.nyunyuProposal;return '<section class="panel item-editor editor-workspace"><h2>'+e(x.title)+'</h2><p class="muted">수정할 항목을 펼쳐 확인하세요. '+(x.proposal.featureDraft?'저장한 세부값은 구축 초안에 보관되며 최종 적용할 때 게임에 반영됩니다.':'저장할 때 현재 게임에 반영됩니다.')+'</p><div class="editor-page fields">'+fields(x.schema,x.value)+'</div><div class="row item-editor-actions"><button type="button" id="game-edit-save" class="primary">'+(x.proposal.featureDraft?'초안에 변경 저장':'변경 저장')+'</button><button type="button" id="game-edit-cancel">취소</button>'+(x.proposal.entity==='quest'&&x.proposal.mode!=='create'?'<button type="button" id="game-edit-delete" class="subtle editor-delete">퀘스트 삭제</button>':'')+'</div></section>';}
+function render(ui){const x=ui.nyunyuProposal;return '<section class="panel item-editor editor-workspace"><h2>'+e(x.title)+'</h2><p class="muted">수정할 항목을 펼쳐 확인하세요. '+(x.proposal.featureDraft?'저장한 세부값은 구축 초안에 보관되며 최종 적용할 때 게임에 반영됩니다.':'저장할 때 현재 게임에 반영됩니다.')+'</p>'+require('./actor-links-ui.js').help(ui,x)+'<div class="editor-page fields">'+fields(x.schema,x.value)+'</div><div class="row item-editor-actions"><button type="button" id="game-edit-save" class="primary">'+(x.proposal.featureDraft?'초안에 변경 저장':'변경 저장')+'</button><button type="button" id="game-edit-cancel">취소</button>'+(x.proposal.entity==='quest'&&x.proposal.mode!=='create'?'<button type="button" id="game-edit-delete" class="subtle editor-delete">퀘스트 삭제</button>':'')+'</div></section>';}
 function capture(ui,x=ui.nyunyuProposal){if(!x||ui.nyunyuProposal!==x)return false;for(const el of document.querySelectorAll('[data-game-edit]')){if(el.dataset.gamePresent==='false'&&!el.dataset.gameDirty)continue;put(x.value,el.dataset.gameEdit,el.type==='checkbox'?el.checked:el.type==='number'?Number(el.value):el.value);}return true;}
 function bind(ui){const x=ui.nyunyuProposal;if(!x||!document.getElementById('game-edit-save'))return;const change=fn=>()=>ui.act(()=>{if(x.saving||!capture(ui,x))return;fn();ui.render();});
+  const preview=document.getElementById('actor-links-preview');if(preview)preview.onclick=change(()=>{});
   for(const el of document.querySelectorAll('[data-game-edit]')){el.oninput=el.onchange=()=>{el.dataset.gameDirty='true';};}
   for(const b of document.querySelectorAll('[data-game-add]'))b.onclick=change(()=>{const s=schemaAt(x.schema,b.dataset.gameAdd),a=get(x.value,b.dataset.gameAdd)||[];assert(a.length<(s.maxItems||100),'EDIT_LIMIT','항목 수 한도입니다.');a.push(initial(s.items));put(x.value,b.dataset.gameAdd,a);});
   for(const b of document.querySelectorAll('[data-game-remove]'))b.onclick=change(()=>{const [path,i]=b.dataset.gameRemove.split(':');get(x.value,path).splice(Number(i),1);});
-  for(const b of document.querySelectorAll('[data-game-enable]'))b.onclick=change(()=>put(x.value,b.dataset.gameEnable,initial({...schemaAt(x.schema,b.dataset.gameEnable),nullable:false})));
+  for(const b of document.querySelectorAll('[data-game-enable]'))b.onclick=change(()=>put(x.value,b.dataset.gameEnable,initial({...schemaAt(x.schema,b.dataset.gameEnable),nullable:false,default:undefined})));
   for(const b of document.querySelectorAll('[data-game-disable]'))b.onclick=change(()=>put(x.value,b.dataset.gameDisable,null));
   document.getElementById('game-edit-cancel').onclick=()=>{if(x.saving)return;ui.nyunyuProposal=null;if(x.proposal.featureDraft)ui.tab='setup';else if(x.proposal.returnTab)ui.tab=x.proposal.returnTab;ui.render();};
   const save=remove=>ui.act(async()=>{
@@ -9701,6 +9882,7 @@ const merge=(base,patch)=>{const out=clone(base);for(const [k,v] of Object.entri
 const simpleItem=obj('물품',{name:text('이름'),type:choice('종류',['weapon','armor','accessory','consumable','ammo','material','protection']),rank:choice('등급',['Common','Rare','Unique','Legendary','Epic']),quantity:num('수량',1,1000,true),price:num('가격',0,1e12),power:num('위력'),defense:num('방어'),enhancement:num('강화',0,30,true),quality:num('품질',1,10000),duration:num('지속 턴',1,1000,true),description:text('설명'),recovery:obj('회복량',{hp:num('HP'),mp:num('MP'),qi:num('기력')}),effects:list('기본 효과',obj('효과',{type:text('효과 종류'),target:text('대상 수치'),value:num('값',-1e6,1e6),mode:choice('계산',['add','multiply']),skill:text('기술'),condition:text('조건')})),mechanics:require('./effect-model.js').schema});
 function base(w,p){const a=w.actors[p.actorId];assert(a,'UNKNOWN_ACTOR','편집할 인물을 선택하세요.');return a;}
 function spec(w,p){
+  if(p.entity==='actor_links')return require('./actor-links.js').spec(w,p);
   if(p.entity==='summon_settings')return require('./summon-system.js').spec(w,p);
   if(p.entity?.startsWith('feature_'))return require('./optional-feature-model.js').spec(w,p);
   const a=base(w,p),er=w.meta.rulebook?.id==='erencha',social=!!w.meta.social,murim=!!w.meta.murim,creating=p.mode==='create';let value,schema,record,apply;
@@ -9805,8 +9987,8 @@ function edit(w,args,ctx){
   }else{const value=merge(x.value,args.value);if(w.meta.murim)require('./murim-stats.js').normalize(value);validate(x.schema,value);applied=x.apply(value);}
   w.meta.registryVersion=(w.meta.registryVersion||0)+1;return {status:'resolved',outcome:'edited',result:{...(applied?.result||{}),entity:p.entity,id:p.id,actorId:p.actorId,edited:true,removed:!!args.remove,note:'사용자가 저장한 직접 편집입니다. 이미 받은 보상을 다시 지급하지 않습니다.'}};
 }
-const supported=w=>[...require('./optional-feature-model.js').supported(w),...(require('./summon-system.js').supported(w)?['summon_settings']:[]),'actor_state',...(require('./scene-reconciliation.js').supported(w)?['scene_resolution']:[]),...(w.meta.rulebook?.id==='erencha'?['calendar','quest','source']:[]),...(w.meta.social?['calendar','relation']:[]),...(w.meta.rulebook?.id==='dating'?['personality','date']:[]),...(w.meta.rulebook?.id==='romance'?['scheme']:[]),...(w.meta.murim?['calendar','manual','teaching']:[]),...(w.meta.native||w.meta.rulebook?.id==='erencha'?['exploration','room']:[])];
-function context(w,a){return {...(require('./summon-system.js').supported(w)?{summons:require('./summon-system.js').summary(w),summonSettings:require('./summon-system.js').config(w,a.id)}:{}),combatState:require('./review-actions.js').combatState(w),actorState:spec(w,{entity:'actor_state',actorId:a.id}).value,...(w.meta.murim?{techniqueTraining:Object.fromEntries(Object.keys(a.skills).map(id=>[id,clone(w.meta.murim.techniques[id]||{})])),manuals:Object.values(w.meta.murim.manuals).filter(x=>x.actorId===a.id),teachings:Object.values(w.meta.murim.lessons).filter(x=>x.actorId===a.id)}:{}),...(w.meta.social?{dates:Object.values(w.meta.social.dates||{}).filter(x=>x.actorId===a.id),growth:w.meta.social.growth[a.id],personality:a.datingDisposition||null}:{}),...(w.meta.erencha?{activities:Object.values(w.meta.erencha.actions).filter(x=>x.ownerId===a.id),sources:w.meta.erencha.sources||{},clock:w.meta.erencha.clock}:{}),...(w.meta.adventure?{exploration:w.meta.adventure}:{})};}
+const supported=w=>['actor_links',...require('./optional-feature-model.js').supported(w),...(require('./summon-system.js').supported(w)?['summon_settings']:[]),'actor_state',...(require('./scene-reconciliation.js').supported(w)?['scene_resolution']:[]),...(w.meta.rulebook?.id==='erencha'?['calendar','quest','source']:[]),...(w.meta.social?['calendar','relation']:[]),...(w.meta.rulebook?.id==='dating'?['personality','date']:[]),...(w.meta.rulebook?.id==='romance'?['scheme']:[]),...(w.meta.murim?['calendar','manual','teaching']:[]),...(w.meta.native||w.meta.rulebook?.id==='erencha'?['exploration','room']:[])];
+function context(w,a){return {actorLinks:require('./actor-links.js').config(w,a.id),linkSources:require('./actor-links.js').sources(w),...(require('./summon-system.js').supported(w)?{summons:require('./summon-system.js').summary(w),summonSettings:require('./summon-system.js').config(w,a.id)}:{}),combatState:require('./review-actions.js').combatState(w),actorState:spec(w,{entity:'actor_state',actorId:a.id}).value,...(w.meta.murim?{techniqueTraining:Object.fromEntries(Object.keys(a.skills).map(id=>[id,clone(w.meta.murim.techniques[id]||{})])),manuals:Object.values(w.meta.murim.manuals).filter(x=>x.actorId===a.id),teachings:Object.values(w.meta.murim.lessons).filter(x=>x.actorId===a.id)}:{}),...(w.meta.social?{dates:Object.values(w.meta.social.dates||{}).filter(x=>x.actorId===a.id),growth:w.meta.social.growth[a.id],personality:a.datingDisposition||null}:{}),...(w.meta.erencha?{activities:Object.values(w.meta.erencha.actions).filter(x=>x.ownerId===a.id),sources:w.meta.erencha.sources||{},clock:w.meta.erencha.clock}:{}),...(w.meta.adventure?{exploration:w.meta.adventure}:{})};}
 module.exports={spec,prepare,edit,supported,context,merge,validate};
 
 },
@@ -9995,7 +10177,7 @@ function apply(native,w,plan,args,authority) {
     try {
       const result=run(candidate,tool,{...input,actionId:args.actionId},authority);
       if(tool==='rpg_combat' && input.op==='start'){require('./native-exploration.js').engage(candidate);if(session)session.engaged=true;}
-      Object.assign(w,candidate);session?.step(w);
+      Object.assign(w,candidate);require('./actor-links.js').bind(w);session?.step(w);
       const linked=(result.result?.links || []).filter(link=>link.status==='executed' && link.result);
       const shown=linked.length?clone(result):result;
       const linkedSteps=linked.map(link=>({tool:'rpg_combat',op:'action',result:clone(link.result)}));
@@ -10143,7 +10325,7 @@ function apply(native,w,plan,args,authority) {
       const candidate=require('./optional-feature-combat.js').inherit(w,clone(w));
       try {
         const result=native.apply(candidate,plan.checkPlan,'rpg_play',{op:'check',actionId:args.actionId,actorId:a.id,eventId:plan.eventId,intent:args.intent || args.action,...(w.meta.murim?{target:plan.targetIds[0],recognized:args.recognized}: {})},authority);
-        Object.assign(w,candidate);steps.push({tool:'rpg_check',op:'resolve',result});requestedActionApplied=true;
+        Object.assign(w,candidate);require('./actor-links.js').bind(w);steps.push({tool:'rpg_check',op:'resolve',result});requestedActionApplied=true;
       } catch(error){blocked={code:error.code || 'CHECK_UNAVAILABLE',message:error.message};}
     }
   } else if(['defense','evasion'].includes(plan.kind)&&pending()) {
@@ -21244,7 +21426,7 @@ module.exports={active,setup,world,stats,equipment,capture,bind,options,selected
 const {clone,assert}=require('./util.js');
 const Game=require('./game-editor.js');
 const actorFields=w=>w.meta.rulebook?.id==='erencha'?['movement','actionSpeed','name','realName','nickname','description','level','baseHP','baseMP','fame']:w.meta.murim?[...require('./murim-rules.js').KEYS,'realm','path','understanding','karma','reputation','genius']:w.meta.social?['name','description','stats','karma',...(w.meta.rulebook.id==='romance'?['honor']:[])]:['name','rank','raw','resources','resourceMax','wallet'];
-function fields(w,kind){if(kind.startsWith('feature_'))return Object.keys(require('./optional-feature-model.js').schema(w,kind).properties);if(['tactical','zirkott'].includes(w.meta.rulebook?.id))return require('./tactical-ui.js').fields(w,kind);const er=w.meta.rulebook?.id==='erencha',R=require('./erencha-rules.js');
+function fields(w,kind){if(kind==='actor_links')return ['bonuses','resources'];if(kind.startsWith('feature_'))return Object.keys(require('./optional-feature-model.js').schema(w,kind).properties);if(['tactical','zirkott'].includes(w.meta.rulebook?.id))return require('./tactical-ui.js').fields(w,kind);const er=w.meta.rulebook?.id==='erencha',R=require('./erencha-rules.js');
   if(kind==='realm_settings'&&w.meta.murim)return ['mode','stages'];
   if(kind==='real_life')return ['krw','food','debt','minutes','hunger','thirst','fatigue','toileting','health','dead','away','sleeping','config'];
   if(kind==='actor')return actorFields(w).filter(k=>k!=='movement'||!require('./optional-features.js').enabled(w,'metres'));
@@ -21254,7 +21436,7 @@ function fields(w,kind){if(kind.startsWith('feature_'))return Object.keys(requir
   if(kind==='settings')return Object.keys(require('./combat-options.js').schema.properties).filter(k=>!['oneChance','noGameOver'].includes(k)||!w.meta.murim&&!er);
   return [];
 }
-function entities(w){if(['tactical','zirkott'].includes(w.meta.rulebook?.id))return [...require('./tactical-ui.js').entities(w),'summon_settings','scene_resolution',...require('./optional-feature-model.js').supported(w)];return [...new Set(['actor','item',...(!w.meta.social?['skill','settings']:[]),...(w.meta.erencha?['proficiency','activity','real_life']:[]),...(w.meta.murim?['realm_settings']:[]),...Game.supported(w)])];}
+function entities(w){if(['tactical','zirkott'].includes(w.meta.rulebook?.id))return [...require('./tactical-ui.js').entities(w),'summon_settings','actor_links','scene_resolution',...require('./optional-feature-model.js').supported(w)];return [...new Set(['actor','item',...(!w.meta.social?['skill','settings']:[]),...(w.meta.erencha?['proficiency','activity','real_life']:[]),...(w.meta.murim?['realm_settings']:[]),...Game.supported(w)])];}
 function assertFields(w,p){const keys=fields(w,p.entity);if(!keys.length)return;
   if(p.entity==='skill'&&p.mode==='create'&&w.meta.native)keys.push('stat','multiplier','flat','damage','accuracy','costResource','cost','uses','passive','requires','condition','status','ammo','link','narrative',...(w.meta.murim?['outer','inner','grade','star','formula','growth','related','minimumRealm','trainingHours','cultivation','role']:[]));
   const patch=p.patch||p.data||{};for(const k of Object.keys(patch))assert(keys.includes(k),'PROPOSAL_FIELD','이 항목에서 지원하지 않는 필드: '+k+'. 실제 편집 목록에 맞춰 다시 제안해야 합니다.');
@@ -21263,14 +21445,14 @@ function assertFields(w,p){const keys=fields(w,p.entity);if(!keys.length)return;
 function optionalPrompt(w){if(!require('./optional-features.js').active(w))return '';return '\n선택 기능의 실제 편집 구조: '+JSON.stringify(Object.fromEntries(require('./optional-feature-model.js').supported(w).map(key=>[key,require('./optional-feature-model.js').schema(w,key)])))+'\nfeature_actor는 인물 ID, feature_item은 보유 인스턴스 ID, feature_skill은 보유 기술 ID를 편집합니다. feature_manual/quest/relation/merchant/expense/place는 새 ID로 create 가능합니다. 세부 구조의 모든 항목을 수정할 수 있고 patch에는 변경 필드만 넣습니다. 미터·kg·시간 단위를 보존합니다. 미터 모드에서 이동력은 feature_actor.movementMetres, 사거리는 feature_item.range 또는 feature_skill.rangeEnabled/range로 편집합니다. 기존 actor.movement나 mechanics.range의 1~4 값으로 바꾸지 마세요. 배율1=100%,0.25=25%; rangePercent=25는 25% 증가입니다. 편집은 주사위·보상·시간 경과를 실행하지 않습니다. 기능이 꺼져 있으면 먼저 플레이 설정에서 켜도록 설명합니다. 기존 native 비전·현실모드 등과 중복 생성하지 않습니다.';}
 function prompt(w,a){
   if(!w)return '시스템을 먼저 구축해야 실제 자료를 편집할 수 있습니다.';
-  if(['tactical','zirkott'].includes(w.meta.rulebook?.id))return (a.kind==='summon'?'\nsummon_settings 편집: '+JSON.stringify(require('./summon-system.js').schema(w,a))+'\n선택 actorId는 소환수입니다. ':'')+optionalPrompt(w)+require('./tactical-ui.js').prompt(w)+'\nscene_resolution: 완료된 처치 보완. patch={defeatedIds:[저장된 적 ID],quote:처치 원문,claimRewards:true}. 새 판정을 굴리지 않고 현재 전투를 정리합니다.';
+  if(['tactical','zirkott'].includes(w.meta.rulebook?.id))return '\nactor_links 편집: '+JSON.stringify(require('./actor-links.js').schema(w,a))+'\n'+require('./actor-links.js').GUIDE+(a.kind==='summon'?'\nsummon_settings 편집: '+JSON.stringify(require('./summon-system.js').schema(w,a))+'\n선택 actorId는 소환수입니다. ':'')+optionalPrompt(w)+require('./tactical-ui.js').prompt(w)+'\nscene_resolution: 완료된 처치 보완. patch={defeatedIds:[저장된 적 ID],quote:처치 원문,claimRewards:true}. 새 판정을 굴리지 않고 현재 전투를 정리합니다.';
   const parts=['현재 코드에서 제공하는 편집 목록입니다. 숙련도를 포함해 아래 항목은 제안할 수 있습니다. 지원 여부를 추측하지 말고 이 목록을 사용하세요. 알 수 없는 필드는 무시되지 않고 오류로 반환됩니다. 수정은 변경 필드만 patch에 넣으며 data는 새 항목 작성입니다.'];
   for(const entity of entities(w)){const keys=fields(w,entity);if(keys.length)parts.push(entity+': '+keys.join(', '));}
   if(!w.meta.social&&w.meta.rulebook?.id!=='erencha'){
     const schema=clone(require('./skill-editor.js').patchSchema);for(const k of Object.keys(schema.properties))if(!fields(w,'skill').includes(k))delete schema.properties[k];
     parts.push('skill 수정 전체 입력 구조: '+JSON.stringify(schema)+(w.meta.murim?'\n무림 murim은 일부 필드만 보내도 현재 값에 합칩니다. 성수 star와 숙련 경험치 points를 사용합니다.':'\nmastery=현재 단계, masteryXP=누적 숙련 경험치. masteryEnabled=true와 masteryPlan으로 성장 구간을 편집합니다.'));
   }
-  const examples=[{entity:'actor_state'},...(require('./summon-system.js').supported(w)&&a.kind==='summon'?[{entity:'summon_settings'}]:[]),...(require('./scene-reconciliation.js').supported(w)?[{entity:'scene_resolution'}]:[]),...((w.meta.erencha||w.meta.social||w.meta.murim)?[{entity:'calendar'}]:[]),...(w.meta.rulebook?.id==='dating'?[{entity:'personality'},...Object.values(w.meta.social.dates||{}).filter(x=>x.actorId===a.id).slice(0,1).map(x=>({entity:'date',id:x.id}))]:[]),...(w.meta.erencha?[{entity:'quest',mode:'create',id:'new-quest'},...Object.keys(w.meta.erencha.sources||{}).slice(0,1).map(id=>({entity:'source',id}))]:[]),...(w.meta.murim?[{entity:'teaching',mode:'create',id:'new-lesson'},...Object.values(w.meta.murim.manuals).filter(x=>x.actorId===a.id).slice(0,1).map(x=>({entity:'manual',id:x.id}))]:[]),...(w.meta.social?[...Object.keys(w.meta.social.relations).filter(k=>k.split('>').includes(a.id)).slice(0,1).map(id=>({entity:'relation',id})),...Object.values(w.meta.social.schemes||{}).filter(x=>x.actorId===a.id).slice(0,1).map(x=>({entity:'scheme',id:x.id}))]:[])];
+  const examples=[{entity:'actor_state'},{entity:'actor_links'},...(require('./summon-system.js').supported(w)&&a.kind==='summon'?[{entity:'summon_settings'}]:[]),...(require('./scene-reconciliation.js').supported(w)?[{entity:'scene_resolution'}]:[]),...((w.meta.erencha||w.meta.social||w.meta.murim)?[{entity:'calendar'}]:[]),...(w.meta.rulebook?.id==='dating'?[{entity:'personality'},...Object.values(w.meta.social.dates||{}).filter(x=>x.actorId===a.id).slice(0,1).map(x=>({entity:'date',id:x.id}))]:[]),...(w.meta.erencha?[{entity:'quest',mode:'create',id:'new-quest'},...Object.keys(w.meta.erencha.sources||{}).slice(0,1).map(id=>({entity:'source',id}))]:[]),...(w.meta.murim?[{entity:'teaching',mode:'create',id:'new-lesson'},...Object.values(w.meta.murim.manuals).filter(x=>x.actorId===a.id).slice(0,1).map(x=>({entity:'manual',id:x.id}))]:[]),...(w.meta.social?[...Object.keys(w.meta.social.relations).filter(k=>k.split('>').includes(a.id)).slice(0,1).map(id=>({entity:'relation',id})),...Object.values(w.meta.social.schemes||{}).filter(x=>x.actorId===a.id).slice(0,1).map(x=>({entity:'scheme',id:x.id}))]:[])];
   for(const place of Object.values(w.meta.adventure?.places||{}).slice(0,1))examples.push({entity:'exploration',id:place.id},...place.rooms.slice(0,1).map(r=>({entity:'room',placeId:place.id,id:r.id})));
   for(const p of examples){const s=Game.spec(w,{actorId:a.id,mode:'edit',...p});parts.push(p.entity+' 수정 구조: '+JSON.stringify(s.schema));}
   parts.push('scene_resolution은 이미 서술에서 명확히 죽은 적의 누락된 상태·전투 종료·저장 보상을 실제로 반영하는 편집 제안입니다. defeatedIds에 기존 적 ID, quote에 처치 원문을 넣으세요. 임의 피해나 보상을 만들지 않습니다. 지원되면 방법 설명만 하지 말고 이 수정 제안을 제공하세요.');
@@ -21280,6 +21462,7 @@ function prompt(w,a){
   if(w.meta.murim)parts.push('realm_settings 수정은 이 채팅의 경지표를 편집합니다. mode=default(기존 23단계) 또는 custom. stages는 순서대로 2~200개 전체 목록이며 각 행 {id:string,name:string,outer:number,inner:number,trainingRate:number,understandingRate:number,rewardRate:number,failureLossPercent:number,fatalFailure:boolean}. 기존 행 id를 보존하고 새 행에는 고유 id를 정하세요. outer/inner는 현재 경지에서 다음 경지로 돌파하는 균형형 문턱(최종은 수련 상한), 뒤의 문턱이 더 높아야 합니다. 배율 1=기본,0.25=25%. trainingRate는 외공/내공 수련·전투 성장, understandingRate는 깨달음 획득, rewardRate는 돌파 성장 배율입니다. fatalFailure는 이 단계에 이미 있는 인물의 다음 돌파 실패 시 사망 여부입니다. 인물 수치를 줄이거나 초기화하지 않습니다. 제안은 경지표와 기존 단계 연결을 보여주는 편집 화면에서 사용자 적용 후 저장됩니다. 기술 murim.minimumRealm과 가르침 realm은 현재 경지표 순서이며 고정 23단계가 아닙니다. 현재 경지표: '+JSON.stringify(require('./murim-realms.js').context(w)));
   if(!w.meta.social)parts.push(require('./skill-casting.js').GUIDE);
   if(w.meta.native)parts.push(require('./skill-cooldown.js').GUIDE);
+  parts.push(require('./actor-links.js').GUIDE);
   return parts.join('\n')+optionalPrompt(w);
 }
 module.exports={entities,fields,actorFields,assertFields,prompt};
@@ -21321,6 +21504,7 @@ GUIDE.combat+=' '+require('./combat-range.js').GUIDE;
 GUIDE.erencha+=' 숙련도 편집은 training:{activities:[investigate,combat_move,evasion,defense,escape,trade 중 실제 관련 활동],skills:[연결할 기술 또는 생활 활동 이름/ID]}를 지원합니다. 실제 처리된 행동에서 연결된 숙련도가 자동 성장하고 기본 분야와 중복되면 한 번만 지급합니다. 무조건 모든 숙련도를 연결하지 않습니다. 탐색은 investigate, 보법은 combat_move/escape 또는 실제 이동 기술에 연결할 수 있습니다. routine 이동·조회에는 성장하지 않습니다.';
 GUIDE.erencha+=' 현실모드는 현재 장면의 다른 온라인 플레이어(entity:avatar)도 각자 욕구·건강·자리 비움·수면을 기록합니다. 게임 NPC·몬스터·소환수는 제외합니다. realLife 편집 자료는 선택 actorId의 실제 생활 상태이며 다른 인물 수치를 바꾸지 않습니다. 동료 생활에는 원화·식자재·생활비를 추가 계산하지 않습니다. 동료의 경고는 메인 AI에게 전달되며 대사나 퇴장을 강제하지 않습니다. 자리 비움 leave_game, 복귀 return_game, eat/drink/toilet/sleep은 해당 인물만 회복합니다. 동료 sleep minutes:0은 수면 시작이고 이후 공유 생활 시간이 지날 때 회복합니다. 공유 경과 분은 한 번만 기록하며 선택 인물마다 곱하지 않습니다.';
 GUIDE.api+=' Jev 빠른 판단은 AI 연결에서 TypeSafe 전용 키를 등록하여 선택적으로 사용합니다. 기본 생성 API를 대체하지 않으며 로어북 검색·생성 자료와 구성 요소 선별·기존 기술 연결·판정 기준 분류·뉴뉴 주제 선택·검사 보조를 담당합니다. 모호하거나 연결에 실패하면 기존 처리를 사용합니다. 실제 사용 기록은 같은 설정 화면에서 확인합니다. 키는 기기별 보관이며 정확도·속도·비용 절감은 실제 플레이로 확인해야 합니다. Jev 키를 채팅으로 요청하거나 프롬프트에 넣지 마세요.';
+GUIDE.navigation+=' 등록 인물의 능력치·자원 연결에서 다른 인물의 레벨·최대 자원·능력치·숙련도에 비례하는 보정, 구간별 증가, 실제 자원 공유와 비용 대납을 편집할 수 있습니다. 뉴뉴는 actor_links 제안을 사용합니다. 소환수에만 제한되지 않으며 원본 수치를 덮어쓰지 않습니다.';
 function select(book,text,topics=null){if(['tactical','zirkott'].includes(book)){const base=[GUIDE.core,GUIDE.navigation,GUIDE.units];if(!topics||topics.includes('api'))base.push(GUIDE.api);base.push(book==='tactical'?require('./tactical-prompts.js').PROTOCOL:'지르코트 도구와 선택 기능은 현재 저장된 토글과 제공된 편집 자료를 따릅니다.');return base.join('\n');}const keys=new Set(['core','navigation','units',!book||book==='common'?'d100':book]);if(topics?topics.includes('effects'):/효과|기술|스킬|아이템|장비|인챈트|패시브|숙련|사거리|거리|이동|소지|착용|패널티|skill|effect/i.test(text))keys.add('effects');if(topics?topics.includes('combat'):/강화|판매|경매|전투|주사위|판정|피해|방어|턴|게이지|속도|가속|둔화|내구|거리|이동|combat|설정/i.test(text))keys.add('combat');if(topics?topics.includes('api'):/api|연결|모델|검사|타임|콜백|설정|저장|오류|vertex|버텍스|인증|토큰|서비스.?계정|jev|제브|젭|typesafe/i.test(text))keys.add('api');return [...keys].map(k=>GUIDE[k]||'').filter(Boolean).join('\n');}
 module.exports={PERSONA,select};
 
@@ -21361,7 +21545,7 @@ function open(ui,input){
   const p={...input,entity:input.entity||'skill'},w=p.featureDraft&&p.featureDraft===ui.job?.id?require('./optional-feature-ui.js').draftWorld(ui.job,p.featureOptions):p.tacticalDraft&&p.tacticalDraft===ui.job?.id?ui.job.tacticalCandidate:ui.info.state,a=w?.actors[p.actorId];
   assert(w&&a,'UNKNOWN_ACTOR','현재 게임에서 제안의 인물을 찾지 못했습니다.');
   ui.nyunyuProposal=null;
-  if(p.entity==='summon_settings')return require('./game-editor-ui.js').open(ui,p);
+  if(['summon_settings','actor_links'].includes(p.entity))return require('./game-editor-ui.js').open(ui,p);
   if(p.entity.startsWith('feature_'))return require('./game-editor-ui.js').open(ui,p);
   if(p.entity==='realm_settings')return require('./murim-realm-ui.js').proposal(ui,p);
   if(p.entity==='scene_resolution')return require('./game-editor-ui.js').open(ui,p);
@@ -21480,7 +21664,7 @@ function session(app,scope){const key=scopeKey(scope);if(!app.nyunyu||app.nyunyu
 function context(world,actorId){
   if(!world)return {prepared:false};
   const a=world.actors[actorId]||Object.values(world.actors).find(a=>a.kind==='player'),ids=a?[a.id]:[];
-  if(['tactical','zirkott'].includes(world.meta.rulebook?.id))return {...require('./tactical-ui.js').context(world,a),...(require('./optional-features.js').active(world)?{optionalFeatures:require('./optional-feature-tools.js').read(world,{actor:a?.id})}:{})};
+  if(['tactical','zirkott'].includes(world.meta.rulebook?.id))return {actorLinks:a?require('./actor-links.js').config(world,a.id):null,linkSources:require('./actor-links.js').sources(world),...require('./tactical-ui.js').context(world,a),...(require('./optional-features.js').active(world)?{optionalFeatures:require('./optional-feature-tools.js').read(world,{actor:a?.id})}:{})};
   const er=world.meta.rulebook?.id==='erencha',social=world.meta.social;
   return {...(require('./optional-features.js').active(world)?{optionalFeatures:require('./optional-feature-tools.js').read(world,{actor:a?.id})}:{}),rulebook:require('./rulebook-runtime.js').select(world).id,state:require('./engine.js').liveSummary(world,ids),people:Object.values(world.actors).filter(a=>a.active||a.kind==='summon'&&!a.mergedInto).map(a=>({id:a.id,name:a.name})),selectedActor:a?.id,...(er?{realLifeHistory:require('./erencha-reality.js').history(world,a?.id),realLifeHistoryNote:'현재 저장 상태와 최근 최대 12건의 보관된 생활 영수증입니다. 전체 과거 대화나 로그가 아닙니다. 미포함 기록만으로 식사·수면이 없었다거나 정확한 원인을 확인했다고 단정하지 마세요. at은 저장 시각이며 이야기 속 경과 분이 아닙니다.'}:{}),
     editable:a?{...(er?{realLife:require('./erencha-reality.js').editable(world,a.id)}:{}),...require('./game-editor.js').context(world,a),skillStates:clone(a.skills||{}),actor:{id:a.id,name:a.name,raw:a.raw,...(er?{realName:a.realName,nickname:a.nickname,description:a.description,level:a.level,baseHP:a.baseHP,baseMP:a.baseMP,fame:a.fame}:{}),...(social?{stats:a.raw,description:a.description,karma:a.karma,honor:a.honor}:{})},skills:(Array.isArray(a.skills)?a.skills:Object.keys(a.skills||{})).map(id=>world.definitions.skills[id]),items:Object.entries(world.inventory).filter(([,it])=>it.ownerId===a.id&&it.quantity>0).map(([id,it])=>({id,...clone(it),...(er||social?{}:{definition:clone(world.definitions.items[it.definitionId])})})),...(er?{proficiencies:a.proficiencies,quests:Object.values(world.meta.erencha.quests).filter(q=>q.actorId===a.id)}:{}),...(social?{relations:Object.entries(social.relations).filter(([key])=>key.split('>').includes(a.id)).map(([id,value])=>({id,...value})),schemes:Object.values(social.schemes||{}).filter(s=>s.actorId===a.id)}:{}),...(world.meta.native||er?{combatSettings:require('./combat-options.js').get(world)}:{})}:null};
@@ -21685,9 +21869,9 @@ function elapse(w,hours,events=[]){count(hours,0,8760);if(!hours)return;const st
 function advanceTime(w,hours,events){count(hours,0,8760);const state=F.state(w);if(w.meta.murim){w.meta.murim.clock.hours+=hours;w.meta.day=Math.floor(w.meta.murim.clock.hours/24);}else if(w.meta.tactical)require('./tactical-combat.js').advance(w,hours*3600,events);else if(w.meta.erencha){const c=w.meta.erencha.clock,t=/^(\d{1,2}):(\d{2})/.exec(c.time||''),minutes=(t?Number(t[1])*60+Number(t[2]):0)+hours*60,days=Math.floor(minutes/1440);c.day+=days;w.meta.day=c.day;c.time=String(Math.floor(minutes%1440/60)).padStart(2,'0')+':'+String(Math.floor(minutes%60)).padStart(2,'0');if(days&&/^\d{4}-\d{2}-\d{2}$/.test(c.date||'')){const date=new Date(c.date+'T00:00:00Z');date.setUTCDate(date.getUTCDate()+days);c.date=date.toISOString().slice(0,10);}if(c.realm==='real')require('./erencha-reality.js').advance(w,hours*60);}else if(w.meta.social){const total=(w.meta.social.phase||0)*6+(state.clockRemainder||0)+hours,days=Math.floor(total/24);w.meta.social.day+=days;w.meta.social.phase=Math.floor(total%24/6);state.clockRemainder=total%6;w.meta.day=w.meta.social.day;}else{const total=(state.clockRemainder||0)+hours;w.meta.day+=Math.floor(total/24);state.clockRemainder=total%24;}elapse(w,hours,events);}
 function clock(w){if(w.meta.murim)return Number(w.meta.murim.clock?.hours)||0;if(w.meta.erencha){const c=w.meta.erencha.clock,t=/^(\d{1,2}):(\d{2})/.exec(c.time||'');const stamp=Date.parse(String(c.date||'')+'T00:00:00Z');return (Number.isFinite(stamp)?stamp/3600000:(c.day||1)*24)+(t?Number(t[1])+Number(t[2])/60:0);}if(w.meta.social)return (w.meta.social.day||0)*24+(w.meta.social.phase||0)*6;if(w.meta.tactical)return (w.meta.tactical.clock||0)/3600;return (w.meta.day||0)*24;}
 function clockAfter(w,before,result,minutes){if(!F.active(w)||result?.outcome==='unchanged'||result?.result?.alreadyRecorded)return;const hours=Math.max(0,minutes===undefined?clock(w)-before:Number(minutes)/60);if(!hours)return;const events=[];elapse(w,hours,events);if(events.length){result.result||={};result.result.optionalChanges=events;(result.result.changes||=[]).push(...events);}}
-function train(w,a,skillId,hours,rng){assert(require('./summon-system.js').allowsGrowth(w,a),'SUMMON_FIXED','고정형 소환수는 수련으로 성장하지 않습니다. 유지·성장 설정에서 독립 성장으로 변경하세요.');assert(!w.combat,'COMBAT_ACTIVE','수련은 교전 밖에서 진행하세요.');const d=w.definitions.skills[skillId],st=a.skills[skillId],cfg=C.actorData(w,a).training;assert(d&&st,'SKILL_MISSING','보유 기술을 지정하세요.');const cost=hours*cfg.costPerHour,r=cfg.resource?a.resources[cfg.resource]:null;assert(!cost||r&&r.current>=cost,'INSUFFICIENT_RESOURCE','수련 자원이 부족합니다. 시간을 줄이거나 휴식하세요.');if(cost)r.current-=cost;const check=require('./rules.js').check(cfg.threshold,w.profile,rng),points=Math.floor(cfg.xpPerHour*hours*(check.success?1:.25)),plan=require('./mastery-plan.js');st.points+=points;while(st.mastery<(d.masteryPlan?.max||5)&&st.points>=plan.next(w,d,st.mastery))st.mastery++;return {roll:check.roll,outcome:check.success?'success':'failure',skillId,mastery:st.mastery,points:st.points,gained:points,cost};}
+function train(w,a,skillId,hours,rng){assert(require('./summon-system.js').allowsGrowth(w,a),'SUMMON_FIXED','고정형 소환수는 수련으로 성장하지 않습니다. 유지·성장 설정에서 독립 성장으로 변경하세요.');assert(!w.combat,'COMBAT_ACTIVE','수련은 교전 밖에서 진행하세요.');const d=w.definitions.skills[skillId],st=a.skills[skillId],cfg=C.actorData(w,a).training;assert(d&&st,'SKILL_MISSING','보유 기술을 지정하세요.');const cost=hours*cfg.costPerHour;if(cost)require('./actor-links.js').pay(w,a,{[cfg.resource]:cost});const check=require('./rules.js').check(cfg.threshold,w.profile,rng),points=Math.floor(cfg.xpPerHour*hours*(check.success?1:.25)),plan=require('./mastery-plan.js');st.points+=points;while(st.mastery<(d.masteryPlan?.max||5)&&st.points>=plan.next(w,d,st.mastery))st.mastery++;return {roll:check.roll,outcome:check.success?'success':'failure',skillId,mastery:st.mastery,points:st.points,gained:points,cost};}
 function unlock(w,a,m){for(const c of m.chapters)if(!c.unlocked&&m.points>=c.required){c.unlocked=true;if(Array.isArray(a.skills)){if(!a.skills.includes(c.skillId))a.skills.push(c.skillId);}else a.skills[c.skillId]||={mastery:0,points:0,spent:0,cooldown:0};}}
-function summon(w,a,target,active,events,skill=false){const t=actor(w,target),v=C.ensureActor(w,t).summon,Summons=require('./summon-system.js'),saved=Summons.config(w,t.id);if(saved){if(active)Summons.activate(w,a,t,{payCost:!skill,skipOwnerAction:true},events);else Summons.dismiss(w,t,events);v.active=active;return;}assert(t.id!==a.id&&v.ownerId===a.id,'SUMMON_OWNER','소환 대상에 주인의 ID를 먼저 설정하세요.');assert(w.meta.tactical?require('./tactical-rules.js').alive(t):require('./summon-system.js').living(w,t),'SUMMON_DEFEATED','소환은 죽은 대상을 부활시키지 않습니다.');if(active&&!skill&&(!v.active||t.active===false)){const r=a.resources[v.costResource];assert(!v.cost||r&&r.current>=v.cost,'INSUFFICIENT_RESOURCE','소환 자원이 부족합니다.');if(v.cost)r.current-=v.cost;}const managed=F.state(w).managedSummons||={};managed[t.id]||={kind:t.kind,active:t.active!==false,...(t.ownerId!==undefined?{ownerId:t.ownerId}:{}),...(t.summon?{summon:clone(t.summon)}:{})};v.active=active;if(active){Summons.activate(w,a,t,{lifetime:v.permanent?'permanent':'turns',duration:1000,skipOwnerAction:true},events);return;}Summons.dismiss(w,t,events);return;}
+function summon(w,a,target,active,events,skill=false){const t=actor(w,target),v=C.ensureActor(w,t).summon,Summons=require('./summon-system.js'),saved=Summons.config(w,t.id);if(saved){if(active)Summons.activate(w,a,t,{payCost:!skill,skipOwnerAction:true},events);else Summons.dismiss(w,t,events);v.active=active;return;}assert(t.id!==a.id&&v.ownerId===a.id,'SUMMON_OWNER','소환 대상에 주인의 ID를 먼저 설정하세요.');assert(w.meta.tactical?require('./tactical-rules.js').alive(t):require('./summon-system.js').living(w,t),'SUMMON_DEFEATED','소환은 죽은 대상을 부활시키지 않습니다.');if(active&&!skill&&(!v.active||t.active===false)){if(v.cost)require('./actor-links.js').pay(w,a,{[v.costResource]:v.cost},events);}const managed=F.state(w).managedSummons||={};managed[t.id]||={kind:t.kind,active:t.active!==false,...(t.ownerId!==undefined?{ownerId:t.ownerId}:{}),...(t.summon?{summon:clone(t.summon)}:{})};v.active=active;if(active){Summons.activate(w,a,t,{lifetime:v.permanent?'permanent':'turns',duration:1000,skipOwnerAction:true},events);return;}Summons.dismiss(w,t,events);return;}
 function disableSummons(w){for(const [id,previous] of Object.entries(F.read(w).managedSummons||{})){const a=w.actors[id];if(!a||require('./summon-system.js').config(w,id))continue;require('./summon-system.js').dismiss(w,a,[]);a.kind=previous.kind;a.active=previous.active;if(Object.hasOwn(previous,'ownerId'))a.ownerId=previous.ownerId;else delete a.ownerId;if(previous.summon)a.summon=clone(previous.summon);else delete a.summon;}if(w.meta.optionalFeatures)delete w.meta.optionalFeatures.managedSummons;}
 function maintainSummons(w){if(!F.enabled(w,'arts'))return;for(const [id,record] of Object.entries(F.read(w).actors)){const spec=record.summon,t=w.actors[id],a=w.actors[spec.ownerId];if(!spec?.permanent||!spec.active||!t||!a||a.active===false)continue;const alive=w.meta.tactical?require('./tactical-rules.js').alive(t):require('./effect-system.js').resource(t,'hp')?.current>0;if(alive&&(!w.meta.tactical?!t.summon:t.kind!=='summon'||t.ownerId!==a.id||t.active===false))summon(w,a,id,true,w.meta.effectEvents||=[]);}}
 function skillSummons(w,a,s,events){if(!F.enabled(w,'arts'))return;for(const id of F.read(w).skills[s?.id]?.summons||[])summon(w,a,id,true,events,true);}
@@ -21723,7 +21907,7 @@ const round=x=>Math.round(x*1000)/1000;
 const idOf=it=>it.instanceId||it.id;
 const definition=(w,it)=>w.definitions.items[it.definitionId]||it;
 function context(w,args,prepared){const a=w.actors[prepared?.data?.actorId||args.actor||args.actorId]||Object.values(w.actors).find(a=>[a.name,a.nickname,...(a.aliases||[])].includes(args.actor));contexts.set(w,{...args,actorId:a?.id});}
-function inherit(from,to){if(contexts.has(from))contexts.set(to,contexts.get(from));return to;}
+function inherit(from,to){if(contexts.has(from))contexts.set(to,contexts.get(from));require('./actor-links.js').bind(to);return to;}
 function clear(w){contexts.delete(w);if(!w.combat&&w.meta.optionalFeatures)delete w.meta.optionalFeatures.battle;}
 function defaultRange(w,it){const d=definition(w,it),text=[d.name,d.type,...(d.tags||[])].join(' '),sniper=/저격|snip|ballista|발리스타|노포/i.test(text),bow=/궁|활|bow|석궁|crossbow/i.test(text),gun=/총|gun|rifle|pistol/i.test(text),max=sniper?800:bow?100:gun?200:2;return {max,absolute:false,ranges:sniper?[{metres:10,accuracy:-30},{metres:50,accuracy:-15},{metres:800,accuracy:0}]:bow?[{metres:2,accuracy:-15},{metres:30,accuracy:0},{metres:100,accuracy:-15}]:[{metres:max,accuracy:0}]};}
 function itemData(w,it){return F.read(w).items[idOf(it)]||{weight:0,weaponType:'',slots:[],part:{slot:'',type:'',compatible:[],accuracy:0,damage:0,rangePercent:0,penaltyReduction:0,capacityKg:0},attachments:[],range:defaultRange(w,it),ammo:{type:'',capacity:0,loaded:0,perShot:1,reloadActions:1,progress:0},treatment:0,stopsBleeding:false,food:0,water:0,hygiene:0,fatigue:0,enhancement:0};}
@@ -23211,7 +23395,7 @@ function render(ui){const w=ui.info.state,book=ui.currentRulebook();
   const records=people.filter(a=>a.kind==='enemy'&&!current.has(a.id)),visible=people.filter(a=>a.kind!=='enemy'||current.has(a.id));
   let html='<section class="panel"><h2>등록 인물</h2><p class="muted">등록 자료와 현재 장면 표시는 별개입니다. 체크한 인물만 현재 상태·미니보드에 표시합니다. 사용자와 전투 참가자는 항상 표시됩니다.</p><details id="registry-add" '+(ui.registryAdding?'open':'')+'><summary>+ 인물 추가</summary><div class="fields spaced">'+input('name','이름',true)+'<label>분류<select data-registry-field="kind">'+[['ally','아군·NPC'],['enemy','적'],...(require('./summon-tools.js').available(w)?[['summon','소환수 · 미리 등록']]:[])].map(([k,l])=>'<option value="'+k+'" '+(value.kind===k?'selected':'')+'>'+l+'</option>').join('')+'</select></label>'+(value.kind==='summon'?'<label>소환자<select data-registry-field="owner">'+Object.values(w.actors).filter(a=>a.kind!=='summon'&&!a.mergedInto).map(a=>'<option value="'+e(a.id)+'" '+(value.owner===a.id?'selected':'')+'>'+e(a.name)+'</option>').join('')+'</select></label>':'')+(schema.realName?input('realName','본명 (선택)')+input('nickname','닉네임 (선택)'):'')+(schema.aliases?input('aliases','별칭 · 쉼표로 구분'):'')+'</div><label>인물 설명·추가 요청<textarea data-registry-field="description" rows="4">'+e(value.description)+'</textarea></label>'+(schema.instanceKey?'<details><summary>같은 이름의 서로 다른 개체</summary>'+input('instanceKey','고정 개체 ID (선택)')+'<p class="muted">같은 이름의 다른 개체를 만들 때만 서로 다른 ID를 적습니다. 이미 등록한 인물은 기존 ID와 상태를 재사용합니다.</p></details>':'')+'<label class="choice"><input type="checkbox" data-registry-field="visible" '+(value.visible?'checked':'')+'> 등록 후 현재 장면에 표시</label><button type="button" id="registry-create">인물 등록</button><p class="muted">새 인물은 현재 봇의 관련 로어북과 설명으로 준비합니다. 기존 인물의 능력치·장비·진행 상태를 다시 만들지 않습니다.</p></details><label class="spaced">인물·적 찾기<input id="registry-search" type="search" value="'+e(ui.registrySearch||'')+'" placeholder="이름·닉네임·별칭·ID"></label></section>';
   const cards=list=>list.map(a=>{const fixed=players.has(a.id)||w.combat?.order.some(r=>r.actorId===a.id),available=a.active!==false&&!a.retired,editing=ui.registryEditActor===a.id;let editor='';if(editing){if(['romance','dating'].includes(book))editor=require('./social-ui.js').editor(w,'actor',a.id,a);else if(w.meta.native&&!w.meta.murim){ui.manageActor=a.id;editor=require('./native-management.js').render(ui);}}
-    return '<article class="play-item"><div class="play-card-head"><div><h3>'+e(a.name)+'</h3><small>'+e(labels[a.kind]||a.kind)+(a.rank?' · '+e(a.rank):'')+(available?'':' · 보관된 등록 자료')+'</small></div><button type="button" data-registry-edit="'+e(a.id)+'">편집</button></div>'+(a.nickname||a.realName?'<p>'+e([a.realName,a.nickname].filter(Boolean).join(' · '))+'</p>':'')+'<label class="choice"><input type="checkbox" data-scene-person="'+e(a.id)+'" '+(shown.has(a.id)?'checked ':'')+(fixed||!available?'disabled':'')+'> 현재 장면에 표시</label>'+(!available&&a.kind!=='summon'?'<button type="button" data-registry-recall="'+e(a.id)+'">등록 자료 사용</button>':'')+'<details><summary>등록 정보</summary><p>'+e(a.description||w.definitions?.actors?.[a.definitionId]?.description||'')+'</p><small>ID · '+e(a.id)+'</small></details>'+require('./summon-ui.js').panel(w,a)+editor+'</article>';}).join('');
+    return '<article class="play-item"><div class="play-card-head"><div><h3>'+e(a.name)+'</h3><small>'+e(labels[a.kind]||a.kind)+(a.rank?' · '+e(a.rank):'')+(available?'':' · 보관된 등록 자료')+'</small></div><button type="button" data-registry-edit="'+e(a.id)+'">편집</button></div>'+(a.nickname||a.realName?'<p>'+e([a.realName,a.nickname].filter(Boolean).join(' · '))+'</p>':'')+'<label class="choice"><input type="checkbox" data-scene-person="'+e(a.id)+'" '+(shown.has(a.id)?'checked ':'')+(fixed||!available?'disabled':'')+'> 현재 장면에 표시</label>'+(!available&&a.kind!=='summon'?'<button type="button" data-registry-recall="'+e(a.id)+'">등록 자료 사용</button>':'')+'<details><summary>등록 정보</summary><p>'+e(a.description||w.definitions?.actors?.[a.definitionId]?.description||'')+'</p><small>ID · '+e(a.id)+'</small></details>'+require('./summon-ui.js').panel(w,a)+require('./actor-links-ui.js').panel(w,a)+editor+'</article>';}).join('');
   if(visible.length)html+='<section class="panel"><div class="registry-list">'+cards(visible)+'</div></section>';
   if(records.length)html+='<section class="panel"><details id="registry-enemy-records" '+(search.trim()||ui.registryEnemyRecordsOpen?'open':'')+'><summary>적·몬스터 기록 · '+records.length+'</summary><p class="muted">등록된 적은 여기에서 찾아 편집하거나 현재 장면에 표시할 수 있습니다. 전투·탐험 기록은 그대로 보관됩니다.</p><div class="registry-list">'+cards(records)+'</div></details></section>';
   if(!people.length)html+='<section class="panel"><p class="muted">일치하는 인물이 없습니다.</p></section>';
@@ -23219,7 +23403,7 @@ function render(ui){const w=ui.info.state,book=ui.currentRulebook();
 }
 function capture(ui){for(const el of document.querySelectorAll('[data-registry-field]'))draft(ui)[el.dataset.registryField]=el.type==='checkbox'?el.checked:el.value;const d=document.getElementById('registry-add');if(d)ui.registryAdding=d.open;const records=document.getElementById('registry-enemy-records');if(records&&!ui.registrySearch?.trim())ui.registryEnemyRecordsOpen=records.open;}
 function bind(ui){if(ui.tab!=='registry')return;const w=ui.info.state,scope=clone(ui.info.scope);for(const el of document.querySelectorAll('[data-registry-field]'))el.oninput=()=>capture(ui);const search=document.getElementById('registry-search');if(search)search.oninput=()=>{capture(ui);const start=search.selectionStart;ui.registrySearch=search.value;ui.render();const next=document.getElementById('registry-search');next.focus();try{next.setSelectionRange(start,start);}catch{}};
-  require('./summon-ui.js').bind(ui);const kind=document.querySelector('[data-registry-field="kind"]');if(kind)kind.onchange=()=>{capture(ui);ui.render();};
+  require('./summon-ui.js').bind(ui);require('./actor-links-ui.js').bind(ui);const kind=document.querySelector('[data-registry-field="kind"]');if(kind)kind.onchange=()=>{capture(ui);ui.render();};
   const records=document.getElementById('registry-enemy-records');if(records)records.ontoggle=()=>{if(!ui.registrySearch?.trim())ui.registryEnemyRecordsOpen=records.open;};
   const create=document.getElementById('registry-create');if(create)create.onclick=()=>ui.act(async()=>{capture(ui);create.disabled=true;ui.notify('인물 자료를 준비하고 있습니다.');try{await register(ui.app,scope,clone(draft(ui)));ui.registryDraft=null;ui.registryAdding=false;await ui.refresh();ui.notify('인물을 등록했습니다.');}finally{create.disabled=false;}});
   for(const el of document.querySelectorAll('[data-registry-recall]'))el.onclick=()=>ui.act(async()=>{await register(ui.app,scope,{name:el.dataset.registryRecall,visible:true});await ui.refresh();});
@@ -25027,8 +25211,8 @@ function baseCatalog(world) {
     default: return require('./common-tools.js').catalog;
   }
 }
-function catalog(world){return require('./quick-question.js').catalog(require('./summon-tools.js').catalog(world,require('./optional-feature-tools.js').catalog(world,baseCatalog(world))));}
-function tools(world){const base=baseTools(world),features=require('./optional-features.js').active(world),allowed=new Map(base.map(t=>[t.name,new Set(t.inputSchema.properties.op.enum||[])]));return catalog(world).tools((tool,op)=>allowed.get(tool)?.has(op)||require('./summon-tools.js').available(world)&&(tool==='rpg_registry'&&require('./summon-tools.js').OPS.includes(op)||tool==='rpg_state'&&op==='summons')||tool==='rpg_state'&&op==='ask'||features&&(tool==='rpg_play'&&op==='feature'||tool==='rpg_state'&&op==='features'));}
+function catalog(world){return require('./actor-links-tools.js').catalog(require('./quick-question.js').catalog(require('./summon-tools.js').catalog(world,require('./optional-feature-tools.js').catalog(world,baseCatalog(world)))));}
+function tools(world){const base=baseTools(world),features=require('./optional-features.js').active(world),allowed=new Map(base.map(t=>[t.name,new Set(t.inputSchema.properties.op.enum||[])]));return catalog(world).tools((tool,op)=>allowed.get(tool)?.has(op)||require('./summon-tools.js').available(world)&&(tool==='rpg_registry'&&require('./summon-tools.js').OPS.includes(op)||tool==='rpg_state'&&op==='summons')||tool==='rpg_state'&&['ask','actor_links'].includes(op)||features&&(tool==='rpg_play'&&op==='feature'||tool==='rpg_state'&&op==='features'));}
 function baseTools(world) {
   const book=select(world);
   if(book.id==='zirkott')return require('./zirkott-tools.js').forWorld(world).tools((tool,op)=>require('./play-options.js').enabled(world)||!(tool==='rpg_play'&&op==='explore'));
@@ -25087,11 +25271,12 @@ function nativeRoute(world,tool,args) {
 // happens before Repository.execute and mutates no live world. Only the finished
 // plan is applied to the repository's candidate world, with its saved authority.
 async function prepare(app,scope,tx,tool,args,signal) {
+  require('./actor-links.js').bind(tx.state);
   require('./erencha-reality.js').guardCall(tx.state,tool,args);
   if(require('./summon-tools.js').handles(tx.state,tool,args))return require('./summon-tools.js').prepare(app,scope,tx,args,signal);
   if(tool==='rpg_play'&&args.op==='feature'){require('./optional-features.js').guard(tx.state,args.feature);return {kind:'optional-feature'};}
   if(tool==='rpg_play'&&args.op==='reconcile')return {kind:'reconcile'};
-  if(tx.state.meta.native){tx={...tx,state:clone(tx.state)};require('./actor-reference.js').repairDuplicates(tx.state);}
+  if(tx.state.meta.native){tx={...tx,state:clone(tx.state)};require('./actor-links.js').bind(tx.state);require('./actor-reference.js').repairDuplicates(tx.state);}
   require('./murim-stats.js').world(tx.state);
   require('./play-options.js').guard(tx.state,tool,args);
   require('./zirkott-options.js').guard(tx.state,tool,args);
@@ -25129,6 +25314,7 @@ function applyEngine(app,world,prepared,tool,args,authority,options={}) {
   }
 }
 function apply(app,world,prepared,tool,args,authority,options={}) {
+  require('./actor-links.js').refresh(world);
   require('./erencha-reality.js').guardCall(world,tool,args,prepared?.data);
   const reality=require('./erencha-reality.js'),beforeLife=reality.summary(world);
   const summonBefore={combat:!!world.combat,clock:require('./summon-system.js').clock(world),active:new Set(Object.keys(require('./summon-system.js').read(world).active)),actions:require('./summon-system.js').actionCount(world)};
@@ -25147,12 +25333,14 @@ function apply(app,world,prepared,tool,args,authority,options={}) {
   const lifeNotices=reality.notices(beforeLife,reality.summary(world));
   if(lifeNotices.length&&result?.result){const changes=result.result.changes||=[];for(const row of lifeNotices)if(!changes.some(old=>old.label===row.label&&old.value===row.value))changes.push(row);}
   require('./summon-tools.js').afterCall(world,summonBefore,result,tool,args,prepared);
+  require('./actor-links.js').refresh(world);
   return require('./combat-resolution.js').finalize(world,result);
 }
-function admin(world,tool,args,authority) {
+function admin(world,tool,args,authority){require('./actor-links.js').bind(world);const result=adminCore(world,tool,args,authority);require('./actor-links.js').refresh(world);return result;}
+function adminCore(world,tool,args,authority) {
   require('./murim-stats.js').world(world);
   if(tool==='rpg_registry'&&['summon','dismiss_summon'].includes(args.op)&&require('./summon-tools.js').available(world)){const S=require('./summon-system.js'),owner=S.find(world,args.owner),target=S.find(world,args.name);assert(owner&&target,'SUMMON_MISSING','등록된 소환자와 소환수를 선택하세요.');return require('./summon-tools.js').apply(world,{ownerId:owner.id,targetId:target.id},args,authority);}
-  if(tool==='rpg_play'&&args.op==='game_edit'&&args.proposal?.entity==='summon_settings')return require('./game-editor.js').edit(world,args,authority);
+  if(tool==='rpg_play'&&args.op==='game_edit'&&['summon_settings','actor_links'].includes(args.proposal?.entity))return require('./game-editor.js').edit(world,args,authority);
   if(tool==='rpg_play'&&args.op==='feature'){const S=require('./summon-system.js'),before={combat:!!world.combat,clock:S.clock(world),active:new Set(Object.keys(S.read(world).active)),actions:S.actionCount(world)};const result=require('./optional-feature-actions.js').act(world,args,authority);require('./optional-feature-combat.js').clear(world);return require('./summon-tools.js').afterCall(world,before,result,tool,args,{kind:'optional-feature'});}
   if(tool==='rpg_play'&&args.op==='play_settings')return require('./play-settings-ui.js').save(world,args,authority);
   if(tool==='rpg_play'&&args.op==='real_life_edit')return require('./erencha-reality.js').edit(world,args,authority);
@@ -25185,6 +25373,8 @@ function externalEngine(world) {
   }
 }
 function validateExternalWorld(world) {
+  require('./actor-links.js').validateWorld(world);
+  require('./actor-links.js').bind(world);
   require('./summon-system.js').validateWorld(world);
   require('./optional-feature-model.js').validateWorld(world);
   switch(select(world).family) {
@@ -25203,7 +25393,8 @@ function statusPackets(world) {
   return {};
 }
 function statusContext(world) {
-  return require('./play-options.js').instruction(world)+require('./optional-features.js').instruction(world)+(require('./optional-features.js').active(world)?'\n[OPTIONAL_FEATURES]\n'+JSON.stringify(require('./optional-features.js').summary(world)):'')+Object.entries(statusPackets(world)).map(([key,value])=>'\n['+({zirkottStatus:'ZIRKOTT_STATUS',tacticalStatus:'TACTICAL_STATUS',erenchaStatus:'ERENCHA_STATUS',hunterStatus:'HUNTER_STATUS',murimStatus:'MURIM_STATUS'})[key]+']\n'+JSON.stringify(value)).join('');
+  const linkPacket=require('./actor-links-tools.js').packet(world);
+  return (linkPacket.actorLinks?'\n[ACTOR_LINKS]\n'+JSON.stringify(linkPacket):'')+require('./play-options.js').instruction(world)+require('./optional-features.js').instruction(world)+(require('./optional-features.js').active(world)?'\n[OPTIONAL_FEATURES]\n'+JSON.stringify(require('./optional-features.js').summary(world)):'')+Object.entries(statusPackets(world)).map(([key,value])=>'\n['+({zirkottStatus:'ZIRKOTT_STATUS',tacticalStatus:'TACTICAL_STATUS',erenchaStatus:'ERENCHA_STATUS',hunterStatus:'HUNTER_STATUS',murimStatus:'MURIM_STATUS'})[key]+']\n'+JSON.stringify(value)).join('');
 }
 
 module.exports={select,catalog,tools,discoveryTools,validateCall,isReadOnly,prepare,apply,admin,externalEngine,validateExternalWorld,statusPackets,statusContext};
@@ -25512,6 +25703,7 @@ function viewActor(world, id) {
     r.max = Math.max(1,require('./rule-library.js').maximum(world,a,r.id,applyModifiers(base,ef,'resourceMax',r.id,a.tags)));
     assert(Number.isFinite(r.max) && r.max <= 1000000,'INVALID_RESOURCE','계산한 최대 자원이 허용 범위를 넘었습니다: ' + r.name);
     completed.add(key);
+    const links=require('./actor-links.js');if(!links.suspended(world)&&links.shared(world,id,key)){const shared=links.root(world,id,key).resource;r.max=shared?.max??r.max;r.current=shared?.current??0;}
     return r.max;
   };
   for (const key of Object.keys(a.resources)) resourceMax(key);
@@ -25533,6 +25725,9 @@ function syncMax(world, id) {
   const live = world.actors[id],
     v = viewActor(world, id);
   for (const [k, r] of Object.entries(live.resources)) {
+    // The source owns the shared maximum. Do not overwrite the recipient's
+    // pre-link maximum with that borrowed value when synchronizing a view.
+    if(require('./actor-links.js').shared(world,id,k))continue;
     r.max = v.resources[k].max;
     r.current = Math.min(r.current, r.max);
   }
@@ -28787,8 +28982,8 @@ function resolveAction(w,plan,args,authority,rng,changes) {
     repetition={number:attempts+1,cautionIncrease:caution,affectionLoss:affection};
   }
   // Public reputation is a fact of this scene, not a permanent skill property.
-  const m=modifiers(w,a,t,{...definition,public:plan.public===true}),base=a.raw[definition.stat];
-  const opposing=t?t.raw[definition.opposedStat]:10;
+  const m=modifiers(w,a,t,{...definition,public:plan.public===true}),base=definition.type==='training'?a.raw[definition.stat]:require('./actor-links.js').stat(w,a,definition.stat);
+  const opposing=t?require('./actor-links.js').stat(w,t,definition.opposedStat):10;
   let success=false,tie=false,roll=null,details={};
   const support=Events.support(w,args,plan);
   if(id==='dating'&&definition.type==='training') {
@@ -28858,7 +29053,7 @@ function summary(w,ids) {
   const selected=Array.isArray(ids)?new Set(ids):null,s=w.meta.social,b=Books.book(w.meta.rulebook.id);
   return {rulebook:{id:b.id,name:b.name,stats:b.stats,instructions:w.meta.rulebook.instructions},day:s.day,timeOfDay:Events.PHASES[s.phase||0],schemes:Events.schemeContext(w),...(b.id==='romance'?{schemeInstruction:'진행 중인 목표와 관련된 시도는 act, 이미 이뤄진 준비·변화는 record로 전달하세요. 설계 ID를 생략해도 내용을 연결합니다. 목표 달성·포기도 실제 발생했을 때 기록하세요. 사용자 대신 다음 단계나 경로를 정하지 마세요.'}:{}),
     ...(b.id==='dating'?{dates:Dating.context(w),datingInstruction:'실제 식사·음료·휴식·수면과 날짜 경과를 record로 기록하세요. 정식 데이트의 시작·진행·종료도 같은 방식으로 기록하며 잠깐의 식사를 데이트로 바꾸지 마세요.'}:{}),
-    actors:Object.values(w.actors).filter(a=>a.active&&(!selected||selected.has(a.id))).map(a=>({id:a.id,name:a.name,kind:a.kind,stats:clone(a.raw),karma:a.karma,...(b.id==='romance'?{honor:a.honor}:{datingDisposition:Dating.disposition(a)}),alignment:a.alignment,
+    actors:Object.values(w.actors).filter(a=>a.active&&(!selected||selected.has(a.id))).map(a=>({id:a.id,name:a.name,kind:a.kind,stats:Object.fromEntries(Object.keys(a.raw).map(k=>[k,require('./actor-links.js').stat(w,a,k)])),karma:a.karma,...(b.id==='romance'?{honor:a.honor}:{datingDisposition:Dating.disposition(a)}),alignment:a.alignment,
       ...(b.id==='dating'&&a.kind==='player'?{stamina:clone(s.stamina[a.id]),money:clone(w.economy.wallets[a.id])}:{})})),
     relations:Object.entries(s.relations).filter(([key])=>!selected||key.split('>').some(id=>selected.has(id))).map(([key,r])=>{const [fromId,toId]=key.split('>');return {fromId,toId,...clone(r)};}),
     currencies:clone(w.profile.currencies),inventory:Object.values(w.inventory).filter(x=>!selected||selected.has(x.ownerId)).map(clone),growth:clone(s.growth||{}),combat:null};
@@ -29465,7 +29660,7 @@ function walletRows(w,a) {
 }
 
 function abilityTiles(w,a,book,withGrowth=true) {
-  return View.statTiles(book.stats.map(s=>({name:s.name,value:a.raw[s.id],note:STAT_HELP[book.id][s.id],
+  return View.statTiles(book.stats.map(s=>({name:s.name,value:require('./actor-links.js').stat(w,a,s.id),note:STAT_HELP[book.id][s.id],
     ...(withGrowth&&a.kind==='player'?{progress:{current:w.meta.social.growth?.[a.id]?.[s.id]||0,max:10}}:{})})));
 }
 function overview(ui,w) {
@@ -30044,7 +30239,7 @@ function activate(w,owner,a,options={},events=[]){assert(a&&a.id!==owner.id,'SUM
   assert(LIFETIMES[lifetime]&&Number.isFinite(duration)&&duration>0&&(!['actions','turns'].includes(lifetime)||Number.isInteger(duration)),'SUMMON_DURATION','유지 방식과 시간을 확인하세요.');assert(lifetime!=='combat'||w.combat,'SUMMON_COMBAT_ONLY','전투 동안 유지하는 소환수입니다. 교전을 시작한 뒤 소환하세요.');
   if(a.kind==='summon'&&a.active!==false&&(read(w).active[a.id]||a.summon)){emit(events,a,'소환 유지','이미 소환됨 · 비용과 남은 시간을 다시 적용하지 않음');return a;}
   const limit=options.limit??v.limit;assert(Object.values(w.actors).filter(x=>x.kind==='summon'&&x.ownerId===owner.id&&x.active!==false&&living(w,x)).length<limit,'SUMMON_LIMIT','동시 소환 한도 '+limit+'명입니다. 먼저 다른 소환수를 해제하세요.');
-  if(options.payCost&&v.cost){const r=owner.resources?.[v.costResource];assert(r&&(!r.binding||r.binding==='plugin-owned')&&r.current>=v.cost&&(r.role!=='vital'||r.current>v.cost),'SUMMON_RESOURCE','소환 비용을 지불할 자원이 부족하거나 직접 조작할 수 없는 자원입니다.');r.current-=v.cost;emit(events,owner,'소환 비용',v.costResource+' −'+v.cost);}
+  if(options.payCost&&v.cost){const L=require('./actor-links.js'),p=L.payer(w,owner,v.costResource);assert(p.resource.role!=='vital'||p.resource.current>v.cost,'SUMMON_RESOURCE','소환 비용으로 생명력을 모두 쓸 수 없습니다.');L.pay(w,owner,{[v.costResource]:v.cost},events);emit(events,owner,'소환 비용',v.costResource+' −'+v.cost);}
   a.kind='summon';a.ownerId=owner.id;a.active=true;if(w.meta.tactical)a.escaped=false;
   a.summon={lifecycle:lifetime==='permanent'?'persistent':'fresh',remaining:0};
   state(w).active[a.id]={lifetime,remaining:['permanent','combat'].includes(lifetime)?0:duration,skipOwnerAction:options.skipOwnerAction===true,skipElapsed:options.skipOwnerAction===true&&!!w.meta.tactical,combatId:w.combat?.id||null};
@@ -30272,8 +30467,8 @@ const angle=(from,to)=>Math.atan2(to.y-from.y,to.x-from.x)*180/Math.PI;
 const arc=(facing,from,degrees)=>Math.abs(((from-facing+540)%360)-180)<=degrees/2;
 function proficient(a,f){const p=a.proficiencies[f];return typeof p==='number'?p:p?.rating||0;}
 function train(a,f,changes,amount=1,w=null){if(w&&!require('./summon-system.js').allowsGrowth(w,a))return;const old=a.proficiencies[f],p=typeof old==='number'?{rating:old,xp:0}:old||{rating:0,xp:0};p.xp+=amount;while(p.xp>=20+p.rating*2&&p.rating<100){p.xp-=20+p.rating*2;p.rating++;changes.push({label:'숙련 · '+f,value:p.rating});}a.proficiencies[f]=p;}
-function stress(w,a,amount,changes,rng){if(!R.capable(a)||amount<=0)return;const before=a.mental.stress;a.mental.stress=Math.min(100,before+amount);if(before<50&&a.mental.stress>=50||amount>=15||a.mental.stress>=80){const die=roll(rng),threshold=Math.max(5,Math.min(95,a.mental.stress-a.discipline*.4-R.statBonus(a,'WIS')));if(die<=threshold){a.mental.panicUntil=Math.max(a.mental.panicUntil,w.meta.tactical.clock+6);changes.push({label:a.name+' · 정신 체크',value:die+' VS '+threshold+' · 동요/일시 패닉'});if(a.mental.stress>=95&&a.kind!=='player'&&die<=threshold/2){a.surrendered=true;changes.push({label:a.name,value:'전투 의지 상실 · 항복'});}}else changes.push({label:a.name+' · 정신 체크',value:die+' VS '+threshold+' · 버팀'});}}
-function advance(w,seconds,changes=[],options={}){assert(Number.isFinite(seconds)&&seconds>=0&&seconds<=31536000,'TACTICAL_TIME','경과 시간은 0~31536000초입니다.');w.meta.tactical.clock+=seconds;require('./summon-system.js').elapse(w,seconds/60,changes);const now=w.meta.tactical.clock;if(w.combat)w.combat.time=now;if(Z.active(w)){Z.advance(w,seconds,changes,options);return now;}for(const a of Object.values(w.actors)){if(!R.alive(a))continue;for(const injury of a.body.wounds){if(injury.healed||injury.stable||!injury.bleeding)continue;const elapsed=now-injury.at,limit=(injury.severity>=3?120:600)*(1+Math.max(0,R.statBonus(a,'CON'))*.1);if(elapsed>=limit*3){a.body.status='dead';changes.push({label:a.name,value:'치료하지 않은 지속 출혈로 사망'});break;}if(elapsed>=limit&&a.body.status==='conscious'){a.body.status='unconscious';changes.push({label:a.name,value:'지속 출혈로 의식 상실'});}}}return now;}
+function stress(w,a,amount,changes,rng){if(!R.capable(a)||amount<=0)return;const before=a.mental.stress;a.mental.stress=Math.min(100,before+amount);if(before<50&&a.mental.stress>=50||amount>=15||a.mental.stress>=80){const die=roll(rng),threshold=Math.max(5,Math.min(95,a.mental.stress-a.discipline*.4-R.statBonus(a,'WIS',w)));if(die<=threshold){a.mental.panicUntil=Math.max(a.mental.panicUntil,w.meta.tactical.clock+6);changes.push({label:a.name+' · 정신 체크',value:die+' VS '+threshold+' · 동요/일시 패닉'});if(a.mental.stress>=95&&a.kind!=='player'&&die<=threshold/2){a.surrendered=true;changes.push({label:a.name,value:'전투 의지 상실 · 항복'});}}else changes.push({label:a.name+' · 정신 체크',value:die+' VS '+threshold+' · 버팀'});}}
+function advance(w,seconds,changes=[],options={}){assert(Number.isFinite(seconds)&&seconds>=0&&seconds<=31536000,'TACTICAL_TIME','경과 시간은 0~31536000초입니다.');w.meta.tactical.clock+=seconds;require('./summon-system.js').elapse(w,seconds/60,changes);const now=w.meta.tactical.clock;if(w.combat)w.combat.time=now;if(Z.active(w)){Z.advance(w,seconds,changes,options);return now;}for(const a of Object.values(w.actors)){if(!R.alive(a))continue;for(const injury of a.body.wounds){if(injury.healed||injury.stable||!injury.bleeding)continue;const elapsed=now-injury.at,limit=(injury.severity>=3?120:600)*(1+Math.max(0,R.statBonus(a,'CON',w))*.1);if(elapsed>=limit*3){a.body.status='dead';changes.push({label:a.name,value:'치료하지 않은 지속 출혈로 사망'});break;}if(elapsed>=limit&&a.body.status==='conscious'){a.body.status='unconscious';changes.push({label:a.name,value:'지속 출혈로 의식 상실'});}}}return now;}
 function rayRect(from,to,b){let lo=0,hi=1;for(const k of ['x','y']){const d=to[k]-from[k],min=b[k],max=min+(k==='x'?b.width:b.height);if(Math.abs(d)<1e-9){if(from[k]<min||from[k]>max)return false;}else {let x=(min-from[k])/d,y=(max-from[k])/d;if(x>y)[x,y]=[y,x];lo=Math.max(lo,x);hi=Math.min(hi,y);if(lo>hi)return false;}}return hi>1e-5&&lo<1-1e-5;}
 function cover(w,a,t){const c=w.combat,from=c.positions[a.id],to=c.positions[t.id],blocks=c.obstacles.filter(b=>rayRect(from,to,b));if(!blocks.length)return {penalty:0,blocked:false};const worst=Math.max(...blocks.map(b=>b.cover));return {penalty:worst>=3?100:worst===2?30:15,blocked:worst>=3,obstacles:blocks.map(b=>b.id)};}
 function protection(w,a,part,attacker,ballistic){let best=0,item=null;for(const id of Object.values(a.equipment).filter(Boolean)){const it=w.inventory[id];if(!it?.armor||it.durability<=0||!it.armor.coverage.includes(part)||ballistic&&!it.armor.ballistic)continue;if(it.type==='shield'){if(!R.capable(a)||a.surrendered||R.handCount(a)<it.armor.hands)continue;const c=w.combat,from=angle(c.positions[a.id],c.positions[attacker.id]);if(!arc(c.facing[a.id]||0,from,it.armor.arc))continue;}const value=it.armor.protection*(require('./optional-features.js').enabled(w,'enhance')?1+require('./optional-feature-combat.js').itemData(w,it).enhancement*.05:1);if(value>best){best=value;item=it;}}return {value:best,item};}
@@ -30293,13 +30488,13 @@ function weaponFor(w,a,key){const ids=[a.equipment.primary,a.equipment.secondary
 function canWield(w,a,it){const shield=w.inventory[a.equipment.shield],hands=R.handCount(a),need=it.weapon.hands+(shield?.durability>0?shield.armor.hands:0);return hands>=need;}
 function operate(w,a,it,changes){const cfg=it.weapon;assert(cfg.cycleRemaining>0,'WEAPON_READY','발사 후 준비가 이미 끝났습니다.');cfg.cycleRemaining--;changes.push({label:it.name,value:cfg.cycleRemaining?'탄피 배출 · 다음 탄 준비 '+cfg.cycleRemaining+'행동 남음':'다음 발사 준비 완료'});return cfg.seconds;}
 function reload(w,a,it,changes,args={}){if(Z.active(w))return Z.reload(w,a,it,changes,args);const cfg=it.weapon;assert(cfg.capacity>0,'NO_MAGAZINE','장전하는 무기가 아닙니다.');assert(cfg.loaded<cfg.capacity,'MAGAZINE_FULL','이미 가득 장전되어 있습니다.');const stocks=R.carried(w,a).filter(i=>i.type==='ammo'&&i.ammoType===cfg.ammoType);assert(stocks.length,'NO_AMMO','호환되는 예비 탄약이 없습니다: '+cfg.ammoType);cfg.reloadRemaining||=Math.max(cfg.reloadActions,cfg.cycleRemaining);cfg.reloadRemaining--;cfg.cycleRemaining=Math.max(0,cfg.cycleRemaining-1);if(cfg.reloadRemaining===0){let need=cfg.capacity-cfg.loaded,count=0;for(const ammo of stocks){const n=Math.min(need,ammo.quantity);ammo.quantity-=n;need-=n;count+=n;if(ammo.quantity===0)delete w.inventory[ammo.id];if(!need)break;}cfg.loaded+=count;cfg.cycleRemaining=0;changes.push({label:it.name,value:'장전 완료 '+cfg.loaded+'/'+cfg.capacity+' · 탄약 '+count+'개 소모'});}else changes.push({label:it.name,value:'장전 중 · '+cfg.reloadRemaining+'행동 남음'});return cfg.seconds;}
-function attack(w,a,t,it,args,changes,rng,skill){assert(R.alive(t),'TARGET_DEAD','이미 사망한 대상입니다.');assert(it.durability>0,'BROKEN_WEAPON','무기 내구도가 0입니다.');assert(canWield(w,a,it),'HANDS_UNAVAILABLE','부상이나 방패 점유 때문에 필요한 손을 확보할 수 없습니다.');let cfg=R.effective(w,it);const summonBonuses=require('./summon-system.js').modifiers(w,a);cfg.accuracy+=(skill?.accuracy||0)+summonBonuses.filter(r=>r.type==='accuracy').reduce((n,r)=>n+r.value,0);cfg.power+=(skill?.power||0)+summonBonuses.filter(r=>r.type==='power').reduce((n,r)=>n+r.value,0);cfg.maxRange+=skill?.rangeBonus||0;
+function attack(w,a,t,it,args,changes,rng,skill){assert(R.alive(t),'TARGET_DEAD','이미 사망한 대상입니다.');assert(it.durability>0,'BROKEN_WEAPON','무기 내구도가 0입니다.');assert(canWield(w,a,it),'HANDS_UNAVAILABLE','부상이나 방패 점유 때문에 필요한 손을 확보할 수 없습니다.');let cfg=R.effective(w,it);const summonBonuses=[...require('./summon-system.js').modifiers(w,a),...require('./actor-links.js').modifiers(w,a)].filter(r=>!r.target||r.target==='*'||r.target===skill?.id);cfg.accuracy+=(skill?.accuracy||0)+summonBonuses.filter(r=>r.type==='accuracy').reduce((n,r)=>n+r.value,0);cfg.power+=(skill?.power||0)+summonBonuses.filter(r=>r.type==='power').reduce((n,r)=>n+r.value,0);cfg.maxRange+=skill?.rangeBonus||0;
   const metres=distance(w.combat,a,t),protection=cover(w,a,t);assert(metres<=cfg.maxRange,'OUT_OF_RANGE','최대 사거리 '+cfg.maxRange+'m, 현재 '+Math.round(metres*10)/10+'m입니다.');assert(!protection.blocked,'LINE_OF_SIGHT','완전 엄폐로 직접 공격할 수 없습니다. 위치나 행동을 바꾸세요.');assert(!cfg.cycleRemaining&&!cfg.reloadRemaining,'WEAPON_NOT_READY','이 무기의 남은 준비·장전을 먼저 완료하세요.');
   const mode=args.fireMode||'single',shots=cfg.modes[mode];assert(shots,'FIRE_MODE','이 무기에 없는 사격 방식입니다.');assert(!cfg.capacity||cfg.loaded>0,'NO_AMMO','탄창이 비었습니다. 장전 행동이 필요합니다.');const count=cfg.capacity?Math.min(shots,cfg.loaded):1;if(cfg.capacity){if(!Z.active(w))it.weapon.loaded-=count;it.weapon.cycleRemaining=cfg.cycleActions;if(!Z.active(w))changes.push({label:it.name+' 탄약',value:'−'+count+' · '+it.weapon.loaded+'/'+cfg.capacity});}
   w.combat.facing[a.id]=angle(w.combat.positions[a.id],w.combat.positions[t.id]);
   const aim=args.bodyPart||null;assert(!aim||R.PARTS[aim],'BODY_PART','조준할 신체 부위를 확인하세요.');const rangePenalty=cfg.ranges.find(b=>metres<=b.metres)?.penalty??cfg.ranges.at(-1)?.penalty??0,injury=Math.max(R.woundLevel(a,'left_arm'),R.woundLevel(a,'right_arm'))*6,prep=w.combat.aim[a.id],aimBonus=prep?.targetId===t.id?prep.bonus:0;
   const prof=Math.min(35,proficient(a,cfg.family)*.35),familiarity=Math.min(5,(a.familiarity[it.id]||0)/20),defended=Number(w.combat.defense[t.id])||0;
-  const base=35+rangePenalty+protection.penalty+(aim?R.AIM[aim]:0)+(metres<5&&cfg.capacity?cfg.closePenalty:0)+injury+a.mental.stress*.2+defended-prof-familiarity-R.statBonus(a,'DEX')-cfg.accuracy-aimBonus+(Z.active(w)?Z.difficultyPenalty(w,a,t):0);
+  const base=35+rangePenalty+protection.penalty+(aim?R.AIM[aim]:0)+(metres<5&&cfg.capacity?cfg.closePenalty:0)+injury+a.mental.stress*.2+defended-prof-familiarity-R.statBonus(a,'DEX',w)-cfg.accuracy-aimBonus+(Z.active(w)?Z.difficultyPenalty(w,a,t):0);
   const hits=[],rolls=[];for(let n=0;n<count;n++){const ammo=Z.active(w)&&cfg.capacity?Z.fireRound(w,it):null,shotCfg=ammo?{...cfg,damage:Math.max(.1,ammo.damage*(require('./optional-features.js').enabled(w,'enhance')?1+require('./optional-feature-combat.js').itemData(w,it).enhancement*.05:1)+((skill?.power||0)+summonBonuses.filter(r=>r.type==='power').reduce((n,r)=>n+r.value,0))*8),penetration:ammo.penetration}:cfg;const threshold=Math.max(5,Math.min(95,base+n*cfg.recoil)),die=roll(rng),success=die>threshold;rolls.push({roll:die,target:Math.round(threshold*10)/10,outcome:success?die>=96?'perfect':'success':die<=5?'fatal':'failure'});if(!success)continue;const part=aim||(Z.active(w)&&roll(rng)<=20?'stomach':bodyPart(rng)),cluster={};for(let p=0;p<cfg.pellets;p++){if(p>0&&roll(rng)<=Math.min(95,cfg.spread*metres/Math.max(1,cfg.maxRange)))continue;const location=p===0||roll(rng)>cfg.spread?part:bodyPart(rng);cluster[location]=(cluster[location]||0)+1;}for(const[location,pellets]of Object.entries(cluster))if(R.alive(t)){impact(w,a,t,shotCfg,location,die>=96,pellets,changes,rng);hits.push({part:location,pellets});}}
   if(Z.active(w)&&cfg.capacity)changes.push({label:it.name+' 탄약',value:'−'+count+' · '+Z.ammoText(it)});
   delete w.combat.aim[a.id];if(require('./summon-system.js').allowsGrowth(w,a))a.familiarity[it.id]=(a.familiarity[it.id]||0)+1;train(a,cfg.family,changes,1,w);if(it.id!=='unarmed')it.durability=Math.max(0,it.durability-count*.1);stress(w,t,Math.min(35,cfg.suppression*Math.sqrt(count)),changes,rng);
@@ -30309,7 +30504,7 @@ function attack(w,a,t,it,args,changes,rng,skill){assert(R.alive(t),'TARGET_DEAD'
 function init(w,ids,args={},rng=globalThis.crypto){require('./optional-feature-actions.js').maintainSummons(w);ids=[...new Set([...ids,...Object.values(w.actors).filter(a=>a.kind==='summon'&&a.active!==false&&ids.includes(a.ownerId)&&R.capable(a)).map(a=>a.id)])];if(w.combat){for(const id of ids)if(!w.combat.order.some(r=>r.actorId===id)){const c=w.combat;c.order.push({actorId:id});c.teams[id]=(w.actors[w.actors[id].ownerId]||w.actors[id]).kind==='enemy'?1:0;c.positions[id]={x:c.teams[id]?(args.distanceMetres??30):0,y:c.order.length*2};w.actors[id].escaped=false;c.durations[id]=R.duration(w,w.actors[id],3);c.ready[id]=c.time+c.durations[id];c.facing[id]=c.teams[id]?180:0;c.ownTurns[id]=0;}return;}
   const options=require('./combat-options.js').get(w),valid=[...new Set(ids)].filter(id=>R.capable(w.actors[id])||args.action==='attack'&&(args.targetIds||[]).includes(id)&&R.alive(w.actors[id])),teams=Object.fromEntries(valid.map(id=>[id,(w.actors[w.actors[id].ownerId]||w.actors[id]).kind==='enemy'?1:0]));assert(valid.some(id=>teams[id]===0)&&valid.some(id=>teams[id]===1),'COMBAT_PARTICIPANTS','교전할 서로 다른 편의 참가자가 필요합니다.');const time=w.meta.tactical.clock;
   const c=w.combat={id:uid('tactical.combat'),turnMode:options.mode,turnTable:options.mode!=='free',order:valid.map(actorId=>({actorId})),index:0,round:1,time,startedAt:time,teams,positions:{},facing:{},ready:{},durations:{},ownTurns:{},aim:{},defense:{},obstacles:clone(args.obstacles||[]),threats:{}};
-  valid.forEach((id,i)=>{const a=w.actors[id];a.escaped=false;c.positions[id]={x:teams[id]?(args.distanceMetres??30):0,y:Math.floor(i/2)*2};const supplied=(args.positions||[]).find(p=>p.actorId===id||p.actorId===a.name);if(supplied)c.positions[id]={x:supplied.x,y:supplied.y};c.facing[id]=teams[id]?180:0;c.ready[id]=time+R.duration(w,a,3);c.durations[id]=c.ready[id]-time;c.ownTurns[id]=0;});if(c.turnMode==='round'){for(const r of c.order){r.roll=roll(rng);r.initiative=r.roll+R.statBonus(w.actors[r.actorId],'DEX')-R.burden(w,w.actors[r.actorId])*5;}c.order.sort((a,b)=>b.initiative-a.initiative);if(args.opening==='surprise'){const i=c.order.findIndex(r=>r.actorId===args.actor);if(i>0)c.order.unshift(...c.order.splice(i,1));}}if(args.opening==='surprise')c.ready[args.actor]=time;
+  valid.forEach((id,i)=>{const a=w.actors[id];a.escaped=false;c.positions[id]={x:teams[id]?(args.distanceMetres??30):0,y:Math.floor(i/2)*2};const supplied=(args.positions||[]).find(p=>p.actorId===id||p.actorId===a.name);if(supplied)c.positions[id]={x:supplied.x,y:supplied.y};c.facing[id]=teams[id]?180:0;c.ready[id]=time+R.duration(w,a,3);c.durations[id]=c.ready[id]-time;c.ownTurns[id]=0;});if(c.turnMode==='round'){for(const r of c.order){r.roll=roll(rng);r.initiative=r.roll+R.statBonus(w.actors[r.actorId],'DEX',w)-R.burden(w,w.actors[r.actorId])*5;}c.order.sort((a,b)=>b.initiative-a.initiative);if(args.opening==='surprise'){const i=c.order.findIndex(r=>r.actorId===args.actor);if(i>0)c.order.unshift(...c.order.splice(i,1));}}if(args.opening==='surprise')c.ready[args.actor]=time;
 }
 function eligible(w,id){return R.capable(w.actors[id])&&!w.actors[id].surrendered&&!w.actors[id].escaped;}
 function finished(w,changes=[]){const c=w.combat;if(!c)return true;const sides=new Set(c.order.filter(r=>eligible(w,r.actorId)).map(r=>c.teams[r.actorId]));if(sides.size>1)return false;for(const r of c.order){const a=w.actors[r.actorId];a.cooldowns={};if(a.kind==='enemy'&&!R.alive(a)){a.active=false;a.retired=true;}}w.meta.tactical.lastBattle={id:c.id,endedAt:w.meta.tactical.clock,participants:c.order.map(r=>r.actorId),sides:[...sides]};w.combat=null;require('./summon-system.js').battleEnded(w,changes);changes.push({label:'전투',value:'종료'});return true;}
@@ -30324,9 +30519,9 @@ function one(w,a,args,rng){assert(R.capable(a),'ACTOR_INCAPACITATED','부상·�
   else if(action==='aim'){assert(w.combat&&t,'TARGET_REQUIRED','조준 대상을 지정하세요.');const prev=w.combat.aim[a.id];w.combat.aim[a.id]={targetId:t.id,bonus:Math.min(40,(prev?.targetId===t.id?prev.bonus:0)+10+(skill?.accuracy||0))};w.combat.facing[a.id]=angle(w.combat.positions[a.id],w.combat.positions[t.id]);changes.push({label:'조준',value:t.name+' · 명중 +'+w.combat.aim[a.id].bonus});}
   else if(action==='defend'){assert(w.combat,'NO_COMBAT','전투 중 방어 행동입니다.');w.combat.defense[a.id]=Math.max(0,15+(skill?.accuracy||0));if(t)w.combat.facing[a.id]=angle(w.combat.positions[a.id],w.combat.positions[t.id]);if(Number.isFinite(args.facing))w.combat.facing[a.id]=args.facing;changes.push({label:a.name,value:'다음 행동까지 방어 · 명중 난이도 +'+w.combat.defense[a.id]});}
   else if(action==='treat'){const target=t||a,it=R.find(w.inventory,args.item);assert(it?.ownerId===a.id&&it.quantity>0&&it.type==='medical'&&(!Z.active(w)||Z.carried(it)),'MEDICAL_ITEM','보유한 의료 물품이 필요합니다.');if(w.combat)assert(distance(w.combat,a,target)<=2,'TREAT_RANGE','치료 대상과 2m 이내로 접근하세요.');if(Z.active(w)){seconds=Z.treat(w,a,target,it,args,changes);train(a,'medicine',changes,1,w);}else{const wounds=target.body.wounds.filter(x=>!x.healed&&(!args.woundId||x.id===args.woundId));assert(wounds.length,'WOUND_MISSING','치료할 부상이 없습니다.');assert(R.alive(target),'TARGET_DEAD','치료로 사망한 인물을 되살리지 않습니다.');const chosen=wounds.sort((x,y)=>y.severity-x.severity)[0];if(it.treatment==='bandage')chosen.bleeding=false;else if(it.treatment==='stabilize'){chosen.stable=true;chosen.bleeding=false;}else{assert(!w.combat,'REHAB_COMBAT','재활은 전투 밖에서 합니다.');assert(!chosen.permanent&&chosen.stable,'REHAB_REQUIRED','안정화한 비영구 부상만 재활할 수 있습니다.');chosen.severity=Math.max(1,chosen.severity-1);if(chosen.severity===1)chosen.healed=true;}it.quantity--;if(!it.quantity)delete w.inventory[it.id];if(target.body.status==='unconscious'&&target.body.wounds.every(x=>x.healed||x.stable)&&!target.body.wounds.some(x=>x.part==='head'&&x.severity>=3&&!x.healed))target.body.status='conscious';seconds=it.treatment==='rehabilitate'?3600:6;changes.push({label:target.name+' · '+R.PARTS[chosen.part],value:it.name+' · '+it.treatment});train(a,'medicine',changes,1,w);}}
-  else if(action==='command'){const target=t||a,die=roll(rng),threshold=Math.max(5,Math.min(95,40+target.mental.stress*.25-a.leadership*.3-R.statBonus(a,'CHA')-(skill?.accuracy||0)));if(die>threshold){target.mental.stress=Math.max(0,target.mental.stress-20);target.mental.panicUntil=w.meta.tactical.clock;}extra={roll:die,target:threshold,outcome:die>threshold?'success':'failure'};changes.push({label:target.name+' 지휘·격려',value:die>threshold?'동요 완화':'효과 없음'});train(a,'leadership',changes);}
+  else if(action==='command'){const target=t||a,die=roll(rng),threshold=Math.max(5,Math.min(95,40+target.mental.stress*.25-a.leadership*.3-R.statBonus(a,'CHA',w)-(skill?.accuracy||0)));if(die>threshold){target.mental.stress=Math.max(0,target.mental.stress-20);target.mental.panicUntil=w.meta.tactical.clock;}extra={roll:die,target:threshold,outcome:die>threshold?'success':'failure'};changes.push({label:target.name+' 지휘·격려',value:die>threshold?'동요 완화':'효과 없음'});train(a,'leadership',changes);}
   else if(action==='surrender'){a.surrendered=true;changes.push({label:a.name,value:'항복'});}
-  else if(action==='escape'){assert(w.combat,'NO_COMBAT','교전 중 이탈 행동입니다.');const enemies=w.combat.order.map(r=>w.actors[r.actorId]).filter(t=>eligible(w,t.id)&&w.combat.teams[t.id]!==w.combat.teams[a.id]),die=roll(rng),threshold=Math.max(10,Math.min(90,50-R.statBonus(a,'DEX')+R.burden(w,a)*10));if(die>threshold&&enemies.every(t=>distance(w.combat,a,t)>3)){a.escaped=true;changes.push({label:a.name,value:'교전 이탈'});}else changes.push({label:a.name,value:'이탈 실패'});extra={roll:die,target:threshold,outcome:a.escaped?'success':'failure'};}
+  else if(action==='escape'){assert(w.combat,'NO_COMBAT','교전 중 이탈 행동입니다.');const enemies=w.combat.order.map(r=>w.actors[r.actorId]).filter(t=>eligible(w,t.id)&&w.combat.teams[t.id]!==w.combat.teams[a.id]),die=roll(rng),threshold=Math.max(10,Math.min(90,50-R.statBonus(a,'DEX',w)+R.burden(w,a)*10));if(die>threshold&&enemies.every(t=>distance(w.combat,a,t)>3)){a.escaped=true;changes.push({label:a.name,value:'교전 이탈'});}else changes.push({label:a.name,value:'이탈 실패'});extra={roll:die,target:threshold,outcome:a.escaped?'success':'failure'};}
   else {assert(action==='wait','TACTICAL_ACTION','지원하는 택티컬 행동을 선택하세요.');seconds=R.num(args.seconds,3,.25,3600);a.mental.stress=Math.max(0,a.mental.stress-(w.combat?1:seconds/30));changes.push({label:'대기',value:seconds+'초'});}
   if(skill&&action!=='attack')seconds=Math.max(.25,seconds+skill.seconds);
   if(skill){a.cooldowns[skill.id]=w.meta.tactical.clock+skill.cooldown;a.mental.stress=Math.min(100,a.mental.stress+skill.stressCost);}if(skill)require('./optional-feature-actions.js').skillSummons(w,a,skill,changes);const linked=[];if(skill&&!args._optionalLinked&&action==='attack'&&extra.hits?.length){for(const link of require('./optional-feature-model.js').followUps(w,a,skill)){if(!w.combat||!R.capable(a)||!R.alive(t))break;const nextSkill=w.definitions.skills[link.skill],before=clone(w);try{assert(nextSkill?.action==='attack','FEATURE_COMBO','연계할 공격 기술을 지정하세요.');const follow=one(w,a,{...args,skill:nextSkill.id,_optionalLinked:true},rng);linked.push(follow);changes.push(...follow.result.changes);seconds+=follow.result.elapsedSeconds;if(!follow.result.hits?.length)break;}catch(error){Object.assign(w,before);a=w.actors[a.id];changes.push({label:'연계 종료',value:error.message});break;}}}if(!args._optionalLinked)spend(w,a,seconds,changes);return result(a,action,changes,{...extra,...(linked.length?{linkedActions:linked.map(x=>({skill:x.result.action,roll:x.roll,target:x.result.target,hits:x.result.hits}))}:{}),targetId:t?.id||null,elapsedSeconds:seconds,requestedActionApplied:true,combatFlow:{engaged},combat:snapshot(w)});
@@ -30401,19 +30596,19 @@ function karma(w,a,args){require('./zirkott-options.js').guard(w,'rpg_play',{op:
 }
 function exploration(w,a,args,plan){const t=w.meta.tactical,action=args.action;assert(!w.combat,'COMBAT_ACTIVE','교전 중 탐험 장소를 이동할 수 없습니다.');if(action==='start'){const name=R.text(args.name);assert(name,'PLACE_NAME','입장 장소 이름이 필요합니다.');if(t.activePlace)assert(t.places[t.activePlace].name===name,'EXPLORATION_ACTIVE','현재 탐험을 끝낸 뒤 다른 장소로 이동하세요.');if(plan.place&&!t.places[plan.place.id])t.places[plan.place.id]=clone(plan.place);const place=Object.values(t.places).find(p=>p.name===name);assert(place,'PLACE_MISSING','준비된 장소가 없습니다.');t.activePlace=place.id;t.location=place.nodes[place.current].name;}
   const p=t.places[t.activePlace];assert(p,'NO_EXPLORATION','탐험 start로 실제 장소에 입장하세요.');let changes=[];if(action==='end'){t.activePlace=null;return C.result(a,'탐험 종료',[{label:p.name,value:'퇴장'}]);}const node=p.nodes[p.current];if(action==='move'){const dest=R.find(p.nodes,args.destination);assert(dest&&node.exits.includes(dest.id),'INVALID_ROUTE','현재 연결된 출구를 지정하세요.');assert(!node.blocked?.includes(dest.id)||node.solved,'PASSAGE_BLOCKED','장애물을 먼저 해결하세요.');p.current=dest.id;dest.visited=true;t.location=dest.name;C.advance(w,60,changes);}
-  else if(action==='investigate'){const die=C.roll(globalThis.crypto),threshold=Math.max(5,40-R.statBonus(a,'WIS')-C.proficient(a,'observation')*.3);if(die>threshold){node.revealed=true;changes.push({label:'단서',value:node.clue||'추가 단서 없음'});}C.train(a,'observation',changes,1,w);return C.result(a,'탐험 조사',changes,{roll:die,outcome:die>threshold?'success':'failure',target:threshold,exploration:visible(w)});}
-  else if(action==='interact'){assert(args.intent,'INTENT_REQUIRED','장치나 물품에 할 실제 행동이 필요합니다.');assert(plan.interaction?.possible!==false,'APPROACH_INVALID',plan.interaction?.reason||'가능한 접근이 아닙니다.');if(node.mechanism&&!node.solved){const die=C.roll(globalThis.crypto),threshold=Math.max(5,Math.min(95,node.difficulty-R.statBonus(a,plan.interaction?.stat||'INT')-C.proficient(a,'engineering')*.3));node.solved=die>threshold;changes.push({label:node.name,value:node.solved?'장치 해결':'시도 실패'});return C.result(a,'장치 조작',changes,{roll:die,outcome:node.solved?'success':'failure',target:threshold,exploration:visible(w)});}if(!node.claimed){installItems(w,a,node.items||[]);node.claimed=true;changes.push({label:'물품',value:'확인한 물품 획득'});}}
+  else if(action==='investigate'){const die=C.roll(globalThis.crypto),threshold=Math.max(5,40-R.statBonus(a,'WIS',w)-C.proficient(a,'observation')*.3);if(die>threshold){node.revealed=true;changes.push({label:'단서',value:node.clue||'추가 단서 없음'});}C.train(a,'observation',changes,1,w);return C.result(a,'탐험 조사',changes,{roll:die,outcome:die>threshold?'success':'failure',target:threshold,exploration:visible(w)});}
+  else if(action==='interact'){assert(args.intent,'INTENT_REQUIRED','장치나 물품에 할 실제 행동이 필요합니다.');assert(plan.interaction?.possible!==false,'APPROACH_INVALID',plan.interaction?.reason||'가능한 접근이 아닙니다.');if(node.mechanism&&!node.solved){const die=C.roll(globalThis.crypto),threshold=Math.max(5,Math.min(95,node.difficulty-R.statBonus(a,plan.interaction?.stat||'INT',w)-C.proficient(a,'engineering')*.3));node.solved=die>threshold;changes.push({label:node.name,value:node.solved?'장치 해결':'시도 실패'});return C.result(a,'장치 조작',changes,{roll:die,outcome:node.solved?'success':'failure',target:threshold,exploration:visible(w)});}if(!node.claimed){installItems(w,a,node.items||[]);node.claimed=true;changes.push({label:'물품',value:'확인한 물품 획득'});}}
   return C.result(a,'탐험 '+action,changes,{exploration:visible(w)});
 }
 function visible(w){if(!require('./play-options.js').enabled(w))return null;const t=w.meta.tactical,p=t.places[t.activePlace];if(!p)return null;const node=p.nodes[p.current];return {id:p.id,name:p.name,current:node.id,nodeName:node.name,description:node.description,exits:node.exits.map(id=>({id,name:p.nodes[id].name,blocked:!!node.blocked?.includes(id)&&!node.solved})),clue:node.revealed?node.clue:null,mechanism:node.mechanism?{description:node.mechanism,solved:node.solved}:null,enemies:node.enemies||[],visited:Object.values(p.nodes).filter(n=>n.visited).length};}
 function action(w,plan,tool,args,ctx={},rng=globalThis.crypto){require('./tactical-authoring.js').normalizeSkills(w);assert(ctx.admin||ctx.narrator,'AUTHORING_REQUIRED','장면 진행 권한이 필요합니다.');for(const input of plan.actors||[])R.install(w,input);for(const s of plan.skills||[]){assert(w.actors[s.ownerId],'SKILL_OWNER','기술 소유자가 없습니다.');w.definitions.skills[s.id]=clone(s);if(!w.actors[s.ownerId].skills.includes(s.id))w.actors[s.ownerId].skills.push(s.id);}const a=getActor(w,plan.actorId||args.actor||args.actorId);if(tool==='rpg_registry')return C.result(a,'인물 등록',[],{actors:(plan.participantIds||[]).map(id=>sheet(w,w.actors[id]))});
   if(tool==='rpg_play'&&args.op==='act'){if(a.kind==='player'&&args.action!=='continue')assert(ctx.admin||ctx.playerActions||ctx.actorIds?.includes(a.id),'PLAYER_SELECTION_REQUIRED','이 사용자 행동은 아직 위임되지 않았습니다.');const player=require('./actor-presence.js').player(w),rel=require('./zirkott-options.js').karma(w)&&player&&w.meta.tactical.relations[a.id+'>'+player.id];assert(!rel||!['left','refusing','hostile'].includes(rel.status)||a.kind==='enemy','COMPANION_REFUSAL','동료가 현재 명령을 거부하거나 파티에서 이탈했습니다.');const wasSurrendered=plan.targetIds.filter(id=>w.actors[id]?.surrendered&&R.alive(w.actors[id])),witnesses=(w.combat?.order||[]).map(r=>r.actorId).filter(id=>R.capable(w.actors[id]));const result=C.run(w,plan,args,ctx,rng);for(const id of wasSurrendered)if(require('./zirkott-options.js').karma(w)&&!R.alive(w.actors[id])){const ethical=karma(w,a,{eventId:args.eventId||args.actionId||uid('tac.ethical'),eventType:'surrender_kill',reason:a.name+'의 공격으로 항복한 '+w.actors[id].name+' 사망',witnesses});if(result.result.steps)result.result.steps.push({result:ethical});else result.result.changes.push(...ethical.result.changes);}return result;}
-  if(tool==='rpg_play'&&args.op==='check'){const stat=args.stat||'WIS',skill=args.proficiency||'observation',die=C.roll(rng),threshold=Math.max(5,Math.min(95,(args.difficulty??40)-R.statBonus(a,stat)-C.proficient(a,skill)*.4+a.mental.stress*.1));const changes=[];C.train(a,skill,changes,1,w);return C.result(a,args.intent||'일반 판정',changes,{roll:die,target:threshold,outcome:die>threshold?die>=96?'perfect':'success':die<=5?'fatal':'failure'});}
+  if(tool==='rpg_play'&&args.op==='check'){const stat=args.stat||'WIS',skill=args.proficiency||'observation',die=C.roll(rng),threshold=Math.max(5,Math.min(95,(args.difficulty??40)-R.statBonus(a,stat,w)-C.proficient(a,skill)*.4+a.mental.stress*.1));const changes=[];C.train(a,skill,changes,1,w);return C.result(a,args.intent||'일반 판정',changes,{roll:die,target:threshold,outcome:die>threshold?die>=96?'perfect':'success':die<=5?'fatal':'failure'});}
   if(tool==='rpg_play'&&args.op==='explore')return exploration(w,a,args,plan);
   if(tool==='rpg_play'&&args.op==='record'){if(Object.hasOwn(KARMA,args.eventType))return karma(w,a,args);const key='tactical.record.'+args.eventId;if(w.meta.eventClaims[key])return C.result(a,'기록 조회',[],{alreadyRecorded:true});const changes=[];if(args.location)w.meta.tactical.location=args.location;if(args.seconds)C.advance(w,args.seconds,changes);if(args.eventType==='rest'){assert(!w.combat,'COMBAT_ACTIVE','휴식은 교전 밖에서 합니다.');a.mental.stress=Math.max(0,a.mental.stress-(args.seconds||0)/30);}if(args.eventType==='training'){assert(!w.combat,'COMBAT_ACTIVE','훈련은 교전 밖에서 합니다.');assert(args.proficiency&&args.seconds>=60,'TRAINING_INPUT','훈련 분야와 60초 이상의 시간이 필요합니다.');C.train(a,args.proficiency,changes,Math.min(20,Math.floor(args.seconds/300)+1),w);}w.meta.eventClaims[key]=true;return C.result(a,args.eventType,changes,{location:w.meta.tactical.location,time:w.meta.tactical.clock});}
   if(tool==='rpg_inventory')return inventory(w,a,args,plan);if(tool==='rpg_economy')return trade(w,a,args,plan);assert(false,'TACTICAL_OPERATION','택티컬에서 지원하는 동작이 아닙니다.');
 }
-function sheet(w,a){return {id:a.id,name:a.name,kind:a.kind,stats:clone(a.raw),body:clone(a.body),mental:clone(a.mental),karma:a.karma,discipline:a.discipline,leadership:a.leadership,proficiencies:clone(a.proficiencies),credit:w.economy.wallets[a.id].credit,inventory:R.carried(w,a).map(it=>({id:it.id,name:it.name,type:it.type,grade:it.grade,quantity:it.quantity,weight:it.weight,price:it.price,equipped:it.equipped,attachedTo:it.attachedTo,...(it.ammoType?{ammoType:it.ammoType}:{}),...(it.treatment?{treatment:it.treatment}:{}),...(it.armor?{armor:clone(it.armor)}:{}),...(it.part?{part:clone(it.part)}:{})})),load:R.load(w,a),movementMetresPerSecond:R.pace(w,a),hands:R.handCount(a),equipment:clone(a.equipment),skills:a.skills.map(id=>clone(w.definitions.skills[id])),weapons:['primary','secondary',...(w.meta.rulebook.id==='zirkott'?['sidearm']:[])].map(slot=>w.inventory[a.equipment[slot]]).filter(Boolean).map(it=>({id:it.id,name:it.name,grade:it.grade,...R.effective(w,it)}))};}
+function sheet(w,a){return {id:a.id,name:a.name,kind:a.kind,stats:Object.fromEntries(Object.keys(a.raw).map(k=>[k,require('./actor-links.js').stat(w,a,k)])),body:clone(a.body),mental:clone(a.mental),karma:a.karma,discipline:a.discipline,leadership:a.leadership,proficiencies:clone(a.proficiencies),credit:w.economy.wallets[a.id].credit,inventory:R.carried(w,a).map(it=>({id:it.id,name:it.name,type:it.type,grade:it.grade,quantity:it.quantity,weight:it.weight,price:it.price,equipped:it.equipped,attachedTo:it.attachedTo,...(it.ammoType?{ammoType:it.ammoType}:{}),...(it.treatment?{treatment:it.treatment}:{}),...(it.armor?{armor:clone(it.armor)}:{}),...(it.part?{part:clone(it.part)}:{})})),load:R.load(w,a),movementMetresPerSecond:R.pace(w,a),hands:R.handCount(a),equipment:clone(a.equipment),skills:a.skills.map(id=>clone(w.definitions.skills[id])),weapons:['primary','secondary',...(w.meta.rulebook.id==='zirkott'?['sidearm']:[])].map(slot=>w.inventory[a.equipment[slot]]).filter(Boolean).map(it=>({id:it.id,name:it.name,grade:it.grade,...R.effective(w,it)}))};}
 function summary(w){return {rulebook:'tactical',location:w.meta.tactical.location,time:w.meta.tactical.clock,combatOptions:Object.fromEntries(['mode','commander','action','fastCombat','resultsOnly','exploration'].map(k=>[k,require('./combat-options.js').get(w)[k]])),actors:require('./actor-presence.js').people(w).map(a=>sheet(w,a)),combat:C.snapshot(w),exploration:visible(w),relations:clone(w.meta.tactical.relations),instruction:'택티컬 저장 상태입니다. 부상·탄약·위치·준비 시간이 기준이며 화면 조회는 시간을 진행하지 않습니다.'};}
 function query(w,tool,args){const a=getActor(w,args.actorId||args.actor);if(args.op==='last_results')return require('./result-record.js').lastResults(w);if(tool==='rpg_inventory'||args.op==='inventory')return clone(R.carried(w,a));if(args.op==='wallet')return clone(w.economy.wallets[a.id]);if(args.op==='actor'||args.op==='growth')return sheet(w,a);return summary(w);}
 function editable(w,entity,id,actorId){if(w.meta.rulebook.id==='zirkott'&&['region','survival_settings','hideout','merchant','faction'].includes(entity))return require('./zirkott-engine.js').editable(w,entity,id,actorId);const a=w.actors[actorId];return entity==='actor'?a:entity==='wallet'?w.economy.wallets[actorId]:entity==='clock'?{clock:w.meta.tactical.clock,location:w.meta.tactical.location,...(w.meta.rulebook.id==='zirkott'?{regionId:w.meta.zirkott.regionId,atHideout:w.meta.zirkott.atHideout}:{})}:entity==='item'?w.inventory[id]:entity==='skill'?w.definitions.skills[id]:entity==='settings'?require('./combat-options.js').get(w):entity==='battlefield'?w.combat:entity==='exploration'?w.meta.tactical.places[id]:entity==='relation'?w.meta.tactical.relations[id]:entity==='proficiency'?a?.proficiencies[id]:null;}
@@ -30490,7 +30685,7 @@ function find(values,key){if(typeof key!=='string'||!key.trim())return undefined
 const active=w=>['tactical','zirkott'].includes(w?.meta?.rulebook?.id);
 const alive=a=>!!a&&a.body?.status!=='dead';
 const capable=a=>alive(a)&&a.body.status==='conscious'&&!a.retired;
-const statBonus=(a,key)=>Math.max(-10,Math.min(10,(a.raw[key]-10)*.5));
+const statBonus=(a,key,w)=>Math.max(-10,Math.min(10,(require('./actor-links.js').stat(w,a,key)-10)*.5));
 function family(value,name=''){if(FAMILIES[value])return value;const n=String(value||'')+' '+name;return /대구경|대물|heavy.?precision/i.test(n)?'heavy_precision':/저격|볼트|precision|snip/i.test(n)?'precision':/지정사수|marksman|DMR/i.test(n)?'marksman':/샷건|산탄|shotgun/i.test(n)?'shotgun':/리볼버|revolver/i.test(n)?'revolver':/권총|pistol/i.test(n)?'pistol':/기관단총|smg/i.test(n)?'smg':/경기관총|lmg/i.test(n)?'lmg':/기관총|machine.?gun/i.test(n)?'machinegun':/석궁|crossbow/i.test(n)?'crossbow':/활|bow/i.test(n)?'bow':/단검|나이프|knife/i.test(n)?'knife':/검|칼|sword/i.test(n)?'sword':/창|polearm/i.test(n)?'polearm':/곤봉|망치|blunt/i.test(n)?'blunt':'assault';}
 function weapon(input={},name=''){
   const f=family(input.family,name),p=FAMILIES[f],capacity=Math.round(num(input.capacity,p.capacity,0,1000)),r=num(input.maxRange,p.range,.1,10000);
@@ -30525,9 +30720,9 @@ function woundLevel(a,part){if(a.body.parts){const hp=a.body.parts[require('./zi
 function handCount(a){return ['left','right'].filter(side=>woundLevel(a,side+'_arm')<3&&woundLevel(a,side+'_hand')<3).length;}
 function carried(w,a){return Object.values(w.inventory).filter(it=>it.ownerId===a.id&&it.quantity>0&&(!it.zirkott||require('./zirkott-rules.js').carried(it)));}
 function load(w,a){return carried(w,a).reduce((n,it)=>n+it.weight*it.quantity+(it.zirkott?require('./zirkott-rules.js').additionalWeight(it):0),0);}
-function burden(w,a){return Math.max(0,load(w,a)/Math.max(5,a.raw.STR*2)-.5);}
+function burden(w,a){return Math.max(0,load(w,a)/Math.max(5,require('./actor-links.js').stat(w,a,'STR')*2)-.5);}
 function pace(w,a){const legs=Math.max(woundLevel(a,'left_leg'),woundLevel(a,'right_leg'));return a.movement*Math.max(.15,1-burden(w,a)*.35)*(legs>=3?.15:legs===2?.5:legs===1?.8:1);}
-function duration(w,a,seconds,weaponWeight=0){const boost=require('./summon-system.js').modifiers(w,a).filter(r=>r.type==='gaugeSpeed').reduce((n,r)=>n+r.value,0);return Math.max(.25,seconds/(1+boost/100)*(1+burden(w,a)*.4+Math.max(0,weaponWeight-a.raw.STR*.6)*.08)*(1-statBonus(a,'DEX')*.015));}
+function duration(w,a,seconds,weaponWeight=0){const boost=[...require('./summon-system.js').modifiers(w,a),...require('./actor-links.js').modifiers(w,a)].filter(r=>r.type==='gaugeSpeed').reduce((n,r)=>n+r.value,0);return Math.max(.25,seconds/Math.max(.05,1+boost/100)*(1+burden(w,a)*.4+Math.max(0,weaponWeight-require('./actor-links.js').stat(w,a,'STR')*.6)*.08)*(1-statBonus(a,'DEX',w)*.015));}
 function effective(w,it){const cfg=clone(it.weapon||weapon({family:'unarmed'}));for(const id of Object.values(it.attachments||{})){const p=w.inventory[id];if(!p||p.attachedTo!==it.id||p.durability<=0)continue;for(const[k,v]of Object.entries(p.part?.bonuses||{})){if(k==='rangePercent'){const factor=Math.max(.1,1+v/100);cfg.maxRange*=factor;cfg.ranges.forEach(r=>r.metres*=factor);}else if(['accuracy','recoil','suppression','noise','seconds'].includes(k))cfg[k]+=v;}}if(require('./optional-features.js').enabled(w,'enhance')){const level=require('./optional-feature-combat.js').itemData(w,it).enhancement;cfg.power*=1+level*.05;if(Number.isFinite(cfg.damage))cfg.damage*=1+level*.05;}cfg.seconds=Math.max(.25,cfg.seconds);cfg.recoil=Math.max(0,cfg.recoil);return cfg;}
 function validateWorld(w){safeData(w);assert(active(w)&&w.meta.tactical?.version===1&&w.actors&&w.inventory&&Array.isArray(w.ledger),'TACTICAL_STATE','택티컬 저장 구조를 확인하세요.');
   for(const[id,a]of Object.entries(w.actors)){assert(id===a.id&&KEYS.every(k=>Number.isFinite(a.raw[k])&&a.raw[k]>=1)&&['player','ally','enemy','summon'].includes(a.kind),'TACTICAL_ACTOR','인물 ID·스탯·분류를 확인하세요.');assert(['conscious','unconscious','dead'].includes(a.body.status)&&Array.isArray(a.body.wounds),'TACTICAL_BODY','신체 상태가 올바르지 않습니다.');for(const x of a.body.wounds)assert(PARTS[x.part]&&Number.isInteger(x.severity)&&x.severity>=1&&x.severity<=4&&Number.isFinite(x.at),'TACTICAL_WOUND','부상 부위·심각도(1~4)·발생 시각을 확인하세요.');for(const sid of a.skills)assert(w.definitions.skills[sid]?.ownerId===id,'TACTICAL_SKILL','기술의 소유 인물이 일치하지 않습니다.');for(const itid of Object.values(a.equipment).filter(Boolean)){const it=w.inventory[itid];assert(it?.ownerId===id&&it.equipped&&it.quantity===1&&!it.attachedTo,'TACTICAL_EQUIPMENT',a.name+'의 장착 물품 '+(it?.name||itid)+': 소유자·장착 여부·개별 수량을 확인하세요.');}assert(Number.isFinite(a.mental.stress)&&a.mental.stress>=0&&a.mental.stress<=100&&Number.isFinite(a.karma),'TACTICAL_MENTAL','스트레스·카르마 값을 확인하세요.');}
@@ -30601,7 +30796,7 @@ function battle(w){const c=C.snapshot(w);if(!c)return '';return panel('전장 ·
 function inventory(w,a,draft=false,readOnly=false,ui=null){const list=R.carried(w,a).filter(it=>!ui||require('./inventory-ui.js').matches(ui,w,it)).sort((a,b)=>Number(b.equipped)-Number(a.equipped));return panel(ui?require('./inventory-ui.js').title(ui):'장비·소지품',(!readOnly?add('item',a.id,draft,'물품 추가')+control('wallet','',a.id,draft,'소지금 편집'):'')+V.facts([[w.meta.rulebook.id==='zirkott'?'Zp':'크레딧',w.economy.wallets[a.id].credit],['휴대 무게',Math.round(R.load(w,a)*100)/100+' kg']])+list.map(it=>'<article class="card"><div class="play-card-head"><h3>'+e(it.name)+'</h3>'+(!readOnly?control('item',it.id,a.id,draft):'')+'</div><p>'+e(it.grade+' · '+TYPES[it.type])+' · '+it.quantity+'개 · '+it.weight+'kg'+(it.equipped?' · '+e((w.meta.rulebook.id==='zirkott'?require('./zirkott-rules.js').SLOTS:SLOTS)[it.slot]):'')+(it.attachedTo?' · '+e(w.inventory[it.attachedTo]?.name)+'에 부착':'')+'</p><p>'+e(it.description)+'</p>'+(it.zirkott?require('./zirkott-ui.js').itemInfo(it):'')+(it.weapon?V.facts([['계열',R.FAMILIES[it.weapon.family].name],['탄창',w.meta.rulebook.id==='zirkott'?require('./zirkott-rules.js').ammoText(it):it.weapon.loaded+'/'+it.weapon.capacity],['남은 준비',it.weapon.cycleRemaining+'행동'],['장전 중',it.weapon.reloadRemaining+'행동'],['사거리',Math.round(R.effective(w,it).maxRange*10)/10+'m'],['파츠',Object.values(it.attachments).map(id=>w.inventory[id]?.name).join(', ')||'없음']]):it.armor?V.facts([['방호',it.armor.protection],['부위',it.armor.coverage.map(k=>R.PARTS[k]).join(', ')],['방호 각도',it.armor.arc+'°']]):it.part?'<p>'+e(it.part.slot)+' · '+e(it.part.families.map(f=>R.FAMILIES[f]?.name||f).join(', ')||'지정 계열 제한 없음')+'</p>':'')+(!readOnly?equipmentButtons(w,a,it,draft)+(it.zirkott?require('./zirkott-ui.js').itemButtons(it,a,draft):''):'')+'</article>').join(''));}
 function equipmentButtons(w,a,it,draft){if(['weapon','armor','shield'].includes(it.type)||['backpack','rig','protective'].includes(it.zirkott?.kind))return '<div class="toolbar">'+(it.type==='weapon'&&!it.equipped?'<select data-tactical-slot="'+e(it.id)+'"><option value="primary">주무기</option><option value="secondary">스위칭</option>'+(w.meta.rulebook.id==='zirkott'?'<option value="sidearm">보조무기</option>':'')+'</select>':'')+'<button type="button" data-tactical-operation="'+(it.equipped?'unequip':'equip')+'" data-id="'+e(it.id)+'" data-actor="'+e(a.id)+'" data-draft="'+draft+'">'+(it.equipped?'장착 해제':'장착')+'</button></div>';if(it.type==='part')return '<div class="toolbar">'+(!it.attachedTo?'<select data-tactical-parent="'+e(it.id)+'">'+R.carried(w,a).filter(x=>x.weapon).map(x=>'<option value="'+e(x.id)+'">'+e(x.name)+'</option>').join('')+'</select>':'')+'<button type="button" data-tactical-operation="'+(it.attachedTo?'detach':'attach')+'" data-id="'+e(it.id)+'" data-actor="'+e(a.id)+'" data-draft="'+draft+'">'+(it.attachedTo?'파츠 분리':'파츠 부착')+'</button></div>';return '';}
 function skills(w,a,draft=false,readOnly=false){return panel('숙련도·기술',(!readOnly?add('proficiency',a.id,draft,'숙련도 추가')+add('skill',a.id,draft,'기술 추가'):'')+Object.entries(a.proficiencies).map(([id,p])=>'<article class="card"><b>'+e(R.FAMILIES[id]?.name||id)+'</b> · '+C.proficient(a,id)+' / 100 · EXP '+(p.xp||0)+(!readOnly?control('proficiency',id,a.id,draft):'')+'</article>').join('')+a.skills.map(id=>{const s=w.definitions.skills[id];return '<details class="card"><summary>'+e(s.name)+' · '+e(ACTIONS[s.action])+' · 대기 '+Math.max(0,(a.cooldowns[id]||0)-w.meta.tactical.clock).toFixed(1)+'초</summary><p>'+e(s.description)+'</p>'+V.facts([['명중',s.accuracy],['위력',s.power],['시간 증감',s.seconds+'초'],['사거리 추가',s.rangeBonus+'m']])+(!readOnly?control('skill',id,a.id,draft):'')+'</details>';}).join(''));}
-function overview(w,a,draft=false){return panel(a.name,'<div class="toolbar">'+control('actor',a.id,a.id,draft)+(w.combat&&!draft?control('battlefield','',a.id,false,'전장 편집'):'')+'</div>'+wounds(a,w)+(w.meta.rulebook.id==='zirkott'?require('./zirkott-ui.js').survival(w,a)+require('./zirkott-ui.js').capacities(w,a):'')+V.facts([['이동',Math.round(R.pace(w,a)*100)/100+'m/s'],['사용 가능한 손',R.handCount(a)],['짐',Math.round(R.load(w,a)*100)/100+'kg'],['규율',a.discipline],['지휘력',a.leadership],...R.KEYS.map(k=>[R.LABELS[k],a.raw[k]])]));}
+function overview(w,a,draft=false){return panel(a.name,'<div class="toolbar">'+control('actor',a.id,a.id,draft)+(w.combat&&!draft?control('battlefield','',a.id,false,'전장 편집'):'')+'</div>'+wounds(a,w)+(w.meta.rulebook.id==='zirkott'?require('./zirkott-ui.js').survival(w,a)+require('./zirkott-ui.js').capacities(w,a):'')+V.facts([['이동',Math.round(R.pace(w,a)*100)/100+'m/s'],['사용 가능한 손',R.handCount(a)],['짐',Math.round(R.load(w,a)*100)/100+'kg'],['규율',a.discipline],['지휘력',a.leadership],...R.KEYS.map(k=>[R.LABELS[k],require('./actor-links.js').stat(w,a,k)])]));}
 function render(ui,tab){const w=ui.info?.state;if(!R.active(w))return panel('택티컬','시스템을 구축하고 적용하세요.');if(ui.tacticalEditor&&(!ui.tacticalEditor.page||ui.tacticalEditor.page===ui.tab))return editor(ui);const a=selected(ui,w);if(!a)return panel('대원','등록된 인물이 없습니다.');const selector=require('./inventory-ui.js').selector(w,a,'tactical-actor');if(w.meta.rulebook.id==='zirkott'){const extra=require('./zirkott-ui.js').extra(w,tab,a);if(extra!==null)return selector+extra;}if(tab==='registry')return require('./actor-presence.js').render(w);if(tab==='inventory')return selector+inventory(w,a,false,false,ui)+(w.meta.rulebook.id==='zirkott'&&require('./inventory-ui.js').section(ui)==='supplies'?require('./zirkott-ui.js').storage(w,a):'');if(['stats','proficiencies'].includes(tab))return selector+skills(w,a);if(['relations','squad'].includes(tab)&&require('./zirkott-options.js').karma(w))return selector+panel('관계',add('relation',a.id,false,'관계 추가')+Object.entries(w.meta.tactical.relations).map(([id,r])=>'<article class="card"><b>'+e(w.actors[r.fromId]?.name)+' → '+e(w.actors[r.toId]?.name)+'</b>'+V.facts([['신뢰',r.trust],['불만',r.dissent],['반응',r.status]])+control('relation',id,a.id)+'</article>').join(''));if(tab==='exploration')return panel('탐험',control('clock','',a.id,false,'시간·위치 편집')+'<p>'+e(w.meta.tactical.location)+'</p>'+Object.values(w.meta.tactical.places).map(p=>'<article class="card"><h4>'+e(p.name)+'</h4><p>현재 '+e(p.nodes[p.current]?.name)+'</p>'+control('exploration',p.id,a.id)+'<details><summary>지점과 출구</summary>'+Object.values(p.nodes).map(n=>'<p>'+e(n.name)+' · '+e(n.description)+'<br>출구 '+e(n.exits.map(id=>p.nodes[id]?.name).join(', '))+'</p>').join('')+'</details></article>').join(''));return selector+overview(w,a)+battle(w)+Object.values(w.actors).filter(x=>x.kind==='enemy'&&require('./actor-presence.js').ids(w).includes(x.id)).map(x=>'<details class="panel"><summary>'+e(x.name)+' · 적 정보</summary>'+wounds(x,w)+skills(w,x,false,true)+inventory(w,x,false,true)+'</details>').join('');}
 function preview(ui,job){if(ui.tacticalEditor?.draft&&ui.tacticalEditor.jobId===job.id)return editor(ui);const w=job.tacticalCandidate;return (w.meta.rulebook.id==='zirkott'?require('./zirkott-ui.js').preview(w,Object.values(w.actors)[0]):'')+Object.values(w.actors).map(a=>overview(w,a,true)+skills(w,a,true)+inventory(w,a,true)).join('');}
 function seed(entity,a,id){if(entity==='item')return R.item({name:'새 무기',type:'weapon',weapon:{family:'pistol'}},a.id);if(entity==='skill')return R.skill({name:'새 기술'},a.id);if(entity==='proficiency')return {rating:0,xp:0};if(entity==='relation')return {fromId:a.id,toId:a.id,trust:50,dissent:0,status:'normal',knownEvents:[]};return {};}
@@ -31089,6 +31284,7 @@ async function read(app,scope,name,args,signal,boundary) {
   const info=await app.inspect();
   assert(scopeKey(info.scope)===scopeKey(scope),'SCOPE_MISMATCH','상태를 읽는 중 채팅이 바뀌었습니다.');
   Books.validateCall(info.state,name,args);
+  if(name==='rpg_state'&&args.op==='actor_links')return {ok:true,result:require('./actor-links-tools.js').read(info.state,args),readOnly:true,persistence:info.staged?'staged':'committed',revision:info.current?.id};
   if(args.op==='action_result') {
     const id=app.tx?.id||info.current?.origin?.transactionId;
     assert(id,'TRANSACTION_MISSING','조회할 판정 기록이 없습니다.');
@@ -32144,8 +32340,15 @@ module.exports = {
 // Public release notes. The build also publishes this as updates.json.
 const UPDATE_NOTE='플러그인만 업데이트. 모듈 v1은 그대로';
 module.exports={
-  latest:'0.30.4',
+  latest:'0.30.5',
   entries:[
+    {version:'0.30.5',date:'2026-10-09',title:'인물 간 능력치 · 자원 연결',changes:[
+      '등록 인물에 능력치·자원 연결 편집을 추가했습니다. 소환수뿐 아니라 일반 인물도 다른 인물의 능력치·레벨·경지·최대/현재 자원·자원 비율·숙련도를 기준으로 보정을 받습니다.',
+      '계수·고정값·증가 구간·내림/반올림/올림·상한/하한을 설정합니다. 최대 MP의 10%만큼 힘 증가, 레벨 5마다 힘 +2, 다른 인물 힘의 절반만큼 공격 위력 증가처럼 여러 연결을 합산할 수 있습니다.',
+      '같은 실제 잔량과 최대치를 사용하는 자원 공유, 기술·소환·생활·선택 수련 비용만 다른 인물이 지불하는 비용 대납을 구분합니다. 기존 룰북에 존재하는 수치 자원만 연결합니다.',
+      '원본 수치는 유지하고 행동 시점에 계산합니다. 수치의 순환 증폭, 공유 자원의 순환 참조와 연결·해제로 생기는 무료 회복을 방지하며 백업·되돌리기에 연결 설정을 함께 저장합니다.',
+      '뉴뉴도 같은 연결 설정을 제안하고 편집창에서 저장할 수 있습니다. 기존 상태 도구에 연결 조회를 추가했으며 행동마다 추가 AI 호출을 요구하지 않습니다.'
+    ],note:UPDATE_NOTE},
     {version:'0.30.4',date:'2026-10-09',title:'반복 리롤·되돌리기 복구',changes:[
       '선택한 사용자 입력과 이전 문맥이 그대로인데 이후 답변이 바뀌었다는 이유로 HISTORY_CHANGED가 발생하던 되돌리기를 수정했습니다.',
       '저장·복구 화면에 들어가거나 새로 고침할 때 최신 채팅 원문을 읽습니다. 입력이 삭제되거나 이전 문맥이 바뀌었다면 원문을 갱신하고 다시 선택하도록 안내합니다.',
@@ -32846,7 +33049,7 @@ module.exports = {
 },
 "./version.js":function(module,exports,require){
 'use strict';
-module.exports={VERSION:'0.30.4'};
+module.exports={VERSION:'0.30.5'};
 
 },
 "./vertex-auth.js":function(module,exports,require){
@@ -34356,7 +34559,7 @@ function scavenge(w,a,args,rng) {
   const p=w.meta.tactical.places[w.meta.tactical.activePlace],node=p?.nodes[p.current];assert(node,'NO_EXPLORATION','실제로 들어온 탐험 장소가 필요합니다.');
   if(args.action==='search') {
     if(node.searched)return resolved(w,a,'저장된 수색 결과',[],{alreadyRecorded:true,exploration:visible(w)});
-    const die=C.roll(rng),threshold=Math.max(5,Math.min(85,20+w.meta.zirkott.difficulty*10-R.statBonus(a,'WIS')-C.proficient(a,'observation')*.2));
+    const die=C.roll(rng),threshold=Math.max(5,Math.min(85,20+w.meta.zirkott.difficulty*10-R.statBonus(a,'WIS',w)-C.proficient(a,'observation')*.2));
     node.searched=true;node.searchRoll=die;node.noise+=10;node.loot=die>threshold?(node.items||[]).filter(x=>x.quantity>0).map((x,i)=>({...clone(x),id:p.id+':'+node.id+':loot:'+i})):[];
     C.advance(w,args.seconds||120,changes);C.train(a,'observation',changes,1,w);changes.push({label:'수색',value:node.loot.length?node.loot.map(x=>x.name+' '+x.quantity+'개').join(', '):'회수 가능한 물품 없음'});
     return resolved(w,a,'수색',changes,{roll:die,target:threshold,outcome:die>threshold?'success':'failure',elapsedSeconds:args.seconds||120,exploration:visible(w)});
@@ -34428,7 +34631,7 @@ function trade(w,a,args,plan,rng) {
   const relation=w.meta.zirkott.factions[m.faction]||R.find(w.meta.zirkott.factions,m.faction),reputation=relation?.reputation||0;
   let factor=args.mode==='buy'?m.buyMarkup*(1-Math.max(-.2,Math.min(.2,(m.trust+reputation)/500))):m.sellRate*(1+Math.max(-.2,Math.min(.2,(m.trust+reputation)/500)));
   const changes=[];let dice=null;
-  if(args.haggle){dice=C.roll(rng);const target=Math.max(10,50-R.statBonus(a,'CHA')-C.proficient(a,'barter')*.3);const success=dice>target;factor*=args.mode==='buy'?(success?.9:1.05):(success?1.1:.95);changes.push({label:'흥정',value:dice+' VS '+target+' · '+(success?'성공':'실패')});C.train(a,'barter',changes,1,w);}
+  if(args.haggle){dice=C.roll(rng);const target=Math.max(10,50-R.statBonus(a,'CHA',w)-C.proficient(a,'barter')*.3);const success=dice>target;factor*=args.mode==='buy'?(success?.9:1.05):(success?1.1:.95);changes.push({label:'흥정',value:dice+' VS '+target+' · '+(success?'성공':'실패')});C.train(a,'barter',changes,1,w);}
   const condition=['weapon','armor','shield','part'].includes(item.type)?Math.max(.05,item.durability/item.maxDurability):1;
   const demand=m.demand[item.zirkott?.category||'supplies']||1,total=Math.max(1,Math.round(item.price*q*condition*demand*factor));
   if(args.mode==='buy'){
