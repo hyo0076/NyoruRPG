@@ -1,0 +1,38 @@
+{
+  "version": "0.30.0",
+  "kind": "introduction-artwork",
+  "source": "src/render.js + src/card-themes.js + src/combat-card-view.js + src/event-card-view.js",
+  "overview": "card-themes-overview.png",
+  "samples": [
+    {
+      "id": "cartoon",
+      "name": "카툰",
+      "file": "card-theme-cartoon.png"
+    },
+    {
+      "id": "fantasy",
+      "name": "판타지 · 밤빛 마도서",
+      "file": "card-theme-fantasy.png"
+    },
+    {
+      "id": "romance",
+      "name": "로맨스",
+      "file": "card-theme-romance.png"
+    },
+    {
+      "id": "cyber",
+      "name": "사이버",
+      "file": "card-theme-cyber.png"
+    },
+    {
+      "id": "murim",
+      "name": "무림",
+      "file": "card-theme-murim.png"
+    },
+    {
+      "id": "tactical",
+      "name": "택티컬",
+      "file": "card-theme-tactical.png"
+    }
+  ]
+}

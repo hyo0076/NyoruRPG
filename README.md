@@ -2,6 +2,8 @@
 
 GitHub 공개판 0.30.5 이후의 성좌·스트리밍·지도, 장비·파츠·스킬 편성, 공통 UI와 초기 구축·검사·로딩 수정을 통합했습니다. [0.40.0 변경 내역](docs/nyoru-release-0.40.0.md) · [전체 배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.0.zip).
 
+**처음이라면 [플레이 예시로 읽는 소개와 설치 안내](docs/NyoruRPG-소개글-보충본.md)부터 보세요.** 성좌·방송·소환수·네 칸 스킬 구성·장비 효과를 어떤 이야기로 즐길 수 있는지, 무엇을 켜면 되는지 설명합니다. Yumi Provider Manager Toolbox와 개인 중계기 연결 방법도 나누었습니다. [라이트 소개글·게시용 HTML·이미지 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-Introduction-0.40.0.zip).
+
 **플러그인만 업데이트. 모듈 v1은 그대로**
 
 **개인 HTTP MCP 중계기 0.1.0 실험판**은 별도 배포합니다. 본인 기기의 Node 프로그램으로 HTML·플러그인 도구를 Provider Manager에 연결합니다. 기존 Risu 서버·DB·프로바이더 헤더를 변경하지 않습니다. RPG의 **AI 연결 → 개인 HTTP 중계기**에서 설정합니다. [실행·연결 안내](personal-relay/README.md) · [중계기 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/Nyoru-Personal-MCP-Relay-0.1.0.zip). 사용자의 연결·동작 확인 보고가 있지만 모든 환경을 검증한 것은 아닙니다.
