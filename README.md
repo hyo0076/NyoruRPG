@@ -1,6 +1,6 @@
-# NyoruRPG 0.40.1
+# NyoruRPG 0.40.2
 
-답변이 끝난 뒤에도 `GENERATION_ACTIVE`가 남아 직접 편집을 막던 저장 흐름을 보완했습니다. 완료 알림의 지연과 누락을 다시 확인하고, 현재 답변의 저장 근거가 맞을 때 기존 계산 결과를 확정합니다. [0.40.1 변경 내역](docs/nyoru-release-0.40.1.md) · [전체 배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.1.zip).
+0.40.1에서도 남았던 `GENERATION_UNSETTLED` 편집 차단을 수정했습니다. 해적리스의 저장된 채팅 사본과 실제 생성 상태를 구분해 확인하고, 원문이 일치하면 밀린 RPG 저장을 마칩니다. 해당 오류의 자동 테스트 7개가 통과했으며 설치 Risu 확인은 하지 않았습니다. [0.40.2 변경 내역](docs/nyoru-release-0.40.2.md) · [전체 배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.2.zip).
 
 GitHub 공개판 0.30.5 이후의 성좌·스트리밍·지도, 장비·파츠·스킬 편성, 공통 UI와 초기 구축·검사·로딩 수정을 통합했습니다. [0.40.0 변경 내역](docs/nyoru-release-0.40.0.md) · [전체 배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.0.zip).
 
