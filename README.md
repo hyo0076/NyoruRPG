@@ -1,4 +1,6 @@
-# NyoruRPG 0.40.0
+# NyoruRPG 0.40.1
+
+답변이 끝난 뒤에도 `GENERATION_ACTIVE`가 남아 직접 편집을 막던 저장 흐름을 보완했습니다. 완료 알림의 지연과 누락을 다시 확인하고, 현재 답변의 저장 근거가 맞을 때 기존 계산 결과를 확정합니다. [0.40.1 변경 내역](docs/nyoru-release-0.40.1.md) · [전체 배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.1.zip).
 
 GitHub 공개판 0.30.5 이후의 성좌·스트리밍·지도, 장비·파츠·스킬 편성, 공통 UI와 초기 구축·검사·로딩 수정을 통합했습니다. [0.40.0 변경 내역](docs/nyoru-release-0.40.0.md) · [전체 배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.0.zip).
 
