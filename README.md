@@ -1,4 +1,6 @@
-# NyoruRPG 0.40.2
+# NyoruRPG 0.40.3
+
+백스텝 사격·돌진·치고 빠지기를 실제 위치가 바뀌는 기술로 설정할 수 있습니다. 공격 전·후 접근/후퇴를 한 행동으로 처리하며 뉴뉴의 부분 수정에서 기존 효과가 사라지는 경로도 수정했습니다. 관련 자동 테스트 15개가 통과했습니다. 기존 기술의 이동력 버프는 자동 변환하지 않으므로 이동 연계를 다시 저장해 주세요. [0.40.3 변경 내역과 설정 예시](docs/nyoru-release-0.40.3.md) · [전체 배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.3.zip).
 
 0.40.1에서도 남았던 `GENERATION_UNSETTLED` 편집 차단을 수정했습니다. 해적리스의 저장된 채팅 사본과 실제 생성 상태를 구분해 확인하고, 원문이 일치하면 밀린 RPG 저장을 마칩니다. 해당 오류의 자동 테스트 7개가 통과했으며 설치 Risu 확인은 하지 않았습니다. [0.40.2 변경 내역](docs/nyoru-release-0.40.2.md) · [전체 배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.2.zip).
 
