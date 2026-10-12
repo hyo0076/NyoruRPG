@@ -25,6 +25,8 @@ https://raw.githubusercontent.com/hyo0076/NyoruRPG/main/NyoruRPG.js
 
 새 버전은 버전 번호를 올려 빌드한 뒤, 저장소의 `NyoruRPG.js`를 교체합니다. 모듈이 바뀌었다면 `NyoruRPG.risum`도 함께 교체합니다. 기존 설치를 유지하기 위해 플러그인 내부 이름 `universal-rpg-engine`과 위 파일 주소는 유지합니다.
 
+개발 작업 공간에서는 `node scripts/build.cjs --release-only`가 `dist` 생성에 이어 `release/NyoruRPG v버전` 폴더까지 저장합니다. 공개할 때는 이 폴더로 ZIP을 만들고 플러그인·`updates.json`·변경 내역·다운로드 링크를 함께 올립니다. `dist`만 새로 만들고 릴리즈 폴더를 예전 상태로 남기지 않습니다.
+
 개발 시 `src/update-notes.js` 맨 앞에 새 버전의 사용자용 변경 내역을 추가하고 `latest`를 같은 버전으로 올립니다. 빌드가 `dist/updates.json`을 만들며 플러그인과 함께 저장소 루트의 `updates.json`으로 게시합니다. 버전·변경 내역이 맞지 않으면 빌드를 중단합니다. 알림 기능을 위해 모듈이나 게임 데이터를 변경하지 않습니다.
 
 이 저장소에는 배포 파일만 올립니다. API 키, 사용자 설정, 게임 백업, 채팅 기록은 포함하지 않습니다. 포함된 구성 요소의 고지는 `THIRD_PARTY.md`와 `RPACK-LICENSE`, `RPACK-LICENSE-MIT`를 참고하세요.
