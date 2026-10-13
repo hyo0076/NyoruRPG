@@ -1,4 +1,6 @@
-# NyoruRPG 0.40.3
+# NyoruRPG 0.40.4
+
+**AI 연결 → 전송 방식 → 개인 프록시**에서 프록시 주소와 선택적인 토큰을 설정할 수 있습니다. 원래 API 주소·키는 기존 칸에 유지합니다. 토큰 없는 프록시는 프록시 토큰만 비우고, **API 키 없이 요청**은 켜지 않습니다. 기본 API를 공유하는 구축·검사·JEV에도 적용됩니다. 목적지를 `?url=`로 받는 HTTP 프록시용이며 MCP 도구 중계기와는 별도입니다. [0.40.4 설정 방법과 지원 규격](docs/nyoru-release-0.40.4.md) · [전체 배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.4.zip). 실제 Worker와 유료 API 연결은 확인하지 않았습니다.
 
 백스텝 사격·돌진·치고 빠지기를 실제 위치가 바뀌는 기술로 설정할 수 있습니다. 공격 전·후 접근/후퇴를 한 행동으로 처리하며 뉴뉴의 부분 수정에서 기존 효과가 사라지는 경로도 수정했습니다. 관련 자동 테스트 15개가 통과했습니다. 기존 기술의 이동력 버프는 자동 변환하지 않으므로 이동 연계를 다시 저장해 주세요. [0.40.3 변경 내역과 설정 예시](docs/nyoru-release-0.40.3.md) · [전체 배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.3.zip).
 
