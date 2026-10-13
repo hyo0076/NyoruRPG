@@ -1,8 +1,12 @@
-# NyoruRPG 0.40.4
+# NyoruRPG 0.40.5
 
-**AI 연결 → 전송 방식 → 개인 프록시**에서 프록시 주소와 선택적인 토큰을 설정할 수 있습니다. 원래 API 주소·키는 기존 칸에 유지합니다. 토큰 없는 프록시는 프록시 토큰만 비우고, **API 키 없이 요청**은 켜지 않습니다. 기본 API를 공유하는 구축·검사·JEV에도 적용됩니다. 목적지를 `?url=`로 받는 HTTP 프록시용이며 MCP 도구 중계기와는 별도입니다. [0.40.4 설정 방법과 지원 규격](docs/nyoru-release-0.40.4.md) · [전체 배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.4.zip). 실제 Worker와 유료 API 연결은 확인하지 않았습니다.
+원본 Risu·해적리스·포켓리스와 호환성을 강화했습니다. [0.40.5 업데이트 내역](docs/nyoru-release-0.40.5.md) · [다운로드](https://github.com/hyo0076/NyoruRPG/releases/tag/v0.40.5)
 
-백스텝 사격·돌진·치고 빠지기를 실제 위치가 바뀌는 기술로 설정할 수 있습니다. 공격 전·후 접근/후퇴를 한 행동으로 처리하며 뉴뉴의 부분 수정에서 기존 효과가 사라지는 경로도 수정했습니다. 관련 자동 테스트 15개가 통과했습니다. 기존 기술의 이동력 버프는 자동 변환하지 않으므로 이동 연계를 다시 저장해 주세요. [0.40.3 변경 내역과 설정 예시](docs/nyoru-release-0.40.3.md) · [전체 배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.3.zip).
+**플러그인만 업데이트. 모듈 v1은 그대로**
+
+AI 연결에 프록시 주소와 프록시 토큰 설정을 추가했습니다. [0.40.4 업데이트 내역](docs/nyoru-release-0.40.4.md) · [배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.4.zip)
+
+이동 기술과 뉴뉴의 기술 수정을 개선했습니다. [0.40.3 업데이트 내역](docs/nyoru-release-0.40.3.md)
 
 0.40.1에서도 남았던 `GENERATION_UNSETTLED` 편집 차단을 수정했습니다. 해적리스의 저장된 채팅 사본과 실제 생성 상태를 구분해 확인하고, 원문이 일치하면 밀린 RPG 저장을 마칩니다. 해당 오류의 자동 테스트 7개가 통과했으며 설치 Risu 확인은 하지 않았습니다. [0.40.2 변경 내역](docs/nyoru-release-0.40.2.md) · [전체 배포 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/NyoruRPG-0.40.2.zip).
 
