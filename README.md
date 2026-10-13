@@ -1,4 +1,6 @@
-# NyoruRPG 0.40.6
+# NyoruRPG 0.40.7
+
+플러그인이 읽을 Risu 채팅을 직접 선택할 수 있습니다. 창 위쪽의 **읽을 채팅 선택**에서 고르면 봇마다 기억합니다. [0.40.7 업데이트 내역](docs/nyoru-release-0.40.7.md) · [다운로드](https://github.com/hyo0076/NyoruRPG/releases/tag/v0.40.7)
 
 전통 D&D 룰북을 추가하고 부위 체력·탄약 설정과 저장 복구를 개선했습니다. [0.40.6 업데이트 내역](docs/nyoru-release-0.40.6.md) · [다운로드](https://github.com/hyo0076/NyoruRPG/releases/tag/v0.40.6) · [전통 D&D 사용법](docs/dnd2024.md)
 
