@@ -8,6 +8,8 @@ The original references remain outside this project, unchanged. Included source-
 
 Node.js is required for development/builds. Optional browser QA uses an externally installed Playwright/Chrome; neither is bundled into the distributable plugin.
 
+The 0.30.12 build uses Acorn 8.15.0 (MIT) to read local module dependencies and Terser 5.44.0 (BSD-2-Clause) to remove JavaScript comments and whitespace. They are development dependencies pinned in package.json and pnpm-lock.yaml, not plugin runtime dependencies. Their package license files remain in node_modules; the generated plugin does not embed these tools.
+
 ## Project Zirkott reference
 
 The dedicated Zirkott rulebook uses the user-supplied 프로젝트지르코트_export.json (chara_card_v3, Project Zirkott / 프로젝트:지르코트, version 1.8, creator 에벨레). src/zirkott-data.js contains selected region topology, regional descriptions and boss mechanical reference text from that supplied card. Original images, executable Lua/scripts, presentation markup and narrative instructions are not bundled. Radiation rates, transit time/cost, survival rates and unspecified economic values are newly authored editable game defaults, not claimed as original canon or physical/medical measurements. Detailed boss residences take precedence over inconsistent list headings; self-links in route lists are omitted. Attribution does not assert a license for public redistribution; this release remains local under the user's no-upload instruction.
