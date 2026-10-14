@@ -1,0 +1,8 @@
+{
+  "name": "nyoru-personal-mcp-relay",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Personal HTTP MCP relay for browser and plugin tool publishers",
+  "engines": { "node": ">=20" },
+  "scripts": { "start": "node server.cjs" }
+}

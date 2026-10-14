@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>개인 MCP 중계기</title><link rel="stylesheet" href="style.css"><script src="dashboard.js" defer></script></head>
+<body><main>
+<header><p class="eyebrow">NYORU · 0.1.1</p><h1>개인 MCP 중계기</h1><p>AI가 도구를 고르면, 연결된 플러그인에서 실행해 결과를 돌려줍니다.</p></header>
+<section>
+<h2>1. 사용할 플러그인에서 연결</h2>
+<p>플러그인의 중계기 설정에 이 주소와 실행창의 <strong>Publisher key</strong>를 넣고 연결하세요.</p>
+<div class="copy-row"><code id="base-url"></code><button type="button" class="secondary" data-copy="base-url">주소 복사</button></div>
+<p class="subtle">중계기 연동을 지원하는 플러그인·HTML에서 등록해야 합니다. 기본 주소에는 /mcp를 붙이지 않습니다.</p>
+</section>
+<section>
+<h2>2. 이 화면에서 도구 확인</h2>
+<p>실행창의 <strong>Consumer key</strong>를 넣으면 연결된 도구와 프로바이더에 넣을 주소가 나옵니다.</p>
+<form id="status-form"><label for="consumer-key">호출용 키 (Consumer key)</label><div class="input-row"><input id="consumer-key" type="password" autocomplete="off" required placeholder="실행창의 Consumer key 값만 붙여넣기"><button type="submit">도구·주소 확인</button></div></form>
+<p class="subtle">키는 이 페이지를 닫으면 사라집니다.</p>
+<p id="status" role="status">아직 연결된 도구 목록을 조회하지 않았습니다.</p>
+<div id="publishers"></div>
+</section>
+<section id="provider-settings" hidden>
+<h2>3. 프로바이더에 연결</h2>
+<label for="publisher-choice">사용할 도구 그룹</label><select id="publisher-choice"></select>
+<label for="connection-mode">연결 방식</label><select id="connection-mode"><option value="ai">AI 프록시</option><option value="mcp">MCP 직접 연결</option></select>
+<div id="ai-settings">
+<p>Provider Manager의 <strong>프록시 추가</strong>에 입력하세요.</p>
+<dl><dt>이름</dt><dd>Nyoru Relay</dd><dt>프록시 URL</dt><dd><div class="copy-row"><code id="ai-url"></code><button type="button" class="secondary" data-copy="ai-url">URL 복사</button></div></dd><dt>인증 토큰</dt><dd>위에서 입력한 Consumer key</dd></dl>
+<ol><li>사용할 모델의 <strong>네트워크</strong>에서 <strong>커스텀: Nyoru Relay</strong>를 선택합니다.</li><li>같은 모델의 <strong>도구 사용 → 사용 안 함</strong>을 선택합니다. 중계기가 도구를 전달합니다.</li><li>채팅에서 답변을 생성합니다.</li></ol>
+<p class="subtle">OpenAI 호환 · Chat 형식으로 사용하세요. API 주소·키·모델은 기존 값을 사용합니다. 답변은 도구 처리가 끝나면 한 번에 표시됩니다.</p>
+<details><summary>연결된 모든 그룹 사용</summary><div class="copy-row"><code id="ai-all-url"></code><button type="button" class="secondary" data-copy="ai-all-url">URL 복사</button></div></details>
+</div>
+<div id="mcp-settings" hidden>
+<p>Provider Manager의 <strong>MCP 서버 추가</strong>에 아래 값을 입력하세요.</p>
+<dl><dt>URL</dt><dd><div class="copy-row"><code id="provider-url"></code><button type="button" class="secondary" data-copy="provider-url">URL 복사</button></div></dd><dt>Transport</dt><dd>streamable-http</dd><dt>Auth</dt><dd>Bearer</dd><dt>인증값</dt><dd>방금 입력한 Consumer key 값만 붙여넣기</dd><dt>Timeout ms</dt><dd>600000</dd></dl>
+<p>저장한 뒤 도구 목록을 불러오고 사용할 모델에서 해당 그룹을 켜 주세요.</p>
+<details><summary>등록된 모든 도구를 하나의 주소로 연결하기</summary><p>연결 중인 모든 그룹을 사용하려면 전용 주소 대신 이 주소를 넣으세요.</p><div class="copy-row"><code id="mcp-url"></code><button type="button" class="secondary" data-copy="mcp-url">URL 복사</button></div><p class="subtle">전체 주소와 개별 그룹 주소를 동시에 켜면 도구가 중복됩니다.</p></details>
+</div>
+</section>
+<section id="relay-diagnostics" hidden>
+<h2>호출 기록</h2>
+<p id="ai-diagnostic-counts"></p>
+<p id="diagnostic-counts"></p>
+<p id="diagnostic-last-event" role="status"></p>
+<button type="button" id="diagnostic-download" class="secondary">최신 진단 내려받기</button>
+</section>
+<p id="copy-status" role="status"></p>
+<footer>제작자의 연동 방법은 배포 폴더의 DEVELOPER_GUIDE.md에 있습니다.</footer>
+</main></body></html>

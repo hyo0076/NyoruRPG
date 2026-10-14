@@ -12,7 +12,7 @@ Yumi Provider Manager의 **모델 네트워크**에 개인 중계기를 연결�
 
 ## 1. 중계기 실행
 
-처음 설치한다면 [AI 프록시가 포함된 중계기 ZIP](https://github.com/hyo0076/NyoruRPG/raw/refs/heads/main/Nyoru-Personal-MCP-Relay-0.1.0.zip)을 풀고 `start.cmd`를 실행합니다. Node.js 20 이상이 필요합니다.
+처음 설치한다면 [AI 프록시가 포함된 중계기 ZIP](https://github.com/hyo0076/NyoruRPG/releases/download/v0.40.10/Nyoru-Personal-MCP-Relay-0.1.1.zip)을 풀고 `start.cmd`를 실행합니다. Node.js 20 이상이 필요합니다.
 
 기존 중계기를 업데이트한다면:
 
@@ -32,7 +32,7 @@ Yumi Provider Manager의 **모델 네트워크**에 개인 중계기를 연결�
 
 플레이하는 동안 검은 실행창을 켜 두세요. 최소화해도 실행됩니다.
 
-이미 AI 프록시 중계기로 플레이하고 있다면 중계기는 그대로 사용하고 다음 단계에서 플러그인만 업데이트하면 됩니다.
+AI 프록시의 도구 응답 최적화를 사용하려면 **NyoruRPG 0.40.10과 중계기 0.1.1**을 함께 업데이트합니다.
 
 ## 2. NyoruRPG 도구 등록
 
@@ -43,7 +43,7 @@ Risu의 플러그인을 새 **NyoruRPG.js**로 교체합니다. **NyoruRPG.risum
 | 항목 | 입력·선택 |
 | --- | --- |
 | 개인 중계기 사용 | 켜기 |
-| 프로바이더 연결 | **AI 프록시 · 실험** |
+| 프로바이더 연결 | **AI 프록시** |
 | 중계기 기본 주소 | `http://127.0.0.1:18765` |
 | 도구 그룹 이름 | 예: `nyoruRPG1` — 이미 쓰는 이름이 있으면 유지 |
 | 등록용 키 · Publisher key | 중계기 실행창의 Publisher key |

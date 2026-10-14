@@ -1,8 +1,8 @@
-# Nyoru 개인 MCP 중계기 · AI 프록시 실험 1
+# Nyoru 개인 MCP 중계기 0.1.1
 
 **[AI 프록시 연결 방법 →](AI-PROXY.md)**
 
-이번 실험판은 중계기가 메인 AI의 도구 호출을 직접 연결합니다. 기존 MCP 방식도 사용할 수 있습니다. 아래는 MCP 연결과 실행 환경 안내입니다.
+중계기가 메인 AI의 도구 호출을 직접 연결합니다. 기존 MCP 방식도 사용할 수 있습니다. 아래는 MCP 연결과 실행 환경 안내입니다.
 
 내 컴퓨터에서만 관리하는 작은 중계기입니다. 브라우저·HTML·플러그인이 도구를 등록하고, Provider Manager가 HTTP MCP 주소로 호출합니다. 공용 서버·회원가입·유료 중계 서비스가 필요하지 않습니다.
 
@@ -31,7 +31,7 @@ Windows 시작 파일은 서버를 연 뒤 종료합니다. 중계기 실행창�
 
 업데이트할 때는 중계기를 종료하고 기존 중계기 폴더에 새 프로그램 파일을 덮어쓴 뒤 `start.cmd`를 다시 실행하세요. **기존 `data` 폴더와 `connection.json`은 그대로 보관**해야 연결키가 유지됩니다.
 
-AI 프록시 패치는 `server.cjs`·`ai-proxy.cjs`·`ai-upstream.cjs`와 `web` 파일을 함께 교체합니다.
+AI 프록시 패치는 `server.cjs`·`ai-proxy.cjs`·`ai-context.cjs`·`ai-upstream.cjs`와 `web` 파일을 함께 교체합니다.
 
 ## 도구 연결하기
 

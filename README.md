@@ -1,4 +1,8 @@
-# NyoruRPG 0.40.9
+# NyoruRPG 0.40.10
+
+도구 응답의 반복 입력을 줄이고 카드 표시·후원 검사·전투 진행·에렌샤 장비를 개선했습니다. [0.40.10 업데이트 내역](docs/nyoru-release-0.40.10.md) · [다운로드](https://github.com/hyo0076/NyoruRPG/releases/tag/v0.40.10)
+
+AI 프록시를 사용한다면 [개인 중계기 0.1.1](https://github.com/hyo0076/NyoruRPG/releases/download/v0.40.10/Nyoru-Personal-MCP-Relay-0.1.1.zip)도 함께 업데이트하세요. [연결 방법](docs/AI-프록시-연결.md)
 
 뉴뉴의 응답 호환성을 개선했습니다. [0.40.9 업데이트 내역](docs/nyoru-release-0.40.9.md) · [다운로드](https://github.com/hyo0076/NyoruRPG/releases/tag/v0.40.9)
 

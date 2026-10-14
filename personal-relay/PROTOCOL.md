@@ -39,6 +39,28 @@ Chat의 function tools → assistant.tool_calls → role=tool/tool_call_id → �
 
 진단에는 ai.requestReceived, ai.toolsAttached, ai.upstreamRequested, ai.toolRequested, ai.completed, ai.responseSent, ai.failed, ai.responseReused 단계와 횟수·오류 코드만 추가한다. 키·대화·도구 인수·응답 본문은 디스크나 진단에 기록하지 않는다. 실제 호스트·유료 모델 검사는 실행하지 않았다.
 
+## 도구 결과 문맥 · 0.1.1
+
+AI 프록시는 추가 데이터가 없는 단일 text 성공 결과를 MCP 외피 없이 Chat의 tool.content에 전달한다. text 원문은 유지한다. 오류·여러 content 블록·이미지·structuredContent·알 수 없는 메타데이터가 있으면 기존 전체 결과를 전달한다. `/mcp`의 CallToolResult와 제공자의 실행·저장·결과 재전송은 바꾸지 않는다.
+
+제공자가 같은 응답 안에서 반복될 조회용 필드를 지정하려면 성공 결과에 다음 메타데이터를 넣는다. 필드 이름은 해당 결과 JSON의 최상위 키다. 등록 도구 이름과 필드 이름이 모두 같은 경우에만 비교한다.
+
+```json
+{"_meta":{"nyoru-relay/reusable-fields":{"version":1,"fields":["state"]}}}
+```
+
+처음 값과 변경된 값은 전부 보낸다. 1,024자 이상인 필드의 JSON 문자열이 앞선 전체 값과 완전히 같고 총 길이가 줄어들 때만 새 메시지의 필드를 다음 참조로 대체한다. 이전 메시지를 수정하지 않는다.
+
+```json
+{"_unchangedFields":{"toolCallIds":{"state":"earlier-call-id"},"instruction":"These fields are exactly unchanged. Use their complete values from the named earlier tool_call_id results in this conversation."}}
+```
+
+참조 대상은 같은 생성 요청 안의 원래 전체 값을 가진 tool_call_id다. 참조의 참조, 다른 답변·도구의 값, 빠진 필드의 추정, 수치 차이 재계산을 사용하지 않는다. `_unchangedFields`가 원래 결과에 있으면 참조 변환을 생략한다. 비교용 메모리는 요청당 2 MiB로 제한하며 한도에 걸리면 전체 값을 보낸다. 변환 실패도 원래 결과를 전달한다. NyoruRPG는 state와 룰북 상태 패킷만 지정하며 판정·피해·보상·영수증·저장 상태를 지정하지 않는다.
+
+도구 정의의 객체 키와 함수 목록 순서는 일정하게 정렬하고 배열 내부 순서는 유지한다. 한 요청의 내부 왕복에는 처음 만든 같은 정의를 사용하며 대화·기존 도구 결과·모델의 thought signature를 수정하지 않는다. 캐시 적중은 모델 제공자가 결정한다.
+
+`ai.toolContextPrepared` 진단에는 beforeChars, afterChars, reusedFields만 추가한다. 원문이나 인증은 기록하지 않는다. 길이는 문자 수이며 모델 토큰 수나 청구액이 아니다.
+
 ## 연결 진단 1
 
 `GET /bridge/v1/status`의 Consumer 인증 응답에 `diagnostics`를 추가한다. 서버 시작 시각, 누적 횟수, 최근 160개 단계 기록을 메모리에만 보관한다. 연결 페이지의 `최신 진단 내려받기`는 status를 다시 조회한 뒤 해당 진단만 JSON으로 저장한다.
