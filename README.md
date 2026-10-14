@@ -1,4 +1,6 @@
-# NyoruRPG 0.40.8
+# NyoruRPG 0.40.9
+
+뉴뉴의 응답 호환성을 개선했습니다. [0.40.9 업데이트 내역](docs/nyoru-release-0.40.9.md) · [다운로드](https://github.com/hyo0076/NyoruRPG/releases/tag/v0.40.9)
 
 방송 후원금의 반복 검사 오류를 수정하고 개인 중계기의 AI 프록시 연결을 추가했습니다. [0.40.8 업데이트 내역](docs/nyoru-release-0.40.8.md) · [AI 프록시 연결 방법](docs/AI-프록시-연결.md) · [다운로드](https://github.com/hyo0076/NyoruRPG/releases/tag/v0.40.8)
 
