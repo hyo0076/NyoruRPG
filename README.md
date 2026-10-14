@@ -1,4 +1,6 @@
-# NyoruRPG 0.40.7
+# NyoruRPG 0.40.8
+
+방송 후원금의 반복 검사 오류를 수정하고 개인 중계기의 AI 프록시 연결을 추가했습니다. [0.40.8 업데이트 내역](docs/nyoru-release-0.40.8.md) · [AI 프록시 연결 방법](docs/AI-프록시-연결.md) · [다운로드](https://github.com/hyo0076/NyoruRPG/releases/tag/v0.40.8)
 
 플러그인이 읽을 Risu 채팅을 직접 선택할 수 있습니다. 창 위쪽의 **읽을 채팅 선택**에서 고르면 봇마다 기억합니다. [0.40.7 업데이트 내역](docs/nyoru-release-0.40.7.md) · [다운로드](https://github.com/hyo0076/NyoruRPG/releases/tag/v0.40.7)
 
