@@ -1,4 +1,6 @@
-# NyoruRPG 0.40.11
+# NyoruRPG 0.41.0
+
+전통 D&D에 상시 감지와 수색, 트롤 재생, 마법 완드, 물품 거래를 추가했습니다. [0.41.0 업데이트 내역](docs/nyoru-release-0.41.0.md) · [다운로드](https://github.com/hyo0076/NyoruRPG/releases/tag/v0.41.0)
 
 GitHub Copilot 연결을 추가하고 미니창·룰북 로딩을 개선했습니다. [0.40.11 업데이트 내역](docs/nyoru-release-0.40.11.md) · [다운로드](https://github.com/hyo0076/NyoruRPG/releases/tag/v0.40.11)
 
