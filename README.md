@@ -1,4 +1,8 @@
-# NyoruRPG 0.40.10
+# NyoruRPG 0.40.11
+
+GitHub Copilot 연결을 추가하고 미니창·룰북 로딩을 개선했습니다. [0.40.11 업데이트 내역](docs/nyoru-release-0.40.11.md) · [다운로드](https://github.com/hyo0076/NyoruRPG/releases/tag/v0.40.11)
+
+**AI 연결 → 기본 API → GitHub Copilot**에서 GitHub OAuth 토큰이나 Copilot 세션 토큰을 입력하세요.
 
 도구 응답의 반복 입력을 줄이고 카드 표시·후원 검사·전투 진행·에렌샤 장비를 개선했습니다. [0.40.10 업데이트 내역](docs/nyoru-release-0.40.10.md) · [다운로드](https://github.com/hyo0076/NyoruRPG/releases/tag/v0.40.10)
 
